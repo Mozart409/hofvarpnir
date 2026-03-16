@@ -196,10 +196,10 @@ forwarding parsed events to the render loop over `tokio::sync::mpsc`.
 ### Phase 1: Foundation
 
 - [ ] **Database Migrations**
-  - [ ] Create `users` table
-  - [ ] Create `profiles` table with `quality` enum
-  - [ ] Create `sources` table with `source_type` enum
-  - [ ] Create `videos` table with `video_status` enum (platform as TEXT)
+  - [x] Create `users` table
+  - [x] Create `profiles` table with `quality` enum
+  - [x] Create `sources` table with `source_type` enum
+  - [x] Create `videos` table with `video_status` enum (platform as TEXT)
   - [ ] Create `source_videos` join table
 
 - [ ] **Configuration** (`hof-core/src/config.rs`)
