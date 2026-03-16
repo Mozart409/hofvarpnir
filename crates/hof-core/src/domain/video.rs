@@ -2,8 +2,6 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use ulid::Ulid;
 
-use super::profile::Platform;
-
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::Type)]
 #[sqlx(type_name = "video_status", rename_all = "snake_case")]
 pub enum VideoStatus {
@@ -19,7 +17,8 @@ pub enum VideoStatus {
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct Video {
     pub id: Ulid,
-    pub platform: Platform,
+    /// yt-dlp extractor name (e.g. "youtube", "vimeo", "twitter")
+    pub platform: String,
     pub platform_video_id: String,
     pub title: String,
     pub description: Option<String>,

@@ -12,7 +12,7 @@ platforms) via yt-dlp. Provides both a web UI and a TUI for management.
 - **Actors**: Kameo
 - **Templating**: Maud + htmx
 - **Styling**: Tailwind CSS 4
-- **Database**: PostgreSQL 17 (via SQLx) + PgBouncer
+- **Database**: PostgreSQL 17 (via SQLx)
 - **IDs**: ULID (lexicographically sortable, stored as `TEXT` in Postgres)
 - **API docs**: OpenAPI (utoipa) + Scalar
 - **TUI**: Ratatui
@@ -42,53 +42,53 @@ Authentication and ownership boundary.
 
 ### Profile
 
-Belongs to a user. Represents a download configuration for a specific platform.
+Belongs to a user. Represents a download configuration that can apply to sources
+from any platform (yt-dlp auto-detects the platform from each source URL).
 
-| Field               | Type              | Description                              |
-|---------------------|-------------------|------------------------------------------|
-| platform            | youtube, vimeo, … | Target platform                          |
-| quality             | best, 1080p, …    | Download quality preset                  |
-| naming_template     | String             | e.g. `"{title}-{id}.{ext}"`             |
-| output_dir          | PathBuf            | Where files land on disk                 |
-| include_livestreams | bool               | Whether to download livestream VODs      |
-| include_shorts      | bool               | Whether to download Shorts               |
-| storage_quota_bytes | i64                | Max disk usage for this profile          |
-| retention_days      | Option\<i32\>     | Auto-cleanup after N days (profile-wide) |
+| Field               | Type           | Description                              |
+| ------------------- | -------------- | ---------------------------------------- |
+| quality             | best, 1080p, … | Download quality preset                  |
+| naming_template     | String         | e.g. `"{title}-{id}.{ext}"`              |
+| output_dir          | PathBuf        | Where files land on disk                 |
+| include_livestreams | bool           | Whether to download livestream VODs      |
+| include_shorts      | bool           | Whether to download Shorts               |
+| storage_quota_bytes | i64            | Max disk usage for this profile          |
+| retention_days      | Option\<i32\>  | Auto-cleanup after N days (profile-wide) |
 
 ### Source
 
 Belongs to a profile. Represents a channel, playlist, or other feed to monitor.
 
-| Field           | Type             | Description                                |
-|-----------------|------------------|--------------------------------------------|
-| url             | String           | Channel or playlist URL                    |
-| source_type     | channel, playlist| Type of source                             |
-| custom_name     | Option\<String\> | User-defined label                         |
-| index_frequency | Duration         | How often to check for new videos          |
-| cutoff_date     | NaiveDate        | Ignore videos published before this date   |
-| retention_days  | Option\<i32\>    | Per-source retention override              |
+| Field           | Type              | Description                              |
+| --------------- | ----------------- | ---------------------------------------- |
+| url             | String            | Channel or playlist URL                  |
+| source_type     | channel, playlist | Type of source                           |
+| custom_name     | Option\<String\>  | User-defined label                       |
+| index_frequency | Duration          | How often to check for new videos        |
+| cutoff_date     | NaiveDate         | Ignore videos published before this date |
+| retention_days  | Option\<i32\>     | Per-source retention override            |
 
 ### Video (global, deduplicated)
 
 Keyed by `(platform, platform_video_id)`. A single video is downloaded once
 regardless of how many sources reference it.
 
-| Field             | Type                | Description                        |
-|-------------------|---------------------|------------------------------------|
-| platform_video_id | String (unique)     | e.g. YouTube video ID              |
-| platform          | youtube, vimeo, …   | Origin platform                    |
-| title             | String              | Video title                        |
-| description       | Option\<String\>    | Video description                  |
-| duration          | Option\<Duration\>  | Video length                       |
-| published_at      | Option\<DateTime\>  | Publication date                   |
-| thumbnail_url     | Option\<String\>    | Thumbnail                          |
-| status            | pending, downloading, completed, failed, skipped, cleaned | Lifecycle state |
-| attempts          | i32                 | Number of download attempts        |
-| next_retry        | Option\<DateTime\>  | When to retry after failure        |
-| last_error        | Option\<String\>    | Last failure reason                |
-| file_path         | Option\<String\>    | Path to downloaded file            |
-| file_size_bytes   | Option\<i64\>       | Size on disk                       |
-| downloaded_at     | Option\<DateTime\>  | When download completed            |
+| Field             | Type                                                      | Description                                     |
+| ----------------- | --------------------------------------------------------- | ----------------------------------------------- |
+| platform_video_id | String (unique)                                           | e.g. YouTube video ID                           |
+| platform          | String (TEXT)                                             | yt-dlp extractor name (e.g. "youtube", "vimeo") |
+| title             | String                                                    | Video title                                     |
+| description       | Option\<String\>                                          | Video description                               |
+| duration          | Option\<Duration\>                                        | Video length                                    |
+| published_at      | Option\<DateTime\>                                        | Publication date                                |
+| thumbnail_url     | Option\<String\>                                          | Thumbnail                                       |
+| status            | pending, downloading, completed, failed, skipped, cleaned | Lifecycle state                                 |
+| attempts          | i32                                                       | Number of download attempts                     |
+| next_retry        | Option\<DateTime\>                                        | When to retry after failure                     |
+| last_error        | Option\<String\>                                          | Last failure reason                             |
+| file_path         | Option\<String\>                                          | Path to downloaded file                         |
+| file_size_bytes   | Option\<i64\>                                             | Size on disk                                    |
+| downloaded_at     | Option\<DateTime\>                                        | When download completed                         |
 
 ### source_videos (join table)
 
@@ -129,13 +129,13 @@ Indexer       (short-lived, per video)
 
 ### Actor Responsibilities
 
-| Actor                | Lifecycle         | Purpose                                       |
-|----------------------|-------------------|-----------------------------------------------|
-| SchedulerActor       | singleton         | Fires indexing on schedule via tokio::time     |
-| SourceIndexerActor   | per source        | Calls yt-dlp --flat-playlist, filters by date  |
-| DownloadSupervisor   | singleton         | Manages concurrency (3 max), retry, backpressure |
-| DownloadWorker       | short-lived       | Shells out to yt-dlp, streams progress         |
-| CleanupActor         | singleton         | Enforces retention + storage quotas            |
+| Actor              | Lifecycle   | Purpose                                          |
+| ------------------ | ----------- | ------------------------------------------------ |
+| SchedulerActor     | singleton   | Fires indexing on schedule via tokio::time       |
+| SourceIndexerActor | per source  | Calls yt-dlp --flat-playlist, filters by date    |
+| DownloadSupervisor | singleton   | Manages concurrency (3 max), retry, backpressure |
+| DownloadWorker     | short-lived | Shells out to yt-dlp, streams progress           |
+| CleanupActor       | singleton   | Enforces retention + storage quotas              |
 
 ### Concurrency
 
@@ -155,6 +155,7 @@ Indexer       (short-lived, per video)
 ### Crash Recovery
 
 On startup:
+
 1. Reset any videos stuck in `downloading` → `pending` (don't increment attempts).
 2. Clean up orphaned `.part` files from yt-dlp.
 3. Hydrate all actors from Postgres state.
@@ -165,6 +166,7 @@ On startup:
 yt-dlp supports `--progress-template` for structured JSON progress on stdout.
 
 Two SSE endpoints:
+
 - `GET /api/downloads/progress` — JSON events (consumed by TUI and API clients)
 - `GET /web/downloads/progress` — HTML partial events (consumed by htmx)
 
@@ -182,12 +184,12 @@ forwarding parsed events to the render loop over `tokio::sync::mpsc`.
 
 ## What We Explicitly Do NOT Need
 
-| Thing           | Why                                                     |
-|-----------------|---------------------------------------------------------|
-| pgmq            | Actors + Postgres rows as pending work is sufficient    |
-| Redis           | No caching layer needed, actor state is the cache       |
-| External cron   | SchedulerActor with tokio::time::interval handles it    |
-| Message broker  | Single binary, actors communicate in-process            |
+| Thing          | Why                                                  |
+| -------------- | ---------------------------------------------------- |
+| pgmq           | Actors + Postgres rows as pending work is sufficient |
+| Redis          | No caching layer needed, actor state is the cache    |
+| External cron  | SchedulerActor with tokio::time::interval handles it |
+| Message broker | Single binary, actors communicate in-process         |
 
 ## Implementation Roadmap
 
@@ -195,9 +197,9 @@ forwarding parsed events to the render loop over `tokio::sync::mpsc`.
 
 - [ ] **Database Migrations**
   - [ ] Create `users` table
-  - [ ] Create `profiles` table with `platform` and `quality` enums
+  - [ ] Create `profiles` table with `quality` enum
   - [ ] Create `sources` table with `source_type` enum
-  - [ ] Create `videos` table with `video_status` enum
+  - [ ] Create `videos` table with `video_status` enum (platform as TEXT)
   - [ ] Create `source_videos` join table
 
 - [ ] **Configuration** (`hof-core/src/config.rs`)

@@ -3,13 +3,6 @@ use serde::{Deserialize, Serialize};
 use ulid::Ulid;
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::Type)]
-#[sqlx(type_name = "platform", rename_all = "lowercase")]
-pub enum Platform {
-    Youtube,
-    Vimeo,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::Type)]
 #[sqlx(type_name = "quality", rename_all = "lowercase")]
 pub enum Quality {
     Best,
@@ -28,12 +21,13 @@ pub enum Quality {
     AudioOnly,
 }
 
+/// A download configuration that can apply to sources from any platform.
+/// yt-dlp auto-detects the platform from each source URL.
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct Profile {
     pub id: Ulid,
     pub user_id: Ulid,
     pub name: String,
-    pub platform: Platform,
     pub quality: Quality,
     pub naming_template: String,
     pub output_dir: String,
