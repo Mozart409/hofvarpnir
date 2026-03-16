@@ -1,0 +1,28 @@
+[package]
+name = "hof-tui"
+description = "Terminal UI client for Hofvarpnir"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "hofvarpnir-tui"
+path = "src/main.rs"
+
+[dependencies]
+tokio.workspace = true
+reqwest.workspace = true
+ratatui.workspace = true
+crossterm.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+futures.workspace = true
+tokio-stream.workspace = true
+
+[lints]
+workspace = true

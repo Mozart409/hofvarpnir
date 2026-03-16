@@ -1,0 +1,24 @@
+[package]
+name = "hof-core"
+description = "Domain types, actors, database, and yt-dlp process wrapper"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+tokio.workspace = true
+kameo.workspace = true
+sqlx.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+ulid.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+futures.workspace = true
+tokio-stream.workspace = true
+
+[lints]
+workspace = true

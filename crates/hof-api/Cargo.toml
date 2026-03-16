@@ -1,0 +1,29 @@
+[package]
+name = "hof-api"
+description = "REST API with OpenAPI documentation and SSE"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+hof-core = { path = "../hof-core" }
+tokio.workspace = true
+axum.workspace = true
+axum-extra.workspace = true
+tower.workspace = true
+tower-http.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+utoipa.workspace = true
+utoipa-axum.workspace = true
+utoipa-scalar.workspace = true
+chrono.workspace = true
+ulid.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+futures.workspace = true
+tokio-stream.workspace = true
+
+[lints]
+workspace = true
