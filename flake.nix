@@ -53,6 +53,7 @@
           postgresql_17
           rust
           sqlx-cli
+          sqruff
           tailwindcss_4
           trivy
         ];

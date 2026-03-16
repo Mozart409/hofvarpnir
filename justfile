@@ -26,21 +26,21 @@ mig-add name: clear
 
 [working-directory: 'crates/hof-core']
 mig-run: clear up
-    sqlx mig run --database-url ${DATABASE_DIRECT_URL}
+    sqlx mig run --database-url ${DATABASE_URL}
 
 [working-directory: 'crates/hof-core']
 mig-revert: clear up
-    sqlx mig revert --database-url ${DATABASE_DIRECT_URL}
+    sqlx mig revert --database-url ${DATABASE_URL}
 
 [working-directory: 'crates/hof-core']
 mig-info: clear up
-    sqlx mig info --database-url ${DATABASE_DIRECT_URL}
+    sqlx mig info --database-url ${DATABASE_URL}
 
 [working-directory: 'crates/hof-core']
 db-reset: clear up
-    sqlx database drop --database-url ${DATABASE_DIRECT_URL} -y
-    sqlx database create --database-url ${DATABASE_DIRECT_URL}
-    sqlx mig run --database-url ${DATABASE_DIRECT_URL}
+    sqlx database drop --database-url ${DATABASE_URL} -y
+    sqlx database create --database-url ${DATABASE_URL}
+    sqlx mig run --database-url ${DATABASE_URL}
 
 # SQLx offline mode - run after schema changes
 [working-directory: 'crates/hof-core']
