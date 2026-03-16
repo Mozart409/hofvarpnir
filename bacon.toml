@@ -1,0 +1,116 @@
+#:schema https://dystroy.org/bacon/.bacon.schema.json
+
+# This is a configuration file for the bacon tool
+#
+# Complete help on configuration: https://dystroy.org/bacon/config/
+#
+# You may check the current default at
+#   https://github.com/Canop/bacon/blob/main/defaults/default-bacon.toml
+
+default_job = "check"
+env.CARGO_TERM_COLOR = "always"
+
+[jobs.check]
+command = ["cargo", "check", "--workspace"]
+need_stdout = false
+
+[jobs.check-all]
+command = ["cargo", "check", "--workspace", "--all-targets"]
+need_stdout = false
+
+# Run clippy on the default target
+[jobs.clippy]
+command = ["cargo", "clippy", "--workspace"]
+need_stdout = false
+
+# Run clippy on all targets across the workspace
+[jobs.clippy-all]
+command = ["cargo", "clippy", "--workspace", "--all-targets"]
+need_stdout = false
+
+# Run clippy in pedantic mode across the workspace
+[jobs.pedantic]
+command = [
+	"cargo", "clippy",
+	"--workspace", "--all-targets",
+	"--",
+	"-W", "clippy::pedantic",
+]
+need_stdout = false
+
+# This job lets you run
+# - all tests: bacon test
+# - a specific test: bacon test -- config::test_default_files
+# - the tests of a package: bacon test -- -- -p config
+[jobs.test]
+command = ["cargo", "test", "--workspace"]
+need_stdout = true
+
+[jobs.nextest]
+command = [
+    "cargo", "nextest", "run",
+    "--workspace",
+    "--hide-progress-bar", "--failure-output", "final"
+]
+need_stdout = true
+analyzer = "nextest"
+
+[jobs.doc]
+command = ["cargo", "doc", "--workspace", "--no-deps"]
+need_stdout = false
+
+# If the doc compiles, then it opens in your browser and bacon switches
+# to the previous job
+[jobs.doc-open]
+command = ["cargo", "doc", "--workspace", "--no-deps", "--open"]
+need_stdout = false
+on_success = "back" # so that we don't open the browser at each change
+
+# Run the web server binary
+[jobs.run]
+command = [
+    "cargo", "run",
+    "--bin", "hofvarpnir",
+]
+need_stdout = true
+allow_warnings = true
+background = true
+
+# Run the web server with auto-restart on change
+[jobs.serve]
+command = [
+    "cargo", "run",
+    "--bin", "hofvarpnir",
+]
+need_stdout = true
+allow_warnings = true
+background = false
+on_change_strategy = "kill_then_restart"
+
+# Run the TUI binary
+[jobs.tui]
+command = [
+    "cargo", "run",
+    "--bin", "hofvarpnir-tui",
+]
+need_stdout = true
+allow_warnings = true
+background = true
+
+# This parameterized job runs the example of your choice, as soon
+# as the code compiles.
+# Call it as
+#    bacon ex -- my-example
+[jobs.ex]
+command = ["cargo", "run", "--example"]
+need_stdout = true
+allow_warnings = true
+
+# You may define here keybindings that would be specific to
+# a project, for example a shortcut to launch a specific job.
+# Shortcuts to internal functions (scrolling, toggling, etc.)
+# should go in your personal global prefs.toml file instead.
+[keybindings]
+c = "job:clippy-all"
+p = "job:pedantic"
+s = "job:serve"

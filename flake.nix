@@ -55,7 +55,6 @@
           sqlx-cli
           tailwindcss_4
           trivy
-          typos
         ];
         shellHook = ''
           lefthook install
