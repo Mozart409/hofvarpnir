@@ -223,37 +223,37 @@ forwarding parsed events to the render loop over `tokio::sync::mpsc`.
 
 ### Phase 3: Actor System
 
-- [ ] **DownloadWorker** (`hof-core/src/actors/download_worker.rs`)
-  - [ ] Kameo actor implementation
-  - [ ] Spawn yt-dlp process, stream progress
-  - [ ] Report completion/failure to supervisor
+- [x] **DownloadWorker** (`hof-core/src/actors/download_worker.rs`)
+  - [x] Kameo actor implementation
+  - [x] Spawn yt-dlp process, stream progress
+  - [x] Report completion/failure to supervisor
 
-- [ ] **DownloadSupervisor** (`hof-core/src/actors/download_supervisor.rs`)
-  - [ ] Semaphore-based concurrency (max 3)
-  - [ ] Rate limiter (3-5 second spacing)
-  - [ ] Exponential backoff on failure
-  - [ ] 429 detection and global backoff
+- [x] **DownloadSupervisor** (`hof-core/src/actors/download_supervisor.rs`)
+  - [x] Semaphore-based concurrency (max 3)
+  - [x] Rate limiter (3-5 second spacing)
+  - [x] Exponential backoff on failure
+  - [x] 429 detection and global backoff
 
-- [ ] **SourceIndexerActor** (`hof-core/src/actors/source_indexer.rs`)
-  - [ ] Per-source actor
-  - [ ] Call yt-dlp `--flat-playlist`
-  - [ ] Filter by cutoff_date only index after cutoff date and not more, livestreams, shorts
-  - [ ] Upsert videos to database
+- [x] **SourceIndexerActor** (`hof-core/src/actors/source_indexer.rs`)
+  - [x] Per-source actor
+  - [x] Call yt-dlp `--flat-playlist`
+  - [x] Filter by cutoff_date only index after cutoff date and not more, livestreams, shorts
+  - [x] Upsert videos to database
 
-- [ ] **SchedulerActor** (`hof-core/src/actors/scheduler.rs`)
-  - [ ] Singleton with `tokio::time::interval`
-  - [ ] Track per-source index frequency
-  - [ ] Spawn/message SourceIndexerActors
+- [x] **SchedulerActor** (`hof-core/src/actors/scheduler.rs`)
+  - [x] Singleton with `tokio::time::interval`
+  - [x] Track per-source index frequency
+  - [x] Spawn/message SourceIndexerActors
 
-- [ ] **CleanupActor** (`hof-core/src/actors/cleanup.rs`)
-  - [ ] Retention policy enforcement
-  - [ ] Storage quota enforcement
-  - [ ] Delete files and update database
+- [x] **CleanupActor** (`hof-core/src/actors/cleanup.rs`)
+  - [x] Retention policy enforcement
+  - [x] Storage quota enforcement
+  - [x] Delete files and update database
 
-- [ ] **Crash Recovery** (startup logic)
-  - [ ] Reset `downloading` → `pending`
-  - [ ] Clean up `.part` files
-  - [ ] Hydrate actors from Postgres
+- [x] **Crash Recovery** (`hof-core/src/startup.rs`)
+  - [x] Reset `downloading` → `pending`
+  - [x] Clean up `.part` files
+  - [x] Hydrate actors from Postgres
 
 ### Phase 4: REST api/v1
 

@@ -1,5 +1,19 @@
+//! Core library for Hofvarpnir video archival system.
+//!
+//! This crate provides:
+//! - Domain types for users, profiles, sources, and videos
+//! - Database operations via `SQLx`
+//! - yt-dlp wrapper for downloading and metadata extraction
+//! - Actor system for managing concurrent downloads and scheduling
+//! - Startup and crash recovery logic
+
 pub mod actors;
 pub mod config;
 pub mod db;
 pub mod domain;
+pub mod startup;
 pub mod ytdlp;
+
+// Re-export commonly used types
+pub use config::Config;
+pub use startup::{ActorSystem, initialize, shutdown};
