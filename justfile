@@ -70,7 +70,7 @@ dev: clear up mig-run
 
 # Testing
 test: clear up mig-run
-    cargo test --all-features
+    cargo test --all-features -- --include-ignored
 
 # CI simulation
 ci: clear
