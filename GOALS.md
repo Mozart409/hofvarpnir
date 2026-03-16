@@ -214,12 +214,12 @@ forwarding parsed events to the render loop over `tokio::sync::mpsc`.
 
 ### Phase 2: yt-dlp Integration
 
-- [ ] **yt-dlp Wrapper** (`hof-core/src/ytdlp.rs`)
-  - [ ] Process spawning with `tokio::process::Command`
-  - [ ] `--progress-template` for structured JSON progress
-  - [ ] Progress JSON parsing into `DownloadProgress`
-  - [ ] `--flat-playlist` for source indexing
-  - [ ] `kill_on_drop(true)` for orphan prevention
+- [x] **yt-dlp Wrapper** (`hof-core/src/ytdlp.rs`)
+  - [x] Video metadata fetching via yt-dlp crate
+  - [x] Playlist/channel indexing for source discovery
+  - [x] Video downloading with progress callbacks
+  - [x] Quality selection based on profile settings
+  - [x] Platform detection from URLs
 
 ### Phase 3: Actor System
 
