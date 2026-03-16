@@ -257,29 +257,36 @@ forwarding parsed events to the render loop over `tokio::sync::mpsc`.
 
 ### Phase 4: REST api/v1
 
-- [ ] **Profile Endpoints** (`hof-api/src/routes/profiles.rs`)
-  - [ ] `GET /api/v1/profiles` — list all
-  - [ ] `POST /api/v1/profiles` — create
-  - [ ] `GET /api/v1/profiles/:id` — get one
-  - [ ] `PUT /api/v1/profiles/:id` — update
-  - [ ] `DELETE /api/v1/profiles/:id` — delete
+- [x] **Profile Endpoints** (`hof-api/src/routes/profiles.rs`)
+  - [x] `GET /api/v1/profiles` — list all (filterable by `user_id`)
+  - [x] `POST /api/v1/profiles` — create
+  - [x] `GET /api/v1/profiles/:id` — get one
+  - [x] `PUT /api/v1/profiles/:id` — update
+  - [x] `DELETE /api/v1/profiles/:id` — delete
 
-- [ ] **Source Endpoints** (`hof-api/src/routes/sources.rs`)
-  - [ ] `GET /api/v1/sources` — list all (filterable by profile)
-  - [ ] `POST /api/v1/sources` — create
-  - [ ] `GET /api/v1/sources/:id` — get one
-  - [ ] `PUT /api/v1/sources/:id` — update
-  - [ ] `DELETE /api/v1/sources/:id` — delete
-  - [ ] `POST /api/v1/sources/:id/index` — trigger manual index
+- [x] **Source Endpoints** (`hof-api/src/routes/sources.rs`)
+  - [x] `GET /api/v1/sources` — list all (filterable by profile)
+  - [x] `POST /api/v1/sources` — create
+  - [x] `GET /api/v1/sources/:id` — get one
+  - [x] `PUT /api/v1/sources/:id` — update
+  - [x] `DELETE /api/v1/sources/:id` — delete
+  - [x] `POST /api/v1/sources/:id/index` — trigger manual index
 
-- [ ] **Download Endpoints** (`hof-api/src/routes/downloads.rs`)
-  - [ ] `GET /api/v1/downloads` — list videos with status
-  - [ ] `GET /api/v1/downloads/progress` — SSE stream (JSON)
-  - [ ] `POST /api/v1/downloads/:id/retry` — manual retry
+- [x] **Download Endpoints** (`hof-api/src/routes/downloads.rs`)
+  - [x] `GET /api/v1/downloads` — list videos with status (filterable by `status`, `source_id`)
+  - [x] `GET /api/v1/downloads/progress` — SSE stream (JSON)
+  - [x] `POST /api/v1/downloads/:id/retry` — manual retry
 
-- [ ] **Openapi/v1 + Scalar**
-  - [ ] Add utoipa annotations to all endpoints
-  - [ ] Mount Scalar UI at `/docs`
+- [x] **OpenAPI + Scalar**
+  - [x] Add utoipa annotations to all endpoints
+  - [x] Mount Scalar UI at `/docs`
+
+- [x] **App Initialization** (`hof-web/src/main.rs`)
+  - [x] Initialize database pool and run migrations
+  - [x] Initialize actor system with crash recovery
+  - [x] Bridge mpsc progress channel to broadcast for SSE
+  - [x] Create `AppState` with pool, actor refs, and progress channel
+  - [x] Graceful shutdown handling
 
 ### Phase 5: Web UI
 
