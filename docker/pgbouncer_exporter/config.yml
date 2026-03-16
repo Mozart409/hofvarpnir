@@ -1,0 +1,8 @@
+exporter_host: 0.0.0.0
+exporter_port: 9127
+
+pgbouncers:
+  - dsn: postgresql://postgres:postgres@pgbouncer:6432/pgbouncer
+    connect_timeout: 5
+    exclude_databases:
+      - pgbouncer

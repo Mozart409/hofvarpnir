@@ -1,0 +1,88 @@
+services:
+  postgres:
+    container_name: postgres
+    build:
+      context: ..
+      dockerfile: docker/postgres.Dockerfile
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: hofvarpnir_dev
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - hofvarpnir
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  pgbouncer:
+    container_name: pgbouncer
+    image: pgbouncer/pgbouncer:latest
+    environment:
+      DATABASES_HOST: postgres
+      DATABASES_PORT: 5432
+      DATABASES_DATABASE: hofvarpnir_dev
+      POOL_MODE: transaction
+      MAX_CLIENT_CONN: 100
+      DEFAULT_POOL_SIZE: 20
+      AUTH_TYPE: md5
+    ports:
+      - "6432:6432"
+    volumes:
+      - ./pgbouncer/userlist.txt:/etc/pgbouncer/userlist.txt:ro
+    networks:
+      - hofvarpnir
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "sh", "-c", "nc -z localhost 6432 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  postgres_exporter:
+    container_name: postgres_exporter
+    image: prometheuscommunity/postgres-exporter:latest
+    environment:
+      DATA_SOURCE_NAME: postgresql://postgres:postgres@postgres:5432/hofvarpnir_dev?sslmode=disable
+      PG_EXPORTER_EXTEND_QUERY_PATH: /etc/postgres_exporter/queries.yaml
+    ports:
+      - "9187:9187"
+    volumes:
+      - ./postgres_exporter/queries.yaml:/etc/postgres_exporter/queries.yaml:ro
+    networks:
+      - hofvarpnir
+    depends_on:
+      - postgres
+    command:
+      - '--extend.query-path=/etc/postgres_exporter/queries.yaml'
+
+  pgbouncer_exporter:
+    container_name: pgbouncer_exporter
+    image: prometheuscommunity/pgbouncer-exporter:latest
+    environment:
+      PGBOUNCER_EXPORTER_CONNECTION_STRING: postgresql://postgres:postgres@pgbouncer:6432/pgbouncer?sslmode=disable
+    ports:
+      - "9127:9127"
+    networks:
+      - hofvarpnir
+    depends_on:
+      - pgbouncer
+    command:
+      - '--pgBouncer.connectionString=postgresql://postgres:postgres@pgbouncer:6432/pgbouncer?sslmode=disable'
+
+volumes:
+  postgres_data:
+    driver: local
+
+networks:
+  hofvarpnir:
+    driver: bridge
