@@ -195,17 +195,17 @@ forwarding parsed events to the render loop over `tokio::sync::mpsc`.
 
 ### Phase 1: Foundation
 
-- [ ] **Database Migrations**
+- [x] **Database Migrations**
   - [x] Create `users` table
   - [x] Create `profiles` table with `quality` enum
   - [x] Create `sources` table with `source_type` enum
   - [x] Create `videos` table with `video_status` enum (platform as TEXT)
-  - [ ] Create `source_videos` join table
+  - [x] Create `source_videos` join table
 
-- [ ] **Configuration** (`hof-core/src/config.rs`)
-  - [ ] Load from environment variables
-  - [ ] Database URL, server port, yt-dlp path
-  - [ ] Download concurrency, timeouts, retry settings
+- [x] **Configuration** (`hof-core/src/config.rs`)
+  - [x] Load from environment variables
+  - [x] Database URL, server port, yt-dlp path
+  - [x] Download concurrency, timeouts, retry settings
 
 - [ ] **Database Layer** (`hof-core/src/db.rs`)
   - [ ] Connection pool setup with SQLx

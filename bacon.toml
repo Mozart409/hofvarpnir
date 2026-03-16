@@ -114,4 +114,4 @@ allow_warnings = true
 [keybindings]
 c = "job:clippy-all"
 p = "job:pedantic"
-s = "job:serve"
+r = "job:serve"

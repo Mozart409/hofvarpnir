@@ -825,6 +825,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "color-eyre",
+ "dotenvy",
  "futures",
  "kameo",
  "serde",

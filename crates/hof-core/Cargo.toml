@@ -19,6 +19,7 @@ color-eyre.workspace = true
 tracing.workspace = true
 futures.workspace = true
 tokio-stream.workspace = true
+dotenvy.workspace = true
 
 [lints]
 workspace = true

@@ -49,6 +49,9 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "str
 ratatui = "0.29"
 crossterm = "0.28"
 
+# Configuration
+dotenvy = "0.15"
+
 # Common utilities
 chrono = { version = "0.4", features = ["serde"] }
 ulid = { version = "1", features = ["serde"] }
