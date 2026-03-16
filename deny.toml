@@ -96,8 +96,11 @@ allow = [
     "Unicode-3.0",
     "CDLA-Permissive-2.0",
     "ISC",
-       "Zlib",           
-    "BSD-3-Clause",   
+    "Zlib",
+    "BSD-3-Clause",
+    # yt-dlp crate and its dependencies
+    "GPL-3.0-only",
+    "OpenSSL",
 ]
 # The confidence threshold for detecting a license from license text.
 # The higher the value, the more closely the license text must be to the

@@ -14,7 +14,7 @@ platforms) via yt-dlp. Provides both a web UI and a TUI for management.
 - **Styling**: Tailwind CSS 4
 - **Database**: PostgreSQL 17 (via SQLx)
 - **IDs**: ULID (lexicographically sortable, stored as `TEXT` in Postgres)
-- **API docs**: OpenAPI (utoipa) + Scalar
+- **api/v1 docs**: OpenAPI (utoipa) + Scalar
 - **TUI**: Ratatui
 
 ## Crate Structure
@@ -30,7 +30,7 @@ crates/
 - `hof-core` has no dependency on any HTTP crate.
 - `hof-api` depends on `hof-core`.
 - `hof-web` depends on `hof-core` and `hof-api`.
-- `hof-tui` depends only on `reqwest` — it talks to the API, not to core directly.
+- `hof-tui` depends only on `reqwest` — it talks to the api/v1, not to core directly.
 - `hof-api` and `hof-web` compile into a single server binary.
 - `hof-tui` compiles into a separate standalone binary.
 
@@ -167,12 +167,12 @@ yt-dlp supports `--progress-template` for structured JSON progress on stdout.
 
 Two SSE endpoints:
 
-- `GET /api/downloads/progress` — JSON events (consumed by TUI and API clients)
+- `GET /api/v1/downloads/progress` — JSON events (consumed by TUI and API clients)
 - `GET /web/downloads/progress` — HTML partial events (consumed by htmx)
 
 Both read from the same actor state. The web endpoint wraps JSON in maud templates.
 
-The TUI consumes the API SSE endpoint via reqwest's streaming response,
+The TUI consumes the api/v1 SSE endpoint via reqwest's streaming response,
 forwarding parsed events to the render loop over `tokio::sync::mpsc`.
 
 ## Persistence Strategy
@@ -237,7 +237,7 @@ forwarding parsed events to the render loop over `tokio::sync::mpsc`.
 - [ ] **SourceIndexerActor** (`hof-core/src/actors/source_indexer.rs`)
   - [ ] Per-source actor
   - [ ] Call yt-dlp `--flat-playlist`
-  - [ ] Filter by cutoff_date, livestreams, shorts
+  - [ ] Filter by cutoff_date only index after cutoff date and not more, livestreams, shorts
   - [ ] Upsert videos to database
 
 - [ ] **SchedulerActor** (`hof-core/src/actors/scheduler.rs`)
@@ -255,29 +255,29 @@ forwarding parsed events to the render loop over `tokio::sync::mpsc`.
   - [ ] Clean up `.part` files
   - [ ] Hydrate actors from Postgres
 
-### Phase 4: REST API
+### Phase 4: REST api/v1
 
 - [ ] **Profile Endpoints** (`hof-api/src/routes/profiles.rs`)
-  - [ ] `GET /api/profiles` — list all
-  - [ ] `POST /api/profiles` — create
-  - [ ] `GET /api/profiles/:id` — get one
-  - [ ] `PUT /api/profiles/:id` — update
-  - [ ] `DELETE /api/profiles/:id` — delete
+  - [ ] `GET /api/v1/profiles` — list all
+  - [ ] `POST /api/v1/profiles` — create
+  - [ ] `GET /api/v1/profiles/:id` — get one
+  - [ ] `PUT /api/v1/profiles/:id` — update
+  - [ ] `DELETE /api/v1/profiles/:id` — delete
 
 - [ ] **Source Endpoints** (`hof-api/src/routes/sources.rs`)
-  - [ ] `GET /api/sources` — list all (filterable by profile)
-  - [ ] `POST /api/sources` — create
-  - [ ] `GET /api/sources/:id` — get one
-  - [ ] `PUT /api/sources/:id` — update
-  - [ ] `DELETE /api/sources/:id` — delete
-  - [ ] `POST /api/sources/:id/index` — trigger manual index
+  - [ ] `GET /api/v1/sources` — list all (filterable by profile)
+  - [ ] `POST /api/v1/sources` — create
+  - [ ] `GET /api/v1/sources/:id` — get one
+  - [ ] `PUT /api/v1/sources/:id` — update
+  - [ ] `DELETE /api/v1/sources/:id` — delete
+  - [ ] `POST /api/v1/sources/:id/index` — trigger manual index
 
 - [ ] **Download Endpoints** (`hof-api/src/routes/downloads.rs`)
-  - [ ] `GET /api/downloads` — list videos with status
-  - [ ] `GET /api/downloads/progress` — SSE stream (JSON)
-  - [ ] `POST /api/downloads/:id/retry` — manual retry
+  - [ ] `GET /api/v1/downloads` — list videos with status
+  - [ ] `GET /api/v1/downloads/progress` — SSE stream (JSON)
+  - [ ] `POST /api/v1/downloads/:id/retry` — manual retry
 
-- [ ] **OpenAPI + Scalar**
+- [ ] **Openapi/v1 + Scalar**
   - [ ] Add utoipa annotations to all endpoints
   - [ ] Mount Scalar UI at `/docs`
 
@@ -301,7 +301,7 @@ forwarding parsed events to the render loop over `tokio::sync::mpsc`.
 
 - [ ] **Ratatui App** (`hof-tui/src/main.rs`)
   - [ ] App structure with event loop
-  - [ ] reqwest client for API
+  - [ ] reqwest client for api/v1
   - [ ] SSE stream consumption via `tokio::sync::mpsc`
 
 - [ ] **TUI Views**

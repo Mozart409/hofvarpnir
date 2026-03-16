@@ -52,6 +52,9 @@ crossterm = "0.28"
 # Configuration
 dotenvy = "0.15"
 
+# yt-dlp
+yt-dlp = "2.7"
+
 # Common utilities
 chrono = { version = "0.4", features = ["serde"] }
 ulid = { version = "1", features = ["serde"] }
