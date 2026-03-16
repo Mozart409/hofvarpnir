@@ -11,6 +11,10 @@ pre-commit:
       glob: "*.rs"
       run: cargo clippy --all-targets -- -D warnings
       stage_fixed: true
+    - name: sqlx-prepare
+      glob: "crates/hof-core/migrations/*.sql"
+      run: just prepare
+      stage_fixed: true
     - name: actionlint
       glob: ".github/workflows/*.{yml,yaml}"
       run: actionlint

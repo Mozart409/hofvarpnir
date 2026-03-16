@@ -86,6 +86,7 @@ need_stdout = true
 allow_warnings = true
 background = false
 on_change_strategy = "kill_then_restart"
+env.RUST_LOG = "info"
 
 # Run the TUI binary
 [jobs.tui]
