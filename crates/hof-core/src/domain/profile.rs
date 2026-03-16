@@ -13,6 +13,12 @@ pub enum Platform {
 #[sqlx(type_name = "quality", rename_all = "lowercase")]
 pub enum Quality {
     Best,
+    #[sqlx(rename = "4320p")]
+    Q4320p,
+    #[sqlx(rename = "2160p")]
+    Q2160p,
+    #[sqlx(rename = "1440p")]
+    Q1440p,
     #[sqlx(rename = "1080p")]
     Q1080p,
     #[sqlx(rename = "720p")]
