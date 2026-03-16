@@ -21,33 +21,6 @@ services:
       retries: 5
       start_period: 30s
 
-  pgbouncer:
-    container_name: pgbouncer
-    image: pgbouncer/pgbouncer:latest
-    environment:
-      DATABASES_HOST: postgres
-      DATABASES_PORT: 5432
-      DATABASES_DATABASE: hofvarpnir_dev
-      POOL_MODE: transaction
-      MAX_CLIENT_CONN: 100
-      DEFAULT_POOL_SIZE: 20
-      AUTH_TYPE: md5
-    ports:
-      - "6432:6432"
-    volumes:
-      - ./pgbouncer/userlist.txt:/etc/pgbouncer/userlist.txt:ro
-    networks:
-      - hofvarpnir
-    depends_on:
-      postgres:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "sh", "-c", "nc -z localhost 6432 || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-      start_period: 10s
-
   postgres_exporter:
     container_name: postgres_exporter
     image: prometheuscommunity/postgres-exporter:latest
@@ -64,20 +37,6 @@ services:
       - postgres
     command:
       - '--extend.query-path=/etc/postgres_exporter/queries.yaml'
-
-  pgbouncer_exporter:
-    container_name: pgbouncer_exporter
-    image: prometheuscommunity/pgbouncer-exporter:latest
-    environment:
-      PGBOUNCER_EXPORTER_CONNECTION_STRING: postgresql://postgres:postgres@pgbouncer:6432/pgbouncer?sslmode=disable
-    ports:
-      - "9127:9127"
-    networks:
-      - hofvarpnir
-    depends_on:
-      - pgbouncer
-    command:
-      - '--pgBouncer.connectionString=postgresql://postgres:postgres@pgbouncer:6432/pgbouncer?sslmode=disable'
 
 volumes:
   postgres_data:
