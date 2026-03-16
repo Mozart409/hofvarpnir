@@ -188,3 +188,122 @@ forwarding parsed events to the render loop over `tokio::sync::mpsc`.
 | Redis           | No caching layer needed, actor state is the cache       |
 | External cron   | SchedulerActor with tokio::time::interval handles it    |
 | Message broker  | Single binary, actors communicate in-process            |
+
+## Implementation Roadmap
+
+### Phase 1: Foundation
+
+- [ ] **Database Migrations**
+  - [ ] Create `users` table
+  - [ ] Create `profiles` table with `platform` and `quality` enums
+  - [ ] Create `sources` table with `source_type` enum
+  - [ ] Create `videos` table with `video_status` enum
+  - [ ] Create `source_videos` join table
+
+- [ ] **Configuration** (`hof-core/src/config.rs`)
+  - [ ] Load from environment variables
+  - [ ] Database URL, server port, yt-dlp path
+  - [ ] Download concurrency, timeouts, retry settings
+
+- [ ] **Database Layer** (`hof-core/src/db.rs`)
+  - [ ] Connection pool setup with SQLx
+  - [ ] CRUD operations for User, Profile, Source, Video
+  - [ ] Join table operations for source_videos
+
+### Phase 2: yt-dlp Integration
+
+- [ ] **yt-dlp Wrapper** (`hof-core/src/ytdlp.rs`)
+  - [ ] Process spawning with `tokio::process::Command`
+  - [ ] `--progress-template` for structured JSON progress
+  - [ ] Progress JSON parsing into `DownloadProgress`
+  - [ ] `--flat-playlist` for source indexing
+  - [ ] `kill_on_drop(true)` for orphan prevention
+
+### Phase 3: Actor System
+
+- [ ] **DownloadWorker** (`hof-core/src/actors/download_worker.rs`)
+  - [ ] Kameo actor implementation
+  - [ ] Spawn yt-dlp process, stream progress
+  - [ ] Report completion/failure to supervisor
+
+- [ ] **DownloadSupervisor** (`hof-core/src/actors/download_supervisor.rs`)
+  - [ ] Semaphore-based concurrency (max 3)
+  - [ ] Rate limiter (3-5 second spacing)
+  - [ ] Exponential backoff on failure
+  - [ ] 429 detection and global backoff
+
+- [ ] **SourceIndexerActor** (`hof-core/src/actors/source_indexer.rs`)
+  - [ ] Per-source actor
+  - [ ] Call yt-dlp `--flat-playlist`
+  - [ ] Filter by cutoff_date, livestreams, shorts
+  - [ ] Upsert videos to database
+
+- [ ] **SchedulerActor** (`hof-core/src/actors/scheduler.rs`)
+  - [ ] Singleton with `tokio::time::interval`
+  - [ ] Track per-source index frequency
+  - [ ] Spawn/message SourceIndexerActors
+
+- [ ] **CleanupActor** (`hof-core/src/actors/cleanup.rs`)
+  - [ ] Retention policy enforcement
+  - [ ] Storage quota enforcement
+  - [ ] Delete files and update database
+
+- [ ] **Crash Recovery** (startup logic)
+  - [ ] Reset `downloading` → `pending`
+  - [ ] Clean up `.part` files
+  - [ ] Hydrate actors from Postgres
+
+### Phase 4: REST API
+
+- [ ] **Profile Endpoints** (`hof-api/src/routes/profiles.rs`)
+  - [ ] `GET /api/profiles` — list all
+  - [ ] `POST /api/profiles` — create
+  - [ ] `GET /api/profiles/:id` — get one
+  - [ ] `PUT /api/profiles/:id` — update
+  - [ ] `DELETE /api/profiles/:id` — delete
+
+- [ ] **Source Endpoints** (`hof-api/src/routes/sources.rs`)
+  - [ ] `GET /api/sources` — list all (filterable by profile)
+  - [ ] `POST /api/sources` — create
+  - [ ] `GET /api/sources/:id` — get one
+  - [ ] `PUT /api/sources/:id` — update
+  - [ ] `DELETE /api/sources/:id` — delete
+  - [ ] `POST /api/sources/:id/index` — trigger manual index
+
+- [ ] **Download Endpoints** (`hof-api/src/routes/downloads.rs`)
+  - [ ] `GET /api/downloads` — list videos with status
+  - [ ] `GET /api/downloads/progress` — SSE stream (JSON)
+  - [ ] `POST /api/downloads/:id/retry` — manual retry
+
+- [ ] **OpenAPI + Scalar**
+  - [ ] Add utoipa annotations to all endpoints
+  - [ ] Mount Scalar UI at `/docs`
+
+### Phase 5: Web UI
+
+- [ ] **Layout & Components** (`hof-web/src/pages.rs`)
+  - [ ] Base layout with Tailwind CSS 4
+  - [ ] Navigation component
+  - [ ] Form components
+
+- [ ] **Pages**
+  - [ ] Dashboard (overview of downloads)
+  - [ ] Profiles list and edit form
+  - [ ] Sources list and edit form
+  - [ ] Downloads list with live progress
+
+- [ ] **SSE for htmx** (`GET /web/downloads/progress`)
+  - [ ] HTML partial events for live updates
+
+### Phase 6: TUI
+
+- [ ] **Ratatui App** (`hof-tui/src/main.rs`)
+  - [ ] App structure with event loop
+  - [ ] reqwest client for API
+  - [ ] SSE stream consumption via `tokio::sync::mpsc`
+
+- [ ] **TUI Views**
+  - [ ] Downloads list with progress bars
+  - [ ] Source management
+  - [ ] Profile management
+  - [ ] Keyboard navigation
