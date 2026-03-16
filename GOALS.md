@@ -13,6 +13,7 @@ platforms) via yt-dlp. Provides both a web UI and a TUI for management.
 - **Templating**: Maud + htmx
 - **Styling**: Tailwind CSS 4
 - **Database**: PostgreSQL 17 (via SQLx) + PgBouncer
+- **IDs**: ULID (lexicographically sortable, stored as `TEXT` in Postgres)
 - **API docs**: OpenAPI (utoipa) + Scalar
 - **TUI**: Ratatui
 
