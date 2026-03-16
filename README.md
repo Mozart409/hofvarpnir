@@ -78,6 +78,12 @@ Configuration is loaded from environment variables:
 
 See [GOALS.md](./GOALS.md) for detailed architecture and implementation roadmap.
 
+## CI/CD
+
+This project uses GitHub Actions for continuous integration and deployment:
+- `.github/workflows/ci.yml` - Runs on pull requests and pushes to main branch
+- `.github/workflows/release.yml` - Creates GitHub releases when pushing version tags (v*.*.*)
+
 ## License
 
 MIT

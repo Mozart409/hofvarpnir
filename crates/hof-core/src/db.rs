@@ -1312,7 +1312,7 @@ mod tests {
     use super::*;
 
     // Integration tests require a running database.
-    // Run with: DATABASE_URL=postgres://... cargo test --features test-db
+    // Run with: DATABASE_URL=postgres://... cargo test -p hof-core --all-features -- --include-ignored
 
     #[tokio::test]
     #[ignore = "requires database"]

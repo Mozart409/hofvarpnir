@@ -21,6 +21,7 @@ futures.workspace = true
 tokio-stream.workspace = true
 dotenvy.workspace = true
 yt-dlp.workspace = true
+utoipa.workspace = true
 
 [dev-dependencies]
 tempfile = "3"

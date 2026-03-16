@@ -1,8 +1,9 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use ulid::Ulid;
+use utoipa::ToSchema;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, sqlx::Type, ToSchema)]
 #[sqlx(type_name = "video_status", rename_all = "snake_case")]
 pub enum VideoStatus {
     Pending,

@@ -34,7 +34,7 @@ pre-push:
   parallel: true
   jobs:
     - name: test
-      run: cargo test
+      run: just test
     - name: clippy-pedantic
       glob: "*.rs"
       run: cargo clippy -- -W clippy::pedantic
