@@ -40,5 +40,5 @@ pre-push:
       run: cargo clippy -- -W clippy::pedantic
     - name: sqruff
       glob: "**/*.sql"
-      run: sqruff lint {staged_files}
+      run: sqruff lint
       stage_fixed: true
