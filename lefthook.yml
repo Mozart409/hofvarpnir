@@ -1,0 +1,35 @@
+# Lefthook configuration for Rust project
+# https://lefthook.dev/configuration/
+pre-commit:
+  parallel: true
+  jobs:
+    - name: format
+      glob: "*.rs"
+      run: cargo fmt
+      stage_fixed: true
+    - name: clippy
+      glob: "*.rs"
+      run: cargo clippy --all-targets -- -D warnings
+      stage_fixed: true
+    - name: typos
+      run: typos
+      stage_fixed: true
+    - name: actionlint
+      glob: ".github/workflows/*.{yml,yaml}"
+      run: actionlint
+      stage_fixed: true
+    - name: keep-sorted
+      glob: "flake.nix"
+      run: keep-sorted flake.nix
+      stage_fixed: true
+    - name: cargo-deny
+      glob: "Cargo.{toml,lock}"
+      run: cargo deny check
+pre-push:
+  parallel: true
+  jobs:
+    - name: test
+      run: cargo test
+    - name: clippy-pedantic
+      glob: "*.rs"
+      run: cargo clippy -- -W clippy::pedantic
