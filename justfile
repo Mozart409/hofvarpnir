@@ -22,7 +22,7 @@ logs service="":
 # Database commands
 [working-directory: 'crates/hof-core']
 mig-add name: clear
-    sqlx mig add -r migrations {{name}}
+    sqlx mig add -r {{name}}
 
 [working-directory: 'crates/hof-core']
 mig-run: clear up
