@@ -13,7 +13,7 @@ pre-commit:
       stage_fixed: true
     - name: sqruff
       glob: "**/*.sql"
-      run: sqruff lint {staged_files}
+      run: sqruff fix {staged_files}
       stage_fixed: true
     - name: sqlx-prepare
       glob: "crates/hof-core/migrations/*.sql"
@@ -38,3 +38,7 @@ pre-push:
     - name: clippy-pedantic
       glob: "*.rs"
       run: cargo clippy -- -W clippy::pedantic
+    - name: sqruff
+      glob: "**/*.sql"
+      run: sqruff lint {staged_files}
+      stage_fixed: true

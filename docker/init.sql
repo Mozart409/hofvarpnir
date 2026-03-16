@@ -19,4 +19,3 @@ DO $$
 BEGIN
     RAISE NOTICE 'PostgreSQL extensions have been enabled successfully';
 END $$;
-
