@@ -1,0 +1,83 @@
+# Hofvarpnir
+
+A self-hosted video archival system that downloads videos from YouTube (and other platforms) via yt-dlp.
+
+## Features
+
+- **Multi-platform support**: YouTube and other platforms via yt-dlp auto-detection
+- **Web UI**: Modern web interface built with htmx and Tailwind CSS
+- **TUI**: Terminal-based management interface
+- **Automatic scheduling**: Per-source indexing frequency
+- **Quality presets**: Configurable download quality
+- **Retention policies**: Automatic cleanup with per-source and per-profile settings
+- **Deduplication**: Videos downloaded once regardless of multiple source references
+- **Real-time progress**: SSE-based live download progress in both web and TUI
+
+## Tech Stack
+
+- **Runtime**: Tokio
+- **HTTP**: Axum
+- **Actors**: Kameo
+- **Templating**: Maud + htmx
+- **Styling**: Tailwind CSS 4
+- **Database**: PostgreSQL 17 (via SQLx)
+- **API docs**: OpenAPI (utoipa) + Scalar
+- **TUI**: Ratatui
+
+## Quick Start
+
+```bash
+# Build all crates
+cargo build --release
+
+# Run database migrations
+# (SQLx migrations in hof-core/migrations/)
+
+# Start the server (API + Web UI)
+cargo run --bin hof-server
+
+# Run the TUI client (in another terminal)
+cargo run --bin hof-tui
+```
+
+## Project Structure
+
+```
+crates/
+├── hof-core/    Domain types, actors, database, yt-dlp process wrapper
+├── hof-api/     Axum REST API + OpenAPI + SSE (JSON) + Scalar docs
+├── hof-web/     Maud + htmx frontend routes + SSE (HTML partials)
+└── hof-tui/     Ratatui TUI client (consumes hof-api over HTTP)
+```
+
+## API
+
+The REST API is documented with OpenAPI and available via Scalar at `/docs` when running the server.
+
+Key endpoints:
+
+- `GET /api/profiles` - Manage download profiles
+- `GET /api/sources` - Manage video sources (channels, playlists)
+- `GET /api/downloads` - List and manage downloads
+- `GET /api/downloads/progress` - SSE stream for live progress (JSON)
+- `GET /web/downloads/progress` - SSE stream for live progress (HTML)
+
+## Configuration
+
+Configuration is loaded from environment variables:
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `DATABASE_URL` | PostgreSQL connection string | - |
+| `PORT` | Server port | 3000 |
+| `YT_DLP_PATH` | Path to yt-dlp binary | yt-dlp |
+| `DOWNLOAD_CONCURRENCY` | Max simultaneous downloads | 3 |
+| `DOWNLOAD_TIMEOUT` | Per-download timeout (hours) | 4 |
+
+## Development
+
+See [GOALS.md](./GOALS.md) for detailed architecture and implementation roadmap.
+
+## License
+
+MIT
