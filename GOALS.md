@@ -207,10 +207,10 @@ forwarding parsed events to the render loop over `tokio::sync::mpsc`.
   - [x] Database URL, server port, yt-dlp path
   - [x] Download concurrency, timeouts, retry settings
 
-- [ ] **Database Layer** (`hof-core/src/db.rs`)
-  - [ ] Connection pool setup with SQLx
-  - [ ] CRUD operations for User, Profile, Source, Video
-  - [ ] Join table operations for source_videos
+- [x] **Database Layer** (`hof-core/src/db.rs`)
+  - [x] Connection pool setup with SQLx
+  - [x] CRUD operations for User, Profile, Source, Video
+  - [x] Join table operations for source_videos
 
 ### Phase 2: yt-dlp Integration
 

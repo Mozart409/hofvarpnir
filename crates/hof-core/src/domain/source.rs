@@ -9,7 +9,7 @@ pub enum SourceType {
     Playlist,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Source {
     pub id: Ulid,
     pub profile_id: Ulid,
@@ -25,4 +25,40 @@ pub struct Source {
     pub last_indexed_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+/// Database row representation for Source (with String ids).
+#[derive(Debug, sqlx::FromRow)]
+pub struct SourceRow {
+    pub id: String,
+    pub profile_id: String,
+    pub url: String,
+    pub source_type: SourceType,
+    pub custom_name: Option<String>,
+    pub index_frequency_secs: i64,
+    pub cutoff_date: NaiveDate,
+    pub retention_days: Option<i32>,
+    pub last_indexed_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+impl TryFrom<SourceRow> for Source {
+    type Error = ulid::DecodeError;
+
+    fn try_from(row: SourceRow) -> Result<Self, Self::Error> {
+        Ok(Self {
+            id: Ulid::from_string(&row.id)?,
+            profile_id: Ulid::from_string(&row.profile_id)?,
+            url: row.url,
+            source_type: row.source_type,
+            custom_name: row.custom_name,
+            index_frequency_secs: row.index_frequency_secs,
+            cutoff_date: row.cutoff_date,
+            retention_days: row.retention_days,
+            last_indexed_at: row.last_indexed_at,
+            created_at: row.created_at,
+            updated_at: row.updated_at,
+        })
+    }
 }
