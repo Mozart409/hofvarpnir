@@ -30,6 +30,18 @@ pub struct Source {
     pub index_error_count: i32,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+
+    // Channel metadata for Jellyfin integration
+    /// Platform-specific channel/playlist ID (e.g., `YouTube` channel ID).
+    pub channel_id: Option<String>,
+    /// Channel title from the platform.
+    pub channel_title: Option<String>,
+    /// Channel description from the platform.
+    pub channel_description: Option<String>,
+    /// URL to the channel's thumbnail/avatar image.
+    pub channel_thumbnail_url: Option<String>,
+    /// When Jellyfin metadata (NFO, images) was last generated.
+    pub jellyfin_metadata_at: Option<DateTime<Utc>>,
 }
 
 /// Database row representation for Source (with String ids).
@@ -48,6 +60,12 @@ pub struct SourceRow {
     pub index_error_count: i32,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    // Channel metadata
+    pub channel_id: Option<String>,
+    pub channel_title: Option<String>,
+    pub channel_description: Option<String>,
+    pub channel_thumbnail_url: Option<String>,
+    pub jellyfin_metadata_at: Option<DateTime<Utc>>,
 }
 
 impl TryFrom<SourceRow> for Source {
@@ -68,6 +86,23 @@ impl TryFrom<SourceRow> for Source {
             index_error_count: row.index_error_count,
             created_at: row.created_at,
             updated_at: row.updated_at,
+            channel_id: row.channel_id,
+            channel_title: row.channel_title,
+            channel_description: row.channel_description,
+            channel_thumbnail_url: row.channel_thumbnail_url,
+            jellyfin_metadata_at: row.jellyfin_metadata_at,
         })
+    }
+}
+
+impl Source {
+    /// Returns the display name for this source.
+    /// Prefers `custom_name`, falls back to `channel_title`, then URL.
+    #[must_use]
+    pub fn display_name(&self) -> &str {
+        self.custom_name
+            .as_deref()
+            .or(self.channel_title.as_deref())
+            .unwrap_or(&self.url)
     }
 }

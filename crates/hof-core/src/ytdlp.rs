@@ -163,16 +163,28 @@ pub struct IndexResult {
     pub entries: Vec<PlaylistEntry>,
     /// Total count (may be more than entries if paginated).
     pub total_count: Option<usize>,
+    /// Channel/uploader ID (e.g., `YouTube` channel ID like `UCxxxxx`).
+    pub channel_id: Option<String>,
+    /// Channel/uploader name.
+    pub channel_name: Option<String>,
+    /// URL to the best thumbnail from the first video (used for poster).
+    pub thumbnail_url: Option<String>,
 }
 
 impl IndexResult {
     fn from_playlist(playlist: &Playlist, platform: &str) -> Self {
+        // Extract best thumbnail from first entry if available
+        let thumbnail_url = playlist.entries.first().and_then(|e| e.thumbnail.clone());
+
         Self {
             platform: platform.to_string(),
             title: playlist.title.clone(),
             description: playlist.description.clone(),
             entries: playlist.entries.iter().map(PlaylistEntry::from).collect(),
             total_count: playlist.video_count,
+            channel_id: playlist.uploader_id.clone(),
+            channel_name: playlist.uploader.clone(),
+            thumbnail_url,
         }
     }
 }

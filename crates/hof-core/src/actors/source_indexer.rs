@@ -12,10 +12,11 @@ use sqlx::PgPool;
 use tracing::{debug, error, info, instrument, warn};
 use ulid::Ulid;
 
-use crate::db::{self, CreateVideo};
+use crate::db::{self, CreateVideo, UpdateChannelMetadata};
 use crate::domain::profile::Profile;
 use crate::domain::source::Source;
 use crate::domain::video::VideoStatus;
+use crate::jellyfin::{self, JellyfinMetadata};
 use crate::ytdlp::{PlaylistEntry, VideoMetadata, YtdlpClient, YtdlpError};
 
 use super::download_supervisor::{DownloadSupervisor, EnqueueDownload};
@@ -153,6 +154,7 @@ impl Message<IndexNow> for SourceIndexerActor {
 
 impl SourceIndexerActor {
     /// Execute the indexing process.
+    #[allow(clippy::too_many_lines)]
     #[instrument(skip(self), fields(source_id = %self.source.id, url = %self.source.url))]
     async fn execute_indexing(&mut self) -> IndexingResult {
         let mut result = IndexingResult {
@@ -190,6 +192,14 @@ impl SourceIndexerActor {
             entries = index_result.entries.len(),
             "Source indexed successfully"
         );
+
+        // Update channel metadata from index result
+        if let Err(e) = self.update_channel_metadata(&index_result).await {
+            warn!(error = %e, "Failed to update channel metadata");
+            result
+                .errors
+                .push(format!("Channel metadata update failed: {e}"));
+        }
 
         // Process each entry.
         // YouTube playlists are typically sorted newest-first, so we can stop early
@@ -250,6 +260,22 @@ impl SourceIndexerActor {
             result
                 .errors
                 .push(format!("Failed to update last_indexed_at: {e}"));
+        }
+
+        // Generate Jellyfin metadata if needed (after we have channel metadata)
+        // Reload source to get updated channel metadata
+        if let Ok(updated_source) = db::get_source(&self.pool, self.source.id).await {
+            // Temporarily update our source reference for metadata generation
+            let indexer_with_updated_source = SourceIndexerActor {
+                pool: self.pool.clone(),
+                ytdlp: self.ytdlp.clone(),
+                source: updated_source,
+                profile: self.profile.clone(),
+                supervisor: self.supervisor.clone(),
+            };
+            indexer_with_updated_source
+                .generate_jellyfin_metadata_if_needed()
+                .await;
         }
 
         info!(
@@ -396,6 +422,54 @@ impl SourceIndexerActor {
                 EntryOutcome::New(video.id)
             }
             Err(e) => EntryOutcome::Error(format!("Failed to create video: {e}")),
+        }
+    }
+
+    /// Update channel metadata from indexing results.
+    async fn update_channel_metadata(
+        &self,
+        index_result: &crate::ytdlp::IndexResult,
+    ) -> Result<(), db::DbError> {
+        let metadata = UpdateChannelMetadata {
+            channel_id: index_result.channel_id.as_deref(),
+            channel_title: Some(&index_result.title),
+            channel_description: index_result.description.as_deref(),
+            channel_thumbnail_url: index_result.thumbnail_url.as_deref(),
+        };
+
+        db::update_source_channel_metadata(&self.pool, self.source.id, metadata).await
+    }
+
+    /// Generate Jellyfin metadata files if not already generated.
+    async fn generate_jellyfin_metadata_if_needed(&self) {
+        // Check if we should generate metadata
+        let output_dir = std::path::Path::new(&self.profile.output_dir).join("completed");
+
+        // Check if metadata needs regeneration
+        if !jellyfin::needs_regeneration(&output_dir, self.source.jellyfin_metadata_at, false) {
+            debug!("Jellyfin metadata already exists, skipping generation");
+            return;
+        }
+
+        info!("Generating Jellyfin metadata");
+
+        // Build metadata from source
+        let metadata = JellyfinMetadata::from_source(&self.source, "youtube");
+
+        // Create HTTP client for image downloads
+        let http_client = reqwest::Client::new();
+
+        // Generate metadata files
+        if let Err(e) = jellyfin::generate_metadata(&http_client, &metadata, &output_dir).await {
+            warn!(error = %e, "Failed to generate Jellyfin metadata");
+            return;
+        }
+
+        // Update timestamp in database
+        if let Err(e) =
+            db::update_source_jellyfin_metadata_at(&self.pool, self.source.id, Utc::now()).await
+        {
+            warn!(error = %e, "Failed to update Jellyfin metadata timestamp");
         }
     }
 

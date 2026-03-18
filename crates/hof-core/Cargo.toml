@@ -23,6 +23,7 @@ dotenvy.workspace = true
 yt-dlp.workspace = true
 utoipa.workspace = true
 argon2.workspace = true
+reqwest.workspace = true
 
 [dev-dependencies]
 tempfile = "3"

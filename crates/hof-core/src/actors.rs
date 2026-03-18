@@ -7,10 +7,12 @@
 //! - [`SourceIndexerActor`]: Per-source actor for discovering videos
 //! - [`SchedulerActor`]: Singleton that triggers indexing on schedule
 //! - [`CleanupActor`]: Singleton enforcing retention policies and quotas
+//! - [`JellyfinMetadataActor`]: Singleton for daily Jellyfin metadata checks
 
 pub mod cleanup;
 pub mod download_supervisor;
 pub mod download_worker;
+pub mod jellyfin_metadata;
 pub mod scheduler;
 pub mod source_indexer;
 
@@ -20,5 +22,8 @@ pub use download_supervisor::{
     DownloadSupervisor, DownloadSupervisorArgs, EnqueueDownload, SupervisorStatus,
 };
 pub use download_worker::{DownloadConfig, DownloadOutcome, DownloadWorker, DownloadWorkerArgs};
+pub use jellyfin_metadata::{
+    JellyfinMetadataActor, JellyfinMetadataActorArgs, JellyfinMetadataStatus, MetadataCheckResult,
+};
 pub use scheduler::{SchedulerActor, SchedulerArgs, SchedulerStatus};
 pub use source_indexer::{IndexingResult, SourceIndexerActor, SourceIndexerArgs};

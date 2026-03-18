@@ -6,12 +6,14 @@
 //! - yt-dlp wrapper for downloading and metadata extraction
 //! - Actor system for managing concurrent downloads and scheduling
 //! - Startup and crash recovery logic
+//! - Jellyfin metadata generation (NFO files and artwork)
 
 pub mod actors;
 pub mod auth;
 pub mod config;
 pub mod db;
 pub mod domain;
+pub mod jellyfin;
 pub mod startup;
 pub mod ytdlp;
 
