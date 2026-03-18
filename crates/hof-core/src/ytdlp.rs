@@ -54,15 +54,22 @@ pub enum YtdlpError {
 impl From<yt_dlp::error::Error> for YtdlpError {
     fn from(err: yt_dlp::error::Error) -> Self {
         let msg = err.to_string();
+        let msg_lower = msg.to_lowercase();
 
-        // Check for common error patterns
-        if msg.contains("429") || msg.to_lowercase().contains("rate limit") {
+        // Check for rate limiting patterns (YouTube bot detection, HTTP 429, etc.)
+        if msg.contains("429")
+            || msg_lower.contains("rate limit")
+            || msg_lower.contains("sign in to confirm")
+            || msg_lower.contains("confirm you're not a bot")
+            || msg_lower.contains("too many requests")
+        {
             return Self::RateLimited(msg);
         }
-        if msg.contains("unavailable")
-            || msg.contains("private")
-            || msg.contains("removed")
-            || msg.contains("not found")
+
+        if msg_lower.contains("unavailable")
+            || msg_lower.contains("private")
+            || msg_lower.contains("removed")
+            || msg_lower.contains("not found")
         {
             return Self::VideoUnavailable(msg);
         }

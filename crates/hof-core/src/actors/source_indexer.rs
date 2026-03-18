@@ -246,6 +246,22 @@ impl SourceIndexerActor {
                         break;
                     }
                 }
+                EntryOutcome::RateLimited(reason) => {
+                    warn!(
+                        video_id = %entry.platform_video_id,
+                        reason = %reason,
+                        "Rate limited, stopping indexing"
+                    );
+                    result.errors.push(reason.clone());
+                    // Record error in database
+                    if let Err(db_err) =
+                        db::record_source_indexing_error(&self.pool, self.source.id, &reason).await
+                    {
+                        error!(error = %db_err, "Failed to record rate limit error");
+                    }
+                    // Stop indexing this source
+                    break;
+                }
                 EntryOutcome::Error(e) => {
                     result.errors.push(e);
                     consecutive_before_cutoff = 0; // Reset on error
@@ -317,7 +333,7 @@ impl SourceIndexerActor {
     }
 
     /// Create a new video entry after fetching full metadata.
-    async fn create_new_video(&self, entry: &PlaylistEntry, platform: &str) -> EntryOutcome {
+    async fn create_new_video(&self, entry: &PlaylistEntry, _platform: &str) -> EntryOutcome {
         // Fetch full metadata to get published date and other info
         let metadata = match self.ytdlp.fetch_video_metadata(&entry.url).await {
             Ok(m) => m,
@@ -325,17 +341,19 @@ impl SourceIndexerActor {
                 return EntryOutcome::Filtered(format!("unavailable: {msg}"));
             }
             Err(YtdlpError::RateLimited(msg)) => {
-                return EntryOutcome::Error(format!("rate limited: {msg}"));
+                // Don't create videos when rate limited - we need proper metadata
+                // to check cutoff dates. Return error to stop early.
+                return EntryOutcome::RateLimited(format!("rate limited: {msg}"));
             }
             Err(e) => {
-                // For other errors, we might still want to create the video
-                // with limited metadata from the playlist entry
+                // For transient errors, skip this video but continue indexing
+                // Don't create videos without publish date since we can't enforce cutoff
                 warn!(
                     video_id = %entry.platform_video_id,
                     error = %e,
-                    "Failed to fetch metadata, using playlist data"
+                    "Failed to fetch metadata, skipping video"
                 );
-                return self.create_video_from_entry(entry, platform).await;
+                return EntryOutcome::Filtered(format!("metadata fetch failed: {e}"));
             }
         };
 
@@ -385,31 +403,6 @@ impl SourceIndexerActor {
             duration_secs: metadata.duration_secs,
             published_at: metadata.published_at,
             thumbnail_url: metadata.thumbnail_url.as_deref(),
-        };
-
-        match db::upsert_video(&self.pool, create_video).await {
-            Ok(video) => {
-                // Link to this source
-                if let Err(e) = db::link_video_to_source(&self.pool, self.source.id, video.id).await
-                {
-                    return EntryOutcome::Error(format!("Failed to link video: {e}"));
-                }
-                EntryOutcome::New(video.id)
-            }
-            Err(e) => EntryOutcome::Error(format!("Failed to create video: {e}")),
-        }
-    }
-
-    /// Create a video from playlist entry (limited metadata).
-    async fn create_video_from_entry(&self, entry: &PlaylistEntry, platform: &str) -> EntryOutcome {
-        let create_video = CreateVideo {
-            platform,
-            platform_video_id: &entry.platform_video_id,
-            title: &entry.title,
-            description: None,
-            duration_secs: entry.duration_secs,
-            published_at: None, // Unknown without full metadata
-            thumbnail_url: entry.thumbnail_url.as_deref(),
         };
 
         match db::upsert_video(&self.pool, create_video).await {
@@ -519,6 +512,8 @@ enum EntryOutcome {
     Filtered(String),
     /// Video was filtered because it's before the cutoff date.
     BeforeCutoff(String),
+    /// Rate limited - should stop indexing this source.
+    RateLimited(String),
     /// Error occurred.
     Error(String),
 }
