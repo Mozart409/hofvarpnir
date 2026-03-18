@@ -101,7 +101,7 @@ pub struct ProfileForm {
     output_dir: String,
     include_livestreams: Option<String>,
     include_shorts: Option<String>,
-    storage_quota_bytes: i64,
+    storage_quota_gb: i64,
     retention_days: Option<String>,
 }
 
@@ -546,7 +546,7 @@ async fn profiles_page(auth: AuthUser, State(state): State<AppState>) -> impl In
                     (input_text("Name", "name", "Daily Archive", true, ""))
                     (input_text("Naming Template", "naming_template", "{title}-{id}.{ext}", true, "{title}-{id}.{ext}"))
                     (input_text("Output Directory", "output_dir", "/data/videos", true, ""))
-                    (input_number("Storage Quota (bytes)", "storage_quota_bytes", "107374182400", true, "107374182400"))
+                    (input_number("Storage Quota (GB)", "storage_quota_gb", "100", true, "100"))
                     (input_number("Retention Days", "retention_days", "Optional", false, ""))
                     div class="flex items-center gap-4" {
                         label class="inline-flex items-center gap-2 text-sm text-slate-700" {
@@ -608,7 +608,7 @@ async fn create_profile(
         output_dir: form.output_dir.trim(),
         include_livestreams: form.include_livestreams.is_some(),
         include_shorts: form.include_shorts.is_some(),
-        storage_quota_bytes: form.storage_quota_bytes,
+        storage_quota_bytes: form.storage_quota_gb * 1_000_000_000, // Convert GB to bytes
         retention_days,
     };
 
@@ -659,7 +659,7 @@ async fn update_profile(
         output_dir: Some(form.output_dir.trim()),
         include_livestreams: Some(form.include_livestreams.is_some()),
         include_shorts: Some(form.include_shorts.is_some()),
-        storage_quota_bytes: Some(form.storage_quota_bytes),
+        storage_quota_bytes: Some(form.storage_quota_gb * 1_000_000_000), // Convert GB to bytes
         retention_days: Some(retention_days),
     };
 
@@ -739,6 +739,11 @@ async fn sources_page(auth: AuthUser, State(state): State<AppState>) -> impl Int
         }
     };
 
+    // Calculate default cutoff date (7 days ago)
+    let default_cutoff_date = (Utc::now() - chrono::Duration::days(7))
+        .format("%Y-%m-%d")
+        .to_string();
+
     let page = layout(
         "Sources",
         NavItem::Sources,
@@ -765,8 +770,8 @@ async fn sources_page(auth: AuthUser, State(state): State<AppState>) -> impl Int
                     }
                     (input_text("URL", "url", "https://youtube.com/@channel", true, ""))
                     (input_text("Custom Name", "custom_name", "Optional label", false, ""))
-                    (input_number("Index Frequency (seconds)", "index_frequency_secs", "3600", true, "3600"))
-                    (input_text("Cutoff Date", "cutoff_date", "YYYY-MM-DD", true, ""))
+                    (input_index_frequency("Index Frequency", "index_frequency_secs", 3600))
+                    (input_cutoff_date("Cutoff Date", "cutoff_date", &default_cutoff_date))
                     (input_number("Retention Days", "retention_days", "Optional", false, ""))
                     div class="md:col-span-2" {
                         button class="inline-flex items-center rounded-lg bg-sky-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-sky-700" type="submit" { "Create Source" }
@@ -1235,7 +1240,7 @@ fn profile_editor(profile: &Profile) -> Markup {
                 (input_text("Name", "name", "", true, &profile.name))
                 (input_text("Naming Template", "naming_template", "", true, &profile.naming_template))
                 (input_text("Output Directory", "output_dir", "", true, &profile.output_dir))
-                (input_number("Storage Quota (bytes)", "storage_quota_bytes", "", true, &profile.storage_quota_bytes.to_string()))
+                (input_number("Storage Quota (GB)", "storage_quota_gb", "", true, &(profile.storage_quota_bytes / 1_000_000_000).to_string()))
                 (input_number("Retention Days", "retention_days", "Optional", false, &profile.retention_days.map_or_else(String::new, |days| days.to_string())))
                 div class="flex items-center gap-4" {
                     label class="inline-flex items-center gap-2 text-sm text-slate-700" {
@@ -1308,8 +1313,8 @@ fn source_editor(source: &Source) -> Markup {
                 }
                 (input_text("URL", "url", "", true, &source.url))
                 (input_text("Custom Name", "custom_name", "Optional", false, &source.custom_name.clone().unwrap_or_default()))
-                (input_number("Index Frequency (seconds)", "index_frequency_secs", "", true, &source.index_frequency_secs.to_string()))
-                (input_text("Cutoff Date", "cutoff_date", "YYYY-MM-DD", true, &source.cutoff_date.to_string()))
+                (input_index_frequency("Index Frequency", "index_frequency_secs", source.index_frequency_secs))
+                (input_cutoff_date("Cutoff Date", "cutoff_date", &source.cutoff_date.to_string()))
                 (input_number("Retention Days", "retention_days", "Optional", false, &source.retention_days.map_or_else(String::new, |days| days.to_string())))
                 div class="md:col-span-2 flex flex-wrap gap-2" {
                     button class="rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-700" type="submit" {
@@ -1483,6 +1488,112 @@ fn input_number(label: &str, name: &str, placeholder: &str, required: bool, valu
                 placeholder=(placeholder)
                 required[required]
                 value=(value);
+        }
+    }
+}
+
+struct IndexFrequencyOption {
+    label: &'static str,
+    value: i64,
+}
+
+fn index_frequency_options() -> Vec<IndexFrequencyOption> {
+    vec![
+        IndexFrequencyOption {
+            label: "1 hour",
+            value: 3600,
+        },
+        IndexFrequencyOption {
+            label: "3 hours",
+            value: 10800,
+        },
+        IndexFrequencyOption {
+            label: "6 hours",
+            value: 21600,
+        },
+        IndexFrequencyOption {
+            label: "12 hours",
+            value: 43200,
+        },
+        IndexFrequencyOption {
+            label: "24 hours",
+            value: 86400,
+        },
+        IndexFrequencyOption {
+            label: "3 days",
+            value: 259_200,
+        },
+        IndexFrequencyOption {
+            label: "7 days",
+            value: 604_800,
+        },
+        IndexFrequencyOption {
+            label: "30 days",
+            value: 2_592_000,
+        },
+    ]
+}
+
+fn input_index_frequency(label: &str, name: &str, selected_value: i64) -> Markup {
+    html! {
+        div {
+            label class="block text-sm font-medium text-slate-700" for=(name) { (label) }
+            select
+                class="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-900 shadow-sm"
+                name=(name)
+                id=(name)
+                required {
+                @for option in index_frequency_options() {
+                    option value=(option.value) selected[option.value == selected_value] { (option.label) }
+                }
+            }
+        }
+    }
+}
+
+fn input_cutoff_date(label: &str, name: &str, value: &str) -> Markup {
+    html! {
+        div {
+            label class="block text-sm font-medium text-slate-700" for=(name) { (label) }
+            input
+                class="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-900 shadow-sm"
+                type="date"
+                id=(name)
+                name=(name)
+                required
+                value=(value);
+            div class="mt-2 flex flex-wrap gap-2" {
+                button
+                    class="rounded bg-slate-100 px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-200"
+                    type="button"
+                    onclick={"document.getElementById('" (name) "').value = new Date(Date.now() - 7*24*60*60*1000).toISOString().split('T')[0]"} {
+                    "7 days"
+                }
+                button
+                    class="rounded bg-slate-100 px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-200"
+                    type="button"
+                    onclick={"document.getElementById('" (name) "').value = new Date(Date.now() - 14*24*60*60*1000).toISOString().split('T')[0]"} {
+                    "14 days"
+                }
+                button
+                    class="rounded bg-slate-100 px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-200"
+                    type="button"
+                    onclick={"document.getElementById('" (name) "').value = new Date(Date.now() - 30*24*60*60*1000).toISOString().split('T')[0]"} {
+                    "30 days"
+                }
+                button
+                    class="rounded bg-slate-100 px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-200"
+                    type="button"
+                    onclick={"document.getElementById('" (name) "').value = new Date(Date.now() - 90*24*60*60*1000).toISOString().split('T')[0]"} {
+                    "90 days"
+                }
+                button
+                    class="rounded bg-slate-100 px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-200"
+                    type="button"
+                    onclick={"document.getElementById('" (name) "').value = new Date(Date.now() - 180*24*60*60*1000).toISOString().split('T')[0]"} {
+                    "180 days"
+                }
+            }
         }
     }
 }
