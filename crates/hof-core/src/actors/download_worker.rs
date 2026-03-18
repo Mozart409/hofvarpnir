@@ -109,8 +109,12 @@ impl Actor for DownloadWorker {
             progress_tx: args.progress_tx,
         };
 
-        // Immediately trigger the download
-        actor_ref.tell(StartDownload).await?;
+        // Immediately trigger the download.
+        // Use try_send() to avoid potential deadlock from self-tell with bounded mailbox.
+        if let Err(e) = actor_ref.tell(StartDownload).try_send() {
+            error!(error = %e, "Failed to start download");
+            return Err(e.into());
+        }
 
         Ok(worker)
     }

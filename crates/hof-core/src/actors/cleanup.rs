@@ -78,8 +78,12 @@ impl Actor for CleanupActor {
             running: false,
         };
 
-        // Start the cleanup loop
-        actor_ref.tell(StartCleanup).await?;
+        // Start the cleanup loop.
+        // Use try_send() to avoid potential deadlock from self-tell with bounded mailbox.
+        if let Err(e) = actor_ref.tell(StartCleanup).try_send() {
+            error!(error = %e, "Failed to start cleanup loop");
+            return Err(e.into());
+        }
 
         Ok(actor)
     }

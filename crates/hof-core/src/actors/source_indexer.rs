@@ -91,8 +91,12 @@ impl Actor for SourceIndexerActor {
             supervisor: args.supervisor,
         };
 
-        // Immediately start indexing
-        actor_ref.tell(StartIndexing).await?;
+        // Immediately start indexing.
+        // Use try_send() to avoid potential deadlock from self-tell with bounded mailbox.
+        if let Err(e) = actor_ref.tell(StartIndexing).try_send() {
+            error!(error = %e, "Failed to start indexing");
+            return Err(e.into());
+        }
 
         Ok(indexer)
     }
