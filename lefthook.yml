@@ -34,6 +34,7 @@ pre-commit:
     - name: cargo-deny
       glob: "Cargo.{toml,lock}"
       run: cargo deny check
+      stage_fixed: true
 pre-push:
   parallel: true
   jobs:
@@ -41,7 +42,7 @@ pre-push:
       run: just test
     - name: clippy-pedantic
       glob: "*.rs"
-      run: cargo clippy -- -W clippy::pedantic
+      run: cargo clippy --all-targets -- -W clippy::pedantic
     - name: sqruff
       glob: "**/*.sql"
       run: sqruff lint
