@@ -573,6 +573,10 @@ fn render_output_relative_path(
 /// - `{{ title }}`, `{{ id }}`, `{{ ext }}`
 /// - `{{ source_custom_name/or default }}`
 /// - `{{ season_by_year__episode_by_date_and_index }}`
+///
+/// # Errors
+///
+/// Returns an error if the template is empty or contains invalid placeholders.
 pub fn validate_output_template(template: &str) -> Result<(), String> {
     let template = template.trim();
     if template.is_empty() {
