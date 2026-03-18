@@ -1,4 +1,40 @@
 services:
+  # Hofvarpnir video archival service
+  # Build the container using Nix:
+  #   nix build .#container && docker load < result
+  # Or pull from registry:
+  #   image: ghcr.io/user/hofvarpnir:latest
+  hofvarpnir:
+    container_name: hofvarpnir
+    image: hofvarpnir:latest
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/hofvarpnir_dev
+      RUST_LOG: info,hof_core=debug
+      PORT: "3000"
+    ports:
+      - "3000:3000"
+    volumes:
+      # Main downloads directory - shared with Jellyfin/Syncthing
+      # Use same UID:GID (1000:1000) as container for permission compatibility
+      - ${DOWNLOAD_DIR:-./downloads}:/data/downloads
+      # Incomplete downloads - separate to avoid Jellyfin scanning partial files
+      - ${INCOMPLETE_DIR:-./incomplete}:/data/incomplete
+    networks:
+      - hofvarpnir
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3000/api/health/ready"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    # Run as UID:GID 1000:1000 for Jellyfin/Syncthing compatibility
+    # Adjust if your media user has a different UID
+    user: "1000:1000"
+    restart: unless-stopped
+
   postgres:
     container_name: postgres
     build:

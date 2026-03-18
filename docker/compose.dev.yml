@@ -1,0 +1,44 @@
+services:
+  postgres:
+    container_name: postgres
+    build:
+      context: ..
+      dockerfile: docker/postgres.Dockerfile
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: hofvarpnir_dev
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - hofvarpnir
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+  postgres_exporter:
+    container_name: postgres_exporter
+    image: prometheuscommunity/postgres-exporter:latest
+    environment:
+      DATA_SOURCE_NAME: postgresql://postgres:postgres@postgres:5432/hofvarpnir_dev?sslmode=disable
+      PG_EXPORTER_EXTEND_QUERY_PATH: /etc/postgres_exporter/queries.yaml
+    ports:
+      - "9187:9187"
+    volumes:
+      - ./postgres_exporter/queries.yaml:/etc/postgres_exporter/queries.yaml:ro
+    networks:
+      - hofvarpnir
+    depends_on:
+      - postgres
+    command:
+      - '--extend.query-path=/etc/postgres_exporter/queries.yaml'
+volumes:
+  postgres_data:
+    driver: local
+networks:
+  hofvarpnir:
+    driver: bridge
