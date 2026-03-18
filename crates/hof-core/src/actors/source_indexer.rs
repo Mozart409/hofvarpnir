@@ -171,7 +171,15 @@ impl SourceIndexerActor {
             Err(e) => {
                 let error_msg = format!("Failed to index source: {e}");
                 error!(error = %error_msg);
-                result.errors.push(error_msg);
+                result.errors.push(error_msg.clone());
+
+                // Record the error in the database
+                if let Err(db_err) =
+                    db::record_source_indexing_error(&self.pool, self.source.id, &error_msg).await
+                {
+                    error!(error = %db_err, "Failed to record indexing error in database");
+                }
+
                 return result;
             }
         };
@@ -183,16 +191,23 @@ impl SourceIndexerActor {
             "Source indexed successfully"
         );
 
-        // Process each entry
+        // Process each entry.
+        // YouTube playlists are typically sorted newest-first, so we can stop early
+        // once we hit several consecutive videos before the cutoff date.
+        const MAX_CONSECUTIVE_BEFORE_CUTOFF: usize = 3;
+        let mut consecutive_before_cutoff = 0;
+
         for entry in &index_result.entries {
             match self.process_entry(entry, &index_result.platform).await {
                 EntryOutcome::New(video_id) => {
                     result.new_videos += 1;
+                    consecutive_before_cutoff = 0; // Reset counter
                     // Enqueue for download
                     self.enqueue_video(video_id).await;
                 }
                 EntryOutcome::Existing => {
                     result.existing_videos += 1;
+                    consecutive_before_cutoff = 0; // Reset counter
                 }
                 EntryOutcome::Filtered(reason) => {
                     debug!(
@@ -201,9 +216,29 @@ impl SourceIndexerActor {
                         "Entry filtered out"
                     );
                     result.filtered_out += 1;
+                    consecutive_before_cutoff = 0; // Not a cutoff filter
+                }
+                EntryOutcome::BeforeCutoff(reason) => {
+                    debug!(
+                        video_id = %entry.platform_video_id,
+                        reason = %reason,
+                        "Entry before cutoff date"
+                    );
+                    result.filtered_out += 1;
+                    consecutive_before_cutoff += 1;
+
+                    if consecutive_before_cutoff >= MAX_CONSECUTIVE_BEFORE_CUTOFF {
+                        info!(
+                            consecutive = consecutive_before_cutoff,
+                            "Stopping early: found {} consecutive videos before cutoff date",
+                            MAX_CONSECUTIVE_BEFORE_CUTOFF
+                        );
+                        break;
+                    }
                 }
                 EntryOutcome::Error(e) => {
                     result.errors.push(e);
+                    consecutive_before_cutoff = 0; // Reset on error
                 }
             }
         }
@@ -279,58 +314,39 @@ impl SourceIndexerActor {
         };
 
         // Apply filters based on full metadata
-        if !self.should_include_video(&metadata) {
-            return EntryOutcome::Filtered(self.filter_reason(&metadata));
+        if let Some(filter_outcome) = self.check_video_filter(&metadata) {
+            return filter_outcome;
         }
 
         // Create the video in the database
         self.create_video_from_metadata(&metadata).await
     }
 
-    /// Check if a video should be included based on profile settings and cutoff date.
-    fn should_include_video(&self, metadata: &VideoMetadata) -> bool {
+    /// Check if a video should be filtered based on profile settings and cutoff date.
+    /// Returns `None` if video should be included, or `Some(EntryOutcome)` if filtered.
+    fn check_video_filter(&self, metadata: &VideoMetadata) -> Option<EntryOutcome> {
         // Check shorts
         if !self.profile.include_shorts && metadata.is_short() {
-            return false;
+            return Some(EntryOutcome::Filtered("short video excluded".to_string()));
         }
 
         // Check livestreams
         if !self.profile.include_livestreams && (metadata.is_live || metadata.was_live) {
-            return false;
+            return Some(EntryOutcome::Filtered("livestream excluded".to_string()));
         }
 
-        // Check cutoff date
+        // Check cutoff date - use BeforeCutoff variant for early termination detection
         if let Some(published) = metadata.published_at {
             let published_date = published.date_naive();
             if published_date < self.source.cutoff_date {
-                return false;
-            }
-        }
-
-        true
-    }
-
-    /// Get the reason why a video was filtered.
-    fn filter_reason(&self, metadata: &VideoMetadata) -> String {
-        if !self.profile.include_shorts && metadata.is_short() {
-            return "short video excluded".to_string();
-        }
-
-        if !self.profile.include_livestreams && (metadata.is_live || metadata.was_live) {
-            return "livestream excluded".to_string();
-        }
-
-        if let Some(published) = metadata.published_at {
-            let published_date = published.date_naive();
-            if published_date < self.source.cutoff_date {
-                return format!(
+                return Some(EntryOutcome::BeforeCutoff(format!(
                     "published {} before cutoff {}",
                     published_date, self.source.cutoff_date
-                );
+                )));
             }
         }
 
-        "unknown".to_string()
+        None // Video should be included
     }
 
     /// Create a video from full metadata.
@@ -424,8 +440,10 @@ enum EntryOutcome {
     New(Ulid),
     /// Video already existed.
     Existing,
-    /// Video was filtered out.
+    /// Video was filtered out (not due to cutoff date).
     Filtered(String),
+    /// Video was filtered because it's before the cutoff date.
+    BeforeCutoff(String),
     /// Error occurred.
     Error(String),
 }
