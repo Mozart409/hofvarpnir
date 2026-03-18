@@ -1,0 +1,324 @@
+# Agent Instructions for Hofvarpnir
+
+This document provides essential information for AI coding agents working in this repository.
+
+## Build, Test, and Lint Commands
+
+### Essential Commands
+
+```bash
+# Build the entire workspace
+cargo build --workspace
+
+# Build with all features
+cargo build --all-features --release
+
+# Run all tests
+cargo test --workspace
+cargo test --all-features
+
+# Run a specific test (use this pattern)
+cargo test --workspace <test_name>
+cargo test --workspace -- <filter_pattern>
+
+# Run tests for a specific package
+cargo test -p hof-core
+cargo test -p hof-api
+
+# Format code
+cargo fmt --all
+
+# Check formatting without modifying
+cargo fmt --all -- --check
+
+# Run clippy (strict mode)
+cargo clippy --all-targets --all-features -- -D warnings
+
+# Run clippy with pedantic lints
+bacon pedantic
+# Or manually:
+cargo clippy --workspace --all-targets -- -W clippy::pedantic
+
+# Fix auto-fixable clippy issues
+cargo clippy --fix --allow-dirty --allow-staged --all-targets --all-features
+
+# Check SQLx offline mode
+cargo sqlx prepare --workspace --check -- --all-targets --all-features
+
+# Dependency audit
+cargo deny check
+```
+
+### Development Tools
+
+```bash
+# Use bacon for continuous checking/testing (recommended)
+bacon                    # Default: check
+bacon test               # Run all tests continuously
+bacon test -- <filter>   # Run specific test continuously
+bacon clippy-all         # Run clippy on all targets
+bacon pedantic           # Run pedantic clippy
+bacon serve              # Run web server with auto-restart
+bacon tui                # Run TUI binary
+
+# Use just for task automation
+just --list              # List all available tasks
+just fmt                 # Format code
+just lint                # Run clippy
+just fix                 # Fix clippy issues
+just test                # Run tests with DB setup
+just dev                 # Run web server
+just db-reset            # Reset database
+just mig-run             # Run migrations
+just prepare             # Generate SQLx offline data
+```
+
+### Nix Environment
+
+This project uses Nix for reproducible development environments:
+
+```bash
+# Enter development shell
+nix develop
+
+# Run commands in nix environment (used in CI)
+nix develop .#default --command cargo test --all-features
+```
+
+## Code Style Guidelines
+
+### Imports
+
+```rust
+// Group imports in this order, separated by blank lines:
+// 1. std/core/alloc
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
+
+// 2. Third-party external crates
+use chrono::{DateTime, Utc};
+use kameo::prelude::*;
+use serde::{Deserialize, Serialize};
+use sqlx::PgPool;
+use tokio::sync::mpsc;
+use tracing::{debug, error, info, instrument};
+use ulid::Ulid;
+
+// 3. Internal crate imports (for non-lib.rs files)
+use crate::db;
+use crate::domain::profile::Quality;
+use crate::domain::video::{DownloadProgress, Video};
+use crate::ytdlp::{DownloadRequest, YtdlpClient};
+
+// 4. Re-exports (only in lib.rs)
+pub use config::Config;
+pub use startup::{ActorSystem, initialize, shutdown};
+```
+
+### Formatting
+
+- Use default rustfmt configuration (no custom rustfmt.toml)
+- Run `cargo fmt --all` before committing
+- Line length: follow Rust standard (100 chars soft limit)
+- Trailing commas in multi-line structures
+
+### Types and Naming
+
+```rust
+// Types
+pub struct Video { ... }                    // PascalCase for structs
+pub enum VideoStatus { ... }                // PascalCase for enums
+type VideoId = Ulid;                        // PascalCase for type aliases
+
+// Constants
+const INCOMPLETE_DIR_NAME: &str = "incomplete";  // SCREAMING_SNAKE_CASE
+
+// Functions and variables
+fn download_video(video: &Video) -> Result<PathBuf> {  // snake_case
+    let output_path = PathBuf::new();  // snake_case
+}
+
+// Error types (use thiserror)
+#[derive(Debug, thiserror::Error)]
+pub enum YtdlpError {
+    #[error("Failed to initialize: {0}")]
+    InitializationError(String),
+    #[error("Video unavailable: {0}")]
+    VideoUnavailable(String),
+}
+
+// Traits and implementations
+impl Actor for DownloadWorker { ... }       // PascalCase trait names
+```
+
+### Error Handling
+
+```rust
+// Use thiserror for error types
+#[derive(Debug, thiserror::Error)]
+pub enum DomainError {
+    #[error("Not found: {0}")]
+    NotFound(Ulid),
+    #[error("Validation failed: {0}")]
+    Validation(String),
+}
+
+// Use color-eyre for application-level error handling
+use color_eyre::Result;
+
+// Prefer ? operator
+let video = db::get_video(&pool, id).await?;
+
+// Log errors with tracing
+error!(error = %e, video_id = %id, "Failed to download video");
+
+// Add context for errors
+return Err(YtdlpError::InitializationError(msg.to_string()));
+```
+
+### Documentation
+
+```rust
+//! Crate-level documentation (in lib.rs/main.rs)
+
+//! Module-level documentation
+
+/// Short description (ends with period)
+///
+/// Longer explanation if needed.
+///
+/// # Arguments
+///
+/// * `param` - Description
+///
+/// # Errors
+///
+/// Returns error when...
+///
+/// # Panics
+///
+/// Panics if...
+pub fn function_name(param: Type) -> Result<ReturnType> { ... }
+
+// Field-level comments (no doc comments needed for obvious fields)
+pub struct Video {
+    /// yt-dlp extractor name (e.g., "youtube", "vimeo")
+    pub platform: String,
+    pub title: String,  // No comment needed for obvious fields
+}
+```
+
+### Database and SQLx
+
+- Use SQLx with compile-time checked queries
+- Migrations live in `crates/hof-core/migrations/`
+- Use `sqlx::FromRow` for database row types
+- Use `TryFrom<RowType> for DomainType` for conversion
+- Run `just prepare` after schema changes for offline mode
+
+### Actor Pattern (Kameo)
+
+```rust
+// Actor definition
+pub struct DownloadWorker { ... }
+
+impl Actor for DownloadWorker {
+    type Args = DownloadWorkerArgs;
+    ...
+}
+
+// Message handlers
+#[derive(Reply)]
+pub enum DownloadOutcome { ... }
+
+impl Message<DownloadVideo> for DownloadWorker {
+    type Reply = DownloadOutcome;
+    async fn handle(...) -> Self::Reply { ... }
+}
+```
+
+#### Anti-pattern: Self-tell with `.await`
+
+**DON'T:** Use `.tell(msg).await` when an actor sends a message to itself. This can deadlock with bounded mailboxes.
+
+```rust
+// BAD: Self-tell with await can cause deadlock
+ctx.actor_ref().tell(SomeMessage).await?;
+```
+
+**DO:** Use `.try_send()` for self-messages. If the mailbox is full, the message will be dropped (handle the error appropriately).
+
+```rust
+// GOOD: Use try_send for self-messages
+ctx.actor_ref().tell(SomeMessage).try_send()?;
+
+// Or if you want to ignore the error:
+ctx.actor_ref().tell(SomeMessage).try_send().ok();
+```
+
+This pattern is commonly needed when:
+- Spawning periodic tasks within an actor that need to trigger the actor again
+- Processing items in a loop and enqueueing more work to the same actor
+- Implementing state machines where the actor transitions states by sending itself messages
+
+### Web API (Axum + Utoipa)
+
+```rust
+// Route handler
+#[utoipa::path(
+    get,
+    path = "/api/videos",
+    responses(
+        (status = 200, description = "List of videos", body = Vec<Video>),
+    ),
+)]
+pub async fn list_videos(State(state): State<AppState>) -> Result<impl IntoResponse> { ... }
+```
+
+## Project Structure
+
+```
+crates/
+├── hof-core/     # Domain types, actors, database, yt-dlp wrapper
+├── hof-api/      # Axum REST API + OpenAPI + SSE
+├── hof-web/      # Maud + htmx frontend + Tailwind CSS
+└── hof-tui/      # Ratatui terminal UI client
+```
+
+## Key Dependencies
+
+- **Async**: tokio (runtime), futures, tokio-stream
+- **Web**: axum, tower, tower-http, utoipa (OpenAPI)
+- **Database**: sqlx (PostgreSQL)
+- **Actors**: kameo
+- **Templating**: maud
+- **Serialization**: serde, serde_json
+- **IDs**: ulid
+- **Time**: chrono
+- **Errors**: thiserror, color-eyre
+- **Tracing**: tracing, tracing-subscriber
+- **Video**: yt-dlp
+
+## CI Requirements
+
+All PRs must pass:
+1. `cargo fmt --all -- --check`
+2. `cargo clippy --all-targets --all-features -- -D warnings`
+3. `cargo test --all-features`
+4. `cargo build --all-features --release`
+
+## Environment Variables
+
+Required for development:
+- `DATABASE_URL` - PostgreSQL connection string
+- `PORT` - Server port (default: 3000)
+- `YT_DLP_PATH` - Path to yt-dlp binary
+- `SQLX_OFFLINE` - Set to `true` for offline builds
+
+## Language Standards
+
+- **Edition**: 2024
+- **MSRV**: 1.88.0
+- **Unsafe**: Forbidden (workspace lint)
+- **Clippy**: All + Pedantic enabled

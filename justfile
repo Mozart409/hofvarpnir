@@ -25,7 +25,7 @@ mig-add name: clear
     sqlx mig add -r {{name}}
 
 [working-directory: 'crates/hof-core']
-mig-run: clear up
+mig-run: clear
     sqlx mig run --database-url ${DATABASE_URL}
 
 [working-directory: 'crates/hof-core']
@@ -38,6 +38,11 @@ mig-info: clear up
 
 [working-directory: 'crates/hof-core']
 db-reset: clear up
+    sqlx database drop --database-url ${DATABASE_URL} -y
+    sqlx database create --database-url ${DATABASE_URL}
+
+[working-directory: 'crates/hof-core']
+db-setup: clear up
     sqlx database drop --database-url ${DATABASE_URL} -y
     sqlx database create --database-url ${DATABASE_URL}
     sqlx mig run --database-url ${DATABASE_URL}
@@ -65,8 +70,15 @@ lint: clear
     cargo clippy --all-targets --all-features -- -D warnings
 
 # Development
-dev: clear up mig-run
-    cargo run
+dev: clear
+    cargo run --bin hofvarpnir
+
+# Tailwind CSS
+css-watch:
+    tailwindcss -i crates/hof-web/assets/input.css -o crates/hof-web/assets/app.css --watch
+
+css-build:
+    tailwindcss -i crates/hof-web/assets/input.css -o crates/hof-web/assets/app.css --minify
 
 # Testing
 test: clear up mig-run

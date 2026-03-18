@@ -11,6 +11,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use chrono::Datelike;
 use kameo::Reply;
 use kameo::prelude::*;
 use sqlx::PgPool;
@@ -21,7 +22,10 @@ use ulid::Ulid;
 use crate::db;
 use crate::domain::profile::Quality;
 use crate::domain::video::{DownloadProgress, Video};
-use crate::ytdlp::{DownloadResult, YtdlpClient, YtdlpError};
+use crate::ytdlp::{DownloadRequest, DownloadResult, OutputTemplateData, YtdlpClient, YtdlpError};
+
+const INCOMPLETE_DIR_NAME: &str = "incomplete";
+const COMPLETED_DIR_NAME: &str = "completed";
 
 /// Configuration for a download worker.
 #[derive(Debug, Clone)]
@@ -34,6 +38,10 @@ pub struct DownloadConfig {
     pub output_dir: PathBuf,
     /// Naming template for the output file.
     pub naming_template: String,
+    /// Source id for template context.
+    pub source_id: Ulid,
+    /// Source display name for template context.
+    pub source_name: String,
 }
 
 /// Result of a download operation, sent back to the supervisor.
@@ -109,8 +117,12 @@ impl Actor for DownloadWorker {
             progress_tx: args.progress_tx,
         };
 
-        // Immediately trigger the download
-        actor_ref.tell(StartDownload).await?;
+        // Immediately trigger the download.
+        // Use try_send() to avoid potential deadlock from self-tell with bounded mailbox.
+        if let Err(e) = actor_ref.tell(StartDownload).try_send() {
+            error!(error = %e, "Failed to start download");
+            return Err(e.into());
+        }
 
         Ok(worker)
     }
@@ -170,16 +182,19 @@ impl DownloadWorker {
 
         // Build the video URL
         let url = self.build_video_url();
+        let template_data = self.build_template_data().await;
 
         // Execute download with timeout
-        let download_future = self.ytdlp.download_video_to_dir(
-            &url,
-            &self.config.output_dir,
-            &self.config.naming_template,
-            &self.config.quality,
+        let incomplete_dir = self.incomplete_dir();
+        let download_future = self.ytdlp.download_video_to_dir(DownloadRequest {
+            url: &url,
+            output_dir: &incomplete_dir,
+            naming_template: &self.config.naming_template,
+            template_data: &template_data,
+            quality: &self.config.quality,
             video_id,
-            Some(self.progress_tx.clone()),
-        );
+            progress_tx: Some(self.progress_tx.clone()),
+        });
 
         let result = tokio::time::timeout(self.config.timeout, download_future).await;
 
@@ -236,7 +251,29 @@ impl DownloadWorker {
     /// Handle a successful download.
     async fn handle_success(&self, result: DownloadResult) -> DownloadOutcome {
         let video_id = self.video.id;
-        let file_path_str = result.file_path.to_string_lossy().to_string();
+        let incomplete_dir = self.incomplete_dir();
+        let completed_dir = self.completed_dir();
+        let final_path = match Self::move_to_completed(
+            &result.file_path,
+            &incomplete_dir,
+            &completed_dir,
+        )
+        .await
+        {
+            Ok(path) => path,
+            Err(error) => {
+                let message = format!(
+                    "Downloaded media but failed to move file into completed directory: {error}"
+                );
+                error!(video_id = %video_id, error = %message, "Failed to finalize completed file");
+                return DownloadOutcome::Failed {
+                    video_id,
+                    error: message,
+                    is_rate_limited: false,
+                };
+            }
+        };
+        let file_path_str = final_path.to_string_lossy().to_string();
 
         info!(
             file_path = %file_path_str,
@@ -255,9 +292,97 @@ impl DownloadWorker {
 
         DownloadOutcome::Success {
             video_id,
-            file_path: result.file_path,
+            file_path: final_path,
             file_size_bytes: result.file_size_bytes,
         }
+    }
+
+    fn incomplete_dir(&self) -> PathBuf {
+        self.config.output_dir.join(INCOMPLETE_DIR_NAME)
+    }
+
+    fn completed_dir(&self) -> PathBuf {
+        self.config.output_dir.join(COMPLETED_DIR_NAME)
+    }
+
+    async fn move_to_completed(
+        source_path: &std::path::Path,
+        incomplete_dir: &std::path::Path,
+        completed_dir: &std::path::Path,
+    ) -> std::io::Result<PathBuf> {
+        // Compute relative path from incomplete_dir to preserve subdirectory structure.
+        // e.g., incomplete/AliSiddiq/video.mkv -> AliSiddiq/video.mkv -> completed/AliSiddiq/video.mkv
+        let relative_path = source_path
+            .strip_prefix(incomplete_dir)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
+
+        if relative_path.as_os_str().is_empty() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Downloaded file path has no filename",
+            ));
+        }
+
+        let destination_path = completed_dir.join(relative_path);
+
+        // Create parent directories if the template includes subdirectories
+        if let Some(parent) = destination_path.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+
+        if tokio::fs::try_exists(&destination_path).await? {
+            tokio::fs::remove_file(&destination_path).await?;
+        }
+
+        match tokio::fs::rename(source_path, &destination_path).await {
+            Ok(()) => Ok(destination_path),
+            Err(error) if error.kind() == std::io::ErrorKind::CrossesDevices => {
+                tokio::fs::copy(source_path, &destination_path).await?;
+                tokio::fs::remove_file(source_path).await?;
+                Ok(destination_path)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    async fn build_template_data(&self) -> OutputTemplateData {
+        let publication_time = self.video.published_at.unwrap_or(self.video.created_at);
+        let episode_index = self
+            .episode_index_for_day(publication_time.date_naive())
+            .await
+            .unwrap_or(1);
+
+        OutputTemplateData {
+            source_name: self.config.source_name.clone(),
+            episode_date: publication_time.date_naive(),
+            season_year: publication_time.year(),
+            episode_index,
+            fallback_title: self.video.title.clone(),
+        }
+    }
+
+    async fn episode_index_for_day(&self, day: chrono::NaiveDate) -> Option<usize> {
+        let videos = db::list_videos_for_source(&self.pool, self.config.source_id)
+            .await
+            .ok()?;
+
+        let mut day_videos: Vec<&Video> = videos
+            .iter()
+            .filter(|video| video.published_at.unwrap_or(video.created_at).date_naive() == day)
+            .collect();
+
+        day_videos.sort_by(|a, b| {
+            let a_time = a.published_at.unwrap_or(a.created_at);
+            let b_time = b.published_at.unwrap_or(b.created_at);
+            a_time
+                .cmp(&b_time)
+                .then_with(|| a.id.to_string().cmp(&b.id.to_string()))
+        });
+
+        day_videos
+            .iter()
+            .position(|video| video.id == self.video.id)
+            .map(|idx| idx + 1)
     }
 
     /// Handle a download error.
@@ -312,6 +437,9 @@ impl Message<GetStatus> for DownloadWorker {
 
 #[cfg(test)]
 mod tests {
+    use super::DownloadWorker;
+    use tempfile::TempDir;
+
     #[test]
     fn test_build_video_url_youtube() {
         // We can't easily test the full actor, but we can test URL building logic
@@ -353,5 +481,119 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[tokio::test]
+    async fn test_move_to_completed_preserves_subdirectory() {
+        let temp = TempDir::new().unwrap();
+        let incomplete_dir = temp.path().join("incomplete");
+        let completed_dir = temp.path().join("completed");
+
+        // Create subdirectory structure: incomplete/AliSiddiq/video.mkv
+        let subdir = incomplete_dir.join("AliSiddiq");
+        std::fs::create_dir_all(&subdir).unwrap();
+        let source_file = subdir.join("video.mkv");
+        std::fs::write(&source_file, b"test content").unwrap();
+
+        let result =
+            DownloadWorker::move_to_completed(&source_file, &incomplete_dir, &completed_dir)
+                .await
+                .unwrap();
+
+        // Should preserve subdirectory: completed/AliSiddiq/video.mkv
+        assert_eq!(result, completed_dir.join("AliSiddiq").join("video.mkv"));
+        assert!(result.exists());
+        assert!(!source_file.exists());
+    }
+
+    #[tokio::test]
+    async fn test_move_to_completed_flat_file() {
+        let temp = TempDir::new().unwrap();
+        let incomplete_dir = temp.path().join("incomplete");
+        let completed_dir = temp.path().join("completed");
+
+        // Create flat file: incomplete/video.mkv
+        std::fs::create_dir_all(&incomplete_dir).unwrap();
+        let source_file = incomplete_dir.join("video.mkv");
+        std::fs::write(&source_file, b"test content").unwrap();
+
+        let result =
+            DownloadWorker::move_to_completed(&source_file, &incomplete_dir, &completed_dir)
+                .await
+                .unwrap();
+
+        // Should be: completed/video.mkv
+        assert_eq!(result, completed_dir.join("video.mkv"));
+        assert!(result.exists());
+        assert!(!source_file.exists());
+    }
+
+    #[tokio::test]
+    async fn test_move_to_completed_nested_subdirectories() {
+        let temp = TempDir::new().unwrap();
+        let incomplete_dir = temp.path().join("incomplete");
+        let completed_dir = temp.path().join("completed");
+
+        // Create nested structure: incomplete/Channel/2026/video.mkv
+        let subdir = incomplete_dir.join("Channel").join("2026");
+        std::fs::create_dir_all(&subdir).unwrap();
+        let source_file = subdir.join("video.mkv");
+        std::fs::write(&source_file, b"test content").unwrap();
+
+        let result =
+            DownloadWorker::move_to_completed(&source_file, &incomplete_dir, &completed_dir)
+                .await
+                .unwrap();
+
+        // Should preserve full structure: completed/Channel/2026/video.mkv
+        assert_eq!(
+            result,
+            completed_dir.join("Channel").join("2026").join("video.mkv")
+        );
+        assert!(result.exists());
+    }
+
+    #[tokio::test]
+    async fn test_move_to_completed_overwrites_existing() {
+        let temp = TempDir::new().unwrap();
+        let incomplete_dir = temp.path().join("incomplete");
+        let completed_dir = temp.path().join("completed");
+
+        // Create source file
+        std::fs::create_dir_all(&incomplete_dir).unwrap();
+        let source_file = incomplete_dir.join("video.mkv");
+        std::fs::write(&source_file, b"new content").unwrap();
+
+        // Create existing destination file
+        std::fs::create_dir_all(&completed_dir).unwrap();
+        let dest_file = completed_dir.join("video.mkv");
+        std::fs::write(&dest_file, b"old content").unwrap();
+
+        let result =
+            DownloadWorker::move_to_completed(&source_file, &incomplete_dir, &completed_dir)
+                .await
+                .unwrap();
+
+        assert_eq!(result, dest_file);
+        assert_eq!(std::fs::read_to_string(&result).unwrap(), "new content");
+    }
+
+    #[tokio::test]
+    async fn test_move_to_completed_invalid_prefix() {
+        let temp = TempDir::new().unwrap();
+        let incomplete_dir = temp.path().join("incomplete");
+        let completed_dir = temp.path().join("completed");
+        let other_dir = temp.path().join("other");
+
+        // Create file in a different directory
+        std::fs::create_dir_all(&other_dir).unwrap();
+        let source_file = other_dir.join("video.mkv");
+        std::fs::write(&source_file, b"test content").unwrap();
+
+        // Should fail because source_file is not under incomplete_dir
+        let result =
+            DownloadWorker::move_to_completed(&source_file, &incomplete_dir, &completed_dir).await;
+
+        assert!(result.is_err());
     }
 }

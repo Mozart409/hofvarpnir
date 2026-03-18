@@ -21,6 +21,7 @@ use ulid::Ulid;
 use crate::config::DownloadConfig as AppDownloadConfig;
 use crate::db;
 use crate::domain::profile::Profile;
+use crate::domain::source::Source;
 use crate::domain::video::{DownloadProgress, Video, VideoStatus};
 use crate::ytdlp::YtdlpClient;
 
@@ -131,6 +132,7 @@ impl Actor for DownloadSupervisor {
 pub struct EnqueueDownload {
     pub video: Video,
     pub profile: Profile,
+    pub source: Source,
 }
 
 impl Message<EnqueueDownload> for DownloadSupervisor {
@@ -182,6 +184,7 @@ impl Message<EnqueueDownload> for DownloadSupervisor {
 
         let video = msg.video;
         let profile = msg.profile;
+        let source = msg.source;
 
         // Spawn a task to handle the download with rate limiting and semaphore
         tokio::spawn(async move {
@@ -209,6 +212,11 @@ impl Message<EnqueueDownload> for DownloadSupervisor {
                 quality: profile.quality.clone(),
                 output_dir: PathBuf::from(&profile.output_dir),
                 naming_template: profile.naming_template.clone(),
+                source_id: source.id,
+                source_name: source
+                    .custom_name
+                    .clone()
+                    .unwrap_or_else(|| source.url.clone()),
             };
 
             // Spawn the worker actor
@@ -383,8 +391,12 @@ impl Message<ProcessPendingDownloads> for DownloadSupervisor {
 
             // Enqueue the download
             ctx.actor_ref()
-                .tell(EnqueueDownload { video, profile })
-                .await
+                .tell(EnqueueDownload {
+                    video,
+                    profile,
+                    source,
+                })
+                .try_send()
                 .map_err(|e| e.to_string())?;
         }
 

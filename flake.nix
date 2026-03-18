@@ -50,17 +50,23 @@
           opencode
           opentofu
           dbeaver-bin
+          playwright-driver.browsers
           postgresql_17
           rust
           sqlx-cli
           sqruff
           tailwindcss_4
           trivy
+          ffmpeg
+          yt-dlp
         ];
         shellHook = ''
           lefthook install
           cog install-hook
+          yt-dlp --version
           export COMPOSE_BAKE=true
+          export PLAYWRIGHT_BROWSERS_PATH=${pkgs.playwright-driver.browsers}
+          export PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS=true
         '';
       };
     });

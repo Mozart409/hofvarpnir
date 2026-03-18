@@ -77,6 +77,7 @@ pub async fn run_migrations(pool: &PgPool) -> Result<(), DbError> {
 pub struct CreateUser<'a> {
     pub email: &'a str,
     pub name: &'a str,
+    pub password_hash: &'a str,
 }
 
 /// Data for updating an existing user.
@@ -84,6 +85,7 @@ pub struct CreateUser<'a> {
 pub struct UpdateUser<'a> {
     pub email: Option<&'a str>,
     pub name: Option<&'a str>,
+    pub password_hash: Option<&'a str>,
 }
 
 /// Create a new user.
@@ -95,14 +97,15 @@ pub async fn create_user(pool: &PgPool, data: CreateUser<'_>) -> Result<User, Db
     let id = Ulid::new();
     let row = sqlx::query_as::<_, UserRow>(
         r"
-        INSERT INTO users (id, email, name)
-        VALUES ($1, $2, $3)
-        RETURNING id, email, name, created_at, updated_at
+        INSERT INTO users (id, email, name, password_hash)
+        VALUES ($1, $2, $3, $4)
+        RETURNING id, email, name, password_hash, created_at, updated_at
         ",
     )
     .bind(id.to_string())
     .bind(data.email)
     .bind(data.name)
+    .bind(data.password_hash)
     .fetch_one(pool)
     .await?;
 
@@ -117,7 +120,7 @@ pub async fn create_user(pool: &PgPool, data: CreateUser<'_>) -> Result<User, Db
 pub async fn get_user(pool: &PgPool, id: Ulid) -> Result<User, DbError> {
     let row = sqlx::query_as::<_, UserRow>(
         r"
-        SELECT id, email, name, created_at, updated_at
+        SELECT id, email, name, password_hash, created_at, updated_at
         FROM users
         WHERE id = $1
         ",
@@ -138,7 +141,7 @@ pub async fn get_user(pool: &PgPool, id: Ulid) -> Result<User, DbError> {
 pub async fn get_user_by_email(pool: &PgPool, email: &str) -> Result<User, DbError> {
     let row = sqlx::query_as::<_, UserRow>(
         r"
-        SELECT id, email, name, created_at, updated_at
+        SELECT id, email, name, password_hash, created_at, updated_at
         FROM users
         WHERE email = $1
         ",
@@ -159,7 +162,7 @@ pub async fn get_user_by_email(pool: &PgPool, email: &str) -> Result<User, DbErr
 pub async fn list_users(pool: &PgPool) -> Result<Vec<User>, DbError> {
     let rows = sqlx::query_as::<_, UserRow>(
         r"
-        SELECT id, email, name, created_at, updated_at
+        SELECT id, email, name, password_hash, created_at, updated_at
         FROM users
         ORDER BY created_at DESC
         ",
@@ -183,14 +186,16 @@ pub async fn update_user(pool: &PgPool, id: Ulid, data: UpdateUser<'_>) -> Resul
         r"
         UPDATE users
         SET email = COALESCE($2, email),
-            name = COALESCE($3, name)
+            name = COALESCE($3, name),
+            password_hash = COALESCE($4, password_hash)
         WHERE id = $1
-        RETURNING id, email, name, created_at, updated_at
+        RETURNING id, email, name, password_hash, created_at, updated_at
         ",
     )
     .bind(id.to_string())
     .bind(data.email)
     .bind(data.name)
+    .bind(data.password_hash)
     .fetch_optional(pool)
     .await?
     .ok_or(DbError::NotFound)?;
@@ -442,6 +447,14 @@ pub struct UpdateSource<'a> {
     pub retention_days: Option<Option<i32>>,
 }
 
+// SQL fragment for selecting all source columns
+const SOURCE_COLUMNS: &str = r"
+    id, profile_id, url, source_type, custom_name,
+    index_frequency_secs, cutoff_date, retention_days,
+    last_indexed_at, last_error, index_error_count, created_at, updated_at,
+    channel_id, channel_title, channel_description, channel_thumbnail_url, jellyfin_metadata_at
+";
+
 /// Create a new source.
 ///
 /// # Errors
@@ -449,26 +462,25 @@ pub struct UpdateSource<'a> {
 /// Returns an error if the database operation fails.
 pub async fn create_source(pool: &PgPool, data: CreateSource<'_>) -> Result<Source, DbError> {
     let id = Ulid::new();
-    let row = sqlx::query_as::<_, SourceRow>(
+    let query = format!(
         r"
         INSERT INTO sources (id, profile_id, url, source_type, custom_name,
                              index_frequency_secs, cutoff_date, retention_days)
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-        RETURNING id, profile_id, url, source_type, custom_name,
-                  index_frequency_secs, cutoff_date, retention_days,
-                  last_indexed_at, created_at, updated_at
-        ",
-    )
-    .bind(id.to_string())
-    .bind(data.profile_id.to_string())
-    .bind(data.url)
-    .bind(&data.source_type)
-    .bind(data.custom_name)
-    .bind(data.index_frequency_secs)
-    .bind(data.cutoff_date)
-    .bind(data.retention_days)
-    .fetch_one(pool)
-    .await?;
+        RETURNING {SOURCE_COLUMNS}
+        "
+    );
+    let row = sqlx::query_as::<_, SourceRow>(&query)
+        .bind(id.to_string())
+        .bind(data.profile_id.to_string())
+        .bind(data.url)
+        .bind(&data.source_type)
+        .bind(data.custom_name)
+        .bind(data.index_frequency_secs)
+        .bind(data.cutoff_date)
+        .bind(data.retention_days)
+        .fetch_one(pool)
+        .await?;
 
     Ok(Source::try_from(row)?)
 }
@@ -479,19 +491,18 @@ pub async fn create_source(pool: &PgPool, data: CreateSource<'_>) -> Result<Sour
 ///
 /// Returns `DbError::NotFound` if the source doesn't exist.
 pub async fn get_source(pool: &PgPool, id: Ulid) -> Result<Source, DbError> {
-    let row = sqlx::query_as::<_, SourceRow>(
+    let query = format!(
         r"
-        SELECT id, profile_id, url, source_type, custom_name,
-               index_frequency_secs, cutoff_date, retention_days,
-               last_indexed_at, created_at, updated_at
+        SELECT {SOURCE_COLUMNS}
         FROM sources
         WHERE id = $1
-        ",
-    )
-    .bind(id.to_string())
-    .fetch_optional(pool)
-    .await?
-    .ok_or(DbError::NotFound)?;
+        "
+    );
+    let row = sqlx::query_as::<_, SourceRow>(&query)
+        .bind(id.to_string())
+        .fetch_optional(pool)
+        .await?
+        .ok_or(DbError::NotFound)?;
 
     Ok(Source::try_from(row)?)
 }
@@ -505,19 +516,18 @@ pub async fn list_sources_for_profile(
     pool: &PgPool,
     profile_id: Ulid,
 ) -> Result<Vec<Source>, DbError> {
-    let rows = sqlx::query_as::<_, SourceRow>(
+    let query = format!(
         r"
-        SELECT id, profile_id, url, source_type, custom_name,
-               index_frequency_secs, cutoff_date, retention_days,
-               last_indexed_at, created_at, updated_at
+        SELECT {SOURCE_COLUMNS}
         FROM sources
         WHERE profile_id = $1
         ORDER BY created_at DESC
-        ",
-    )
-    .bind(profile_id.to_string())
-    .fetch_all(pool)
-    .await?;
+        "
+    );
+    let rows = sqlx::query_as::<_, SourceRow>(&query)
+        .bind(profile_id.to_string())
+        .fetch_all(pool)
+        .await?;
 
     rows.into_iter()
         .map(Source::try_from)
@@ -531,17 +541,16 @@ pub async fn list_sources_for_profile(
 ///
 /// Returns an error if the database operation fails.
 pub async fn list_sources(pool: &PgPool) -> Result<Vec<Source>, DbError> {
-    let rows = sqlx::query_as::<_, SourceRow>(
+    let query = format!(
         r"
-        SELECT id, profile_id, url, source_type, custom_name,
-               index_frequency_secs, cutoff_date, retention_days,
-               last_indexed_at, created_at, updated_at
+        SELECT {SOURCE_COLUMNS}
         FROM sources
         ORDER BY created_at DESC
-        ",
-    )
-    .fetch_all(pool)
-    .await?;
+        "
+    );
+    let rows = sqlx::query_as::<_, SourceRow>(&query)
+        .fetch_all(pool)
+        .await?;
 
     rows.into_iter()
         .map(Source::try_from)
@@ -559,19 +568,18 @@ pub async fn list_sources(pool: &PgPool) -> Result<Vec<Source>, DbError> {
 ///
 /// Returns an error if the database operation fails.
 pub async fn list_sources_due_for_indexing(pool: &PgPool) -> Result<Vec<Source>, DbError> {
-    let rows = sqlx::query_as::<_, SourceRow>(
+    let query = format!(
         r"
-        SELECT id, profile_id, url, source_type, custom_name,
-               index_frequency_secs, cutoff_date, retention_days,
-               last_indexed_at, created_at, updated_at
+        SELECT {SOURCE_COLUMNS}
         FROM sources
         WHERE last_indexed_at IS NULL
            OR last_indexed_at + make_interval(secs => index_frequency_secs) < NOW()
         ORDER BY last_indexed_at NULLS FIRST
-        ",
-    )
-    .fetch_all(pool)
-    .await?;
+        "
+    );
+    let rows = sqlx::query_as::<_, SourceRow>(&query)
+        .fetch_all(pool)
+        .await?;
 
     rows.into_iter()
         .map(Source::try_from)
@@ -589,7 +597,7 @@ pub async fn update_source(
     id: Ulid,
     data: UpdateSource<'_>,
 ) -> Result<Source, DbError> {
-    let row = sqlx::query_as::<_, SourceRow>(
+    let query = format!(
         r"
         UPDATE sources
         SET url = COALESCE($2, url),
@@ -599,28 +607,27 @@ pub async fn update_source(
             cutoff_date = COALESCE($7, cutoff_date),
             retention_days = CASE WHEN $8 THEN $9 ELSE retention_days END
         WHERE id = $1
-        RETURNING id, profile_id, url, source_type, custom_name,
-                  index_frequency_secs, cutoff_date, retention_days,
-                  last_indexed_at, created_at, updated_at
-        ",
-    )
-    .bind(id.to_string())
-    .bind(data.url)
-    .bind(data.source_type.as_ref())
-    .bind(data.custom_name.is_some())
-    .bind(data.custom_name.flatten())
-    .bind(data.index_frequency_secs)
-    .bind(data.cutoff_date)
-    .bind(data.retention_days.is_some())
-    .bind(data.retention_days.flatten())
-    .fetch_optional(pool)
-    .await?
-    .ok_or(DbError::NotFound)?;
+        RETURNING {SOURCE_COLUMNS}
+        "
+    );
+    let row = sqlx::query_as::<_, SourceRow>(&query)
+        .bind(id.to_string())
+        .bind(data.url)
+        .bind(data.source_type.as_ref())
+        .bind(data.custom_name.is_some())
+        .bind(data.custom_name.flatten())
+        .bind(data.index_frequency_secs)
+        .bind(data.cutoff_date)
+        .bind(data.retention_days.is_some())
+        .bind(data.retention_days.flatten())
+        .fetch_optional(pool)
+        .await?
+        .ok_or(DbError::NotFound)?;
 
     Ok(Source::try_from(row)?)
 }
 
-/// Update the last indexed timestamp for a source.
+/// Update the last indexed timestamp for a source and clear any error state.
 ///
 /// # Errors
 ///
@@ -633,7 +640,9 @@ pub async fn update_source_last_indexed(
     let result = sqlx::query(
         r"
         UPDATE sources
-        SET last_indexed_at = $2
+        SET last_indexed_at = $2,
+            last_error = NULL,
+            index_error_count = 0
         WHERE id = $1
         ",
     )
@@ -647,6 +656,139 @@ pub async fn update_source_last_indexed(
     }
 
     Ok(())
+}
+
+/// Record an indexing error for a source.
+///
+/// Increments the error count and stores the error message.
+///
+/// # Errors
+///
+/// Returns `DbError::NotFound` if the source doesn't exist.
+pub async fn record_source_indexing_error(
+    pool: &PgPool,
+    id: Ulid,
+    error: &str,
+) -> Result<(), DbError> {
+    let result = sqlx::query(
+        r"
+        UPDATE sources
+        SET last_error = $2,
+            index_error_count = index_error_count + 1
+        WHERE id = $1
+        ",
+    )
+    .bind(id.to_string())
+    .bind(error)
+    .execute(pool)
+    .await?;
+
+    if result.rows_affected() == 0 {
+        return Err(DbError::NotFound);
+    }
+
+    Ok(())
+}
+
+/// Data for updating channel metadata on a source.
+#[derive(Debug, Clone, Default)]
+pub struct UpdateChannelMetadata<'a> {
+    pub channel_id: Option<&'a str>,
+    pub channel_title: Option<&'a str>,
+    pub channel_description: Option<&'a str>,
+    pub channel_thumbnail_url: Option<&'a str>,
+}
+
+/// Update channel metadata for a source (from indexing results).
+///
+/// # Errors
+///
+/// Returns `DbError::NotFound` if the source doesn't exist.
+pub async fn update_source_channel_metadata(
+    pool: &PgPool,
+    id: Ulid,
+    data: UpdateChannelMetadata<'_>,
+) -> Result<(), DbError> {
+    let result = sqlx::query(
+        r"
+        UPDATE sources
+        SET channel_id = COALESCE($2, channel_id),
+            channel_title = COALESCE($3, channel_title),
+            channel_description = COALESCE($4, channel_description),
+            channel_thumbnail_url = COALESCE($5, channel_thumbnail_url)
+        WHERE id = $1
+        ",
+    )
+    .bind(id.to_string())
+    .bind(data.channel_id)
+    .bind(data.channel_title)
+    .bind(data.channel_description)
+    .bind(data.channel_thumbnail_url)
+    .execute(pool)
+    .await?;
+
+    if result.rows_affected() == 0 {
+        return Err(DbError::NotFound);
+    }
+
+    Ok(())
+}
+
+/// Update the Jellyfin metadata generation timestamp.
+///
+/// # Errors
+///
+/// Returns `DbError::NotFound` if the source doesn't exist.
+pub async fn update_source_jellyfin_metadata_at(
+    pool: &PgPool,
+    id: Ulid,
+    timestamp: DateTime<Utc>,
+) -> Result<(), DbError> {
+    let result = sqlx::query(
+        r"
+        UPDATE sources
+        SET jellyfin_metadata_at = $2
+        WHERE id = $1
+        ",
+    )
+    .bind(id.to_string())
+    .bind(timestamp)
+    .execute(pool)
+    .await?;
+
+    if result.rows_affected() == 0 {
+        return Err(DbError::NotFound);
+    }
+
+    Ok(())
+}
+
+/// List sources that need Jellyfin metadata generation.
+///
+/// A source needs metadata generation if:
+/// - `jellyfin_metadata_at` is NULL (never generated), OR
+/// - Metadata files are missing (checked externally)
+///
+/// # Errors
+///
+/// Returns an error if the database operation fails.
+pub async fn list_sources_needing_jellyfin_metadata(pool: &PgPool) -> Result<Vec<Source>, DbError> {
+    let query = format!(
+        r"
+        SELECT {SOURCE_COLUMNS}
+        FROM sources
+        WHERE jellyfin_metadata_at IS NULL
+        ORDER BY created_at ASC
+        "
+    );
+    let rows = sqlx::query_as::<_, SourceRow>(&query)
+        .fetch_all(pool)
+        .await?;
+
+    rows.into_iter()
+        .map(Source::try_from)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(DbError::from)
 }
 
 /// Delete a source.
@@ -1327,6 +1469,7 @@ mod tests {
             CreateUser {
                 email: "test@example.com",
                 name: "Test User",
+                password_hash: "$argon2id$v=19$m=16,t=2,p=1$dGVzdHNhbHQ$test",
             },
         )
         .await
@@ -1355,6 +1498,7 @@ mod tests {
             CreateUser {
                 email: "crud@example.com",
                 name: "CRUD User",
+                password_hash: "$argon2id$v=19$m=16,t=2,p=1$dGVzdHNhbHQ$test",
             },
         )
         .await
@@ -1371,6 +1515,7 @@ mod tests {
             UpdateUser {
                 name: Some("Updated Name"),
                 email: None,
+                password_hash: None,
             },
         )
         .await

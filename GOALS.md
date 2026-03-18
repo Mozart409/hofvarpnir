@@ -290,19 +290,19 @@ forwarding parsed events to the render loop over `tokio::sync::mpsc`.
 
 ### Phase 5: Web UI
 
-- [ ] **Layout & Components** (`hof-web/src/pages.rs`)
-  - [ ] Base layout with Tailwind CSS 4
-  - [ ] Navigation component
-  - [ ] Form components
+- [x] **Layout & Components** (`hof-web/src/pages.rs`)
+  - [x] Base layout with Tailwind CSS 4
+  - [x] Navigation component
+  - [x] Form components
 
-- [ ] **Pages**
-  - [ ] Dashboard (overview of downloads)
-  - [ ] Profiles list and edit form
-  - [ ] Sources list and edit form
-  - [ ] Downloads list with live progress
+- [x] **Pages**
+  - [x] Dashboard (overview of downloads)
+  - [x] Profiles list and edit form
+  - [x] Sources list and edit form
+  - [x] Downloads list with live progress
 
-- [ ] **SSE for htmx** (`GET /web/downloads/progress`)
-  - [ ] HTML partial events for live updates
+- [x] **SSE for htmx** (`GET /web/downloads/progress`)
+  - [x] HTML partial events for live updates
 
 ### Phase 6: TUI
 

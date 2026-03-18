@@ -24,6 +24,9 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 futures.workspace = true
 tokio-stream.workspace = true
+tower-sessions.workspace = true
+tower-sessions-sqlx-store.workspace = true
+sqlx.workspace = true
 
 [lints]
 workspace = true

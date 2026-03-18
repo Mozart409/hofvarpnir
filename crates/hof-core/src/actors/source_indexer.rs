@@ -12,10 +12,11 @@ use sqlx::PgPool;
 use tracing::{debug, error, info, instrument, warn};
 use ulid::Ulid;
 
-use crate::db::{self, CreateVideo};
+use crate::db::{self, CreateVideo, UpdateChannelMetadata};
 use crate::domain::profile::Profile;
 use crate::domain::source::Source;
 use crate::domain::video::VideoStatus;
+use crate::jellyfin::{self, JellyfinMetadata};
 use crate::ytdlp::{PlaylistEntry, VideoMetadata, YtdlpClient, YtdlpError};
 
 use super::download_supervisor::{DownloadSupervisor, EnqueueDownload};
@@ -91,8 +92,12 @@ impl Actor for SourceIndexerActor {
             supervisor: args.supervisor,
         };
 
-        // Immediately start indexing
-        actor_ref.tell(StartIndexing).await?;
+        // Immediately start indexing.
+        // Use try_send() to avoid potential deadlock from self-tell with bounded mailbox.
+        if let Err(e) = actor_ref.tell(StartIndexing).try_send() {
+            error!(error = %e, "Failed to start indexing");
+            return Err(e.into());
+        }
 
         Ok(indexer)
     }
@@ -149,6 +154,7 @@ impl Message<IndexNow> for SourceIndexerActor {
 
 impl SourceIndexerActor {
     /// Execute the indexing process.
+    #[allow(clippy::too_many_lines)]
     #[instrument(skip(self), fields(source_id = %self.source.id, url = %self.source.url))]
     async fn execute_indexing(&mut self) -> IndexingResult {
         let mut result = IndexingResult {
@@ -167,7 +173,15 @@ impl SourceIndexerActor {
             Err(e) => {
                 let error_msg = format!("Failed to index source: {e}");
                 error!(error = %error_msg);
-                result.errors.push(error_msg);
+                result.errors.push(error_msg.clone());
+
+                // Record the error in the database
+                if let Err(db_err) =
+                    db::record_source_indexing_error(&self.pool, self.source.id, &error_msg).await
+                {
+                    error!(error = %db_err, "Failed to record indexing error in database");
+                }
+
                 return result;
             }
         };
@@ -179,16 +193,31 @@ impl SourceIndexerActor {
             "Source indexed successfully"
         );
 
-        // Process each entry
+        // Update channel metadata from index result
+        if let Err(e) = self.update_channel_metadata(&index_result).await {
+            warn!(error = %e, "Failed to update channel metadata");
+            result
+                .errors
+                .push(format!("Channel metadata update failed: {e}"));
+        }
+
+        // Process each entry.
+        // YouTube playlists are typically sorted newest-first, so we can stop early
+        // once we hit several consecutive videos before the cutoff date.
+        const MAX_CONSECUTIVE_BEFORE_CUTOFF: usize = 3;
+        let mut consecutive_before_cutoff = 0;
+
         for entry in &index_result.entries {
             match self.process_entry(entry, &index_result.platform).await {
                 EntryOutcome::New(video_id) => {
                     result.new_videos += 1;
+                    consecutive_before_cutoff = 0; // Reset counter
                     // Enqueue for download
                     self.enqueue_video(video_id).await;
                 }
                 EntryOutcome::Existing => {
                     result.existing_videos += 1;
+                    consecutive_before_cutoff = 0; // Reset counter
                 }
                 EntryOutcome::Filtered(reason) => {
                     debug!(
@@ -197,9 +226,45 @@ impl SourceIndexerActor {
                         "Entry filtered out"
                     );
                     result.filtered_out += 1;
+                    consecutive_before_cutoff = 0; // Not a cutoff filter
+                }
+                EntryOutcome::BeforeCutoff(reason) => {
+                    debug!(
+                        video_id = %entry.platform_video_id,
+                        reason = %reason,
+                        "Entry before cutoff date"
+                    );
+                    result.filtered_out += 1;
+                    consecutive_before_cutoff += 1;
+
+                    if consecutive_before_cutoff >= MAX_CONSECUTIVE_BEFORE_CUTOFF {
+                        info!(
+                            consecutive = consecutive_before_cutoff,
+                            "Stopping early: found {} consecutive videos before cutoff date",
+                            MAX_CONSECUTIVE_BEFORE_CUTOFF
+                        );
+                        break;
+                    }
+                }
+                EntryOutcome::RateLimited(reason) => {
+                    warn!(
+                        video_id = %entry.platform_video_id,
+                        reason = %reason,
+                        "Rate limited, stopping indexing"
+                    );
+                    result.errors.push(reason.clone());
+                    // Record error in database
+                    if let Err(db_err) =
+                        db::record_source_indexing_error(&self.pool, self.source.id, &reason).await
+                    {
+                        error!(error = %db_err, "Failed to record rate limit error");
+                    }
+                    // Stop indexing this source
+                    break;
                 }
                 EntryOutcome::Error(e) => {
                     result.errors.push(e);
+                    consecutive_before_cutoff = 0; // Reset on error
                 }
             }
         }
@@ -211,6 +276,22 @@ impl SourceIndexerActor {
             result
                 .errors
                 .push(format!("Failed to update last_indexed_at: {e}"));
+        }
+
+        // Generate Jellyfin metadata if needed (after we have channel metadata)
+        // Reload source to get updated channel metadata
+        if let Ok(updated_source) = db::get_source(&self.pool, self.source.id).await {
+            // Temporarily update our source reference for metadata generation
+            let indexer_with_updated_source = SourceIndexerActor {
+                pool: self.pool.clone(),
+                ytdlp: self.ytdlp.clone(),
+                source: updated_source,
+                profile: self.profile.clone(),
+                supervisor: self.supervisor.clone(),
+            };
+            indexer_with_updated_source
+                .generate_jellyfin_metadata_if_needed()
+                .await;
         }
 
         info!(
@@ -252,7 +333,7 @@ impl SourceIndexerActor {
     }
 
     /// Create a new video entry after fetching full metadata.
-    async fn create_new_video(&self, entry: &PlaylistEntry, platform: &str) -> EntryOutcome {
+    async fn create_new_video(&self, entry: &PlaylistEntry, _platform: &str) -> EntryOutcome {
         // Fetch full metadata to get published date and other info
         let metadata = match self.ytdlp.fetch_video_metadata(&entry.url).await {
             Ok(m) => m,
@@ -260,73 +341,56 @@ impl SourceIndexerActor {
                 return EntryOutcome::Filtered(format!("unavailable: {msg}"));
             }
             Err(YtdlpError::RateLimited(msg)) => {
-                return EntryOutcome::Error(format!("rate limited: {msg}"));
+                // Don't create videos when rate limited - we need proper metadata
+                // to check cutoff dates. Return error to stop early.
+                return EntryOutcome::RateLimited(format!("rate limited: {msg}"));
             }
             Err(e) => {
-                // For other errors, we might still want to create the video
-                // with limited metadata from the playlist entry
+                // For transient errors, skip this video but continue indexing
+                // Don't create videos without publish date since we can't enforce cutoff
                 warn!(
                     video_id = %entry.platform_video_id,
                     error = %e,
-                    "Failed to fetch metadata, using playlist data"
+                    "Failed to fetch metadata, skipping video"
                 );
-                return self.create_video_from_entry(entry, platform).await;
+                return EntryOutcome::Filtered(format!("metadata fetch failed: {e}"));
             }
         };
 
         // Apply filters based on full metadata
-        if !self.should_include_video(&metadata) {
-            return EntryOutcome::Filtered(self.filter_reason(&metadata));
+        if let Some(filter_outcome) = self.check_video_filter(&metadata) {
+            return filter_outcome;
         }
 
         // Create the video in the database
         self.create_video_from_metadata(&metadata).await
     }
 
-    /// Check if a video should be included based on profile settings and cutoff date.
-    fn should_include_video(&self, metadata: &VideoMetadata) -> bool {
+    /// Check if a video should be filtered based on profile settings and cutoff date.
+    /// Returns `None` if video should be included, or `Some(EntryOutcome)` if filtered.
+    fn check_video_filter(&self, metadata: &VideoMetadata) -> Option<EntryOutcome> {
         // Check shorts
         if !self.profile.include_shorts && metadata.is_short() {
-            return false;
+            return Some(EntryOutcome::Filtered("short video excluded".to_string()));
         }
 
         // Check livestreams
         if !self.profile.include_livestreams && (metadata.is_live || metadata.was_live) {
-            return false;
+            return Some(EntryOutcome::Filtered("livestream excluded".to_string()));
         }
 
-        // Check cutoff date
+        // Check cutoff date - use BeforeCutoff variant for early termination detection
         if let Some(published) = metadata.published_at {
             let published_date = published.date_naive();
             if published_date < self.source.cutoff_date {
-                return false;
-            }
-        }
-
-        true
-    }
-
-    /// Get the reason why a video was filtered.
-    fn filter_reason(&self, metadata: &VideoMetadata) -> String {
-        if !self.profile.include_shorts && metadata.is_short() {
-            return "short video excluded".to_string();
-        }
-
-        if !self.profile.include_livestreams && (metadata.is_live || metadata.was_live) {
-            return "livestream excluded".to_string();
-        }
-
-        if let Some(published) = metadata.published_at {
-            let published_date = published.date_naive();
-            if published_date < self.source.cutoff_date {
-                return format!(
+                return Some(EntryOutcome::BeforeCutoff(format!(
                     "published {} before cutoff {}",
                     published_date, self.source.cutoff_date
-                );
+                )));
             }
         }
 
-        "unknown".to_string()
+        None // Video should be included
     }
 
     /// Create a video from full metadata.
@@ -354,28 +418,51 @@ impl SourceIndexerActor {
         }
     }
 
-    /// Create a video from playlist entry (limited metadata).
-    async fn create_video_from_entry(&self, entry: &PlaylistEntry, platform: &str) -> EntryOutcome {
-        let create_video = CreateVideo {
-            platform,
-            platform_video_id: &entry.platform_video_id,
-            title: &entry.title,
-            description: None,
-            duration_secs: entry.duration_secs,
-            published_at: None, // Unknown without full metadata
-            thumbnail_url: entry.thumbnail_url.as_deref(),
+    /// Update channel metadata from indexing results.
+    async fn update_channel_metadata(
+        &self,
+        index_result: &crate::ytdlp::IndexResult,
+    ) -> Result<(), db::DbError> {
+        let metadata = UpdateChannelMetadata {
+            channel_id: index_result.channel_id.as_deref(),
+            channel_title: Some(&index_result.title),
+            channel_description: index_result.description.as_deref(),
+            channel_thumbnail_url: index_result.thumbnail_url.as_deref(),
         };
 
-        match db::upsert_video(&self.pool, create_video).await {
-            Ok(video) => {
-                // Link to this source
-                if let Err(e) = db::link_video_to_source(&self.pool, self.source.id, video.id).await
-                {
-                    return EntryOutcome::Error(format!("Failed to link video: {e}"));
-                }
-                EntryOutcome::New(video.id)
-            }
-            Err(e) => EntryOutcome::Error(format!("Failed to create video: {e}")),
+        db::update_source_channel_metadata(&self.pool, self.source.id, metadata).await
+    }
+
+    /// Generate Jellyfin metadata files if not already generated.
+    async fn generate_jellyfin_metadata_if_needed(&self) {
+        // Check if we should generate metadata
+        let output_dir = std::path::Path::new(&self.profile.output_dir).join("completed");
+
+        // Check if metadata needs regeneration
+        if !jellyfin::needs_regeneration(&output_dir, self.source.jellyfin_metadata_at, false) {
+            debug!("Jellyfin metadata already exists, skipping generation");
+            return;
+        }
+
+        info!("Generating Jellyfin metadata");
+
+        // Build metadata from source
+        let metadata = JellyfinMetadata::from_source(&self.source, "youtube");
+
+        // Create HTTP client for image downloads
+        let http_client = reqwest::Client::new();
+
+        // Generate metadata files
+        if let Err(e) = jellyfin::generate_metadata(&http_client, &metadata, &output_dir).await {
+            warn!(error = %e, "Failed to generate Jellyfin metadata");
+            return;
+        }
+
+        // Update timestamp in database
+        if let Err(e) =
+            db::update_source_jellyfin_metadata_at(&self.pool, self.source.id, Utc::now()).await
+        {
+            warn!(error = %e, "Failed to update Jellyfin metadata timestamp");
         }
     }
 
@@ -406,6 +493,7 @@ impl SourceIndexerActor {
             .tell(EnqueueDownload {
                 video,
                 profile: self.profile.clone(),
+                source: self.source.clone(),
             })
             .await
         {
@@ -420,8 +508,12 @@ enum EntryOutcome {
     New(Ulid),
     /// Video already existed.
     Existing,
-    /// Video was filtered out.
+    /// Video was filtered out (not due to cutoff date).
     Filtered(String),
+    /// Video was filtered because it's before the cutoff date.
+    BeforeCutoff(String),
+    /// Rate limited - should stop indexing this source.
+    RateLimited(String),
     /// Error occurred.
     Error(String),
 }
