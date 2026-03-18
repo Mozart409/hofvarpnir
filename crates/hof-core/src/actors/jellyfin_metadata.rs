@@ -13,7 +13,7 @@ use crate::db;
 use crate::jellyfin::{self, JellyfinMetadata};
 
 /// Default interval for checking metadata (24 hours).
-const DEFAULT_CHECK_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
+const DEFAULT_CHECK_INTERVAL: Duration = Duration::from_hours(24);
 
 /// Result of a metadata check cycle.
 #[derive(Debug, Clone, Reply)]
