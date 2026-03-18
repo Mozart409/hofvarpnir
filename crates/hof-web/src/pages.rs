@@ -24,6 +24,7 @@ use hof_core::{
         source::{Source, SourceType},
         video::{DownloadProgress, VideoStatus},
     },
+    ytdlp::validate_output_template,
 };
 use maud::{DOCTYPE, Markup, PreEscaped, Render, html};
 use serde::Deserialize;
@@ -594,11 +595,16 @@ async fn create_profile(
         }
     };
 
+    let naming_template = form.naming_template.trim();
+    if let Err(message) = validate_output_template(naming_template) {
+        return (StatusCode::BAD_REQUEST, error_page(&message)).into_response();
+    }
+
     let create = CreateProfile {
         user_id: auth.user_id,
         name: form.name.trim(),
         quality: form.quality.into(),
-        naming_template: form.naming_template.trim(),
+        naming_template,
         output_dir: form.output_dir.trim(),
         include_livestreams: form.include_livestreams.is_some(),
         include_shorts: form.include_shorts.is_some(),
@@ -641,10 +647,15 @@ async fn update_profile(
         }
     };
 
+    let naming_template = form.naming_template.trim();
+    if let Err(message) = validate_output_template(naming_template) {
+        return (StatusCode::BAD_REQUEST, error_page(&message)).into_response();
+    }
+
     let update = UpdateProfile {
         name: Some(form.name.trim()),
         quality: Some(form.quality.into()),
-        naming_template: Some(form.naming_template.trim()),
+        naming_template: Some(naming_template),
         output_dir: Some(form.output_dir.trim()),
         include_livestreams: Some(form.include_livestreams.is_some()),
         include_shorts: Some(form.include_shorts.is_some()),
@@ -1148,6 +1159,7 @@ async fn retry_download(
         .tell(EnqueueDownload {
             video: refreshed_video,
             profile,
+            source,
         })
         .await
     {

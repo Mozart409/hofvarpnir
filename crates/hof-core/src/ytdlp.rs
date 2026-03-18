@@ -9,7 +9,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use chrono::{DateTime, TimeZone, Utc};
+use chrono::{DateTime, NaiveDate, TimeZone, Utc};
 use tokio::sync::mpsc;
 use tracing::{debug, info, instrument};
 use ulid::Ulid;
@@ -186,6 +186,27 @@ pub struct DownloadResult {
     pub file_size_bytes: i64,
 }
 
+/// Parameters required to run a single download.
+pub struct DownloadRequest<'a> {
+    pub url: &'a str,
+    pub output_dir: &'a Path,
+    pub naming_template: &'a str,
+    pub template_data: &'a OutputTemplateData,
+    pub quality: &'a Quality,
+    pub video_id: Ulid,
+    pub progress_tx: Option<mpsc::Sender<DownloadProgress>>,
+}
+
+/// Context values used to render advanced output templates.
+#[derive(Debug, Clone)]
+pub struct OutputTemplateData {
+    pub source_name: String,
+    pub season_year: i32,
+    pub episode_date: NaiveDate,
+    pub episode_index: usize,
+    pub fallback_title: String,
+}
+
 /// Client for interacting with yt-dlp.
 ///
 /// This wraps the yt-dlp crate's `Downloader` and provides a higher-level API
@@ -303,43 +324,48 @@ impl YtdlpClient {
     ///
     /// # Arguments
     ///
-    /// * `url` - The video URL
-    /// * `output_dir` - The output directory
-    /// * `naming_template` - Filename template (e.g. `"{title}-{id}.{ext}"`)
-    /// * `quality` - The quality setting from the profile
-    /// * `video_id` - The internal video ID for progress tracking
-    /// * `progress_tx` - Channel to send progress updates
+    /// * `request` - Download request parameters and template context
     ///
     /// # Errors
     ///
     /// Returns an error if the download fails.
-    #[instrument(skip(self, progress_tx), fields(url = %url, quality = ?quality))]
+    #[instrument(skip(self, request), fields(url = %request.url, quality = ?request.quality))]
     pub async fn download_video(
         &self,
-        url: &str,
-        output_dir: &Path,
-        naming_template: &str,
-        quality: &Quality,
-        video_id: Ulid,
-        progress_tx: Option<mpsc::Sender<DownloadProgress>>,
+        request: DownloadRequest<'_>,
     ) -> Result<DownloadResult, YtdlpError> {
         info!("Starting video download");
 
         // First fetch video info
         let extractor = self.downloader.generic_extractor();
-        let video = extractor.fetch_video(url).await?;
+        let video = extractor.fetch_video(request.url).await?;
 
         let platform_video_id = video.id.clone();
 
         // Build output filename from template.
         // We resolve placeholders ourselves because this library path API expects
         // a concrete output path, not yt-dlp style template placeholders.
-        let output_filename =
-            render_output_filename(naming_template, &video.title, &platform_video_id);
-        let output_path = output_dir.join(output_filename);
+        let resolved_title = if video.title.trim().is_empty() {
+            request.template_data.fallback_title.as_str()
+        } else {
+            &video.title
+        };
+        let output_relative_path = render_output_relative_path(
+            request.naming_template,
+            resolved_title,
+            &platform_video_id,
+            request.template_data,
+        );
+        let output_path = request.output_dir.join(output_relative_path);
+
+        if let Some(parent) = output_path.parent() {
+            tokio::fs::create_dir_all(parent).await.map_err(|e| {
+                YtdlpError::DownloadError(format!("Failed to create output subdirectory: {e}"))
+            })?;
+        }
 
         // Build download with quality settings
-        let video_quality = quality_to_yt_quality(quality);
+        let video_quality = quality_to_yt_quality(request.quality);
 
         // Use the fluent download builder
         let result_path = self
@@ -357,11 +383,11 @@ impl YtdlpClient {
             .map_or(0, |m| i64::try_from(m.len()).unwrap_or(i64::MAX));
 
         // Send final progress update
-        if let Some(tx) = progress_tx {
+        if let Some(tx) = request.progress_tx {
             let size_u64 = u64::try_from(file_size).unwrap_or(0);
             let _ = tx
                 .send(DownloadProgress {
-                    video_id,
+                    video_id: request.video_id,
                     platform_video_id,
                     percent: 100.0,
                     speed: None,
@@ -386,39 +412,21 @@ impl YtdlpClient {
     ///
     /// # Arguments
     ///
-    /// * `url` - The video URL
-    /// * `output_dir` - The directory to save the file
-    /// * `naming_template` - Template for filename (e.g., `"{title}-{id}.{ext}"`)
-    /// * `quality` - The quality setting
-    /// * `video_id` - Internal video ID for progress tracking
-    /// * `progress_tx` - Channel for progress updates
+    /// * `request` - Download request parameters and template context
     ///
     /// # Errors
     ///
     /// Returns an error if the download fails.
     pub async fn download_video_to_dir(
         &self,
-        url: &str,
-        output_dir: &Path,
-        naming_template: &str,
-        quality: &Quality,
-        video_id: Ulid,
-        progress_tx: Option<mpsc::Sender<DownloadProgress>>,
+        request: DownloadRequest<'_>,
     ) -> Result<DownloadResult, YtdlpError> {
         // Create output directory if needed
-        tokio::fs::create_dir_all(output_dir)
+        tokio::fs::create_dir_all(request.output_dir)
             .await
             .map_err(|e| YtdlpError::DownloadError(format!("Failed to create output dir: {e}")))?;
 
-        self.download_video(
-            url,
-            output_dir,
-            naming_template,
-            quality,
-            video_id,
-            progress_tx,
-        )
-        .await
+        self.download_video(request).await
     }
 
     /// Detect the platform from a URL.
@@ -469,42 +477,181 @@ fn quality_to_yt_quality(quality: &Quality) -> VideoQuality {
     }
 }
 
-/// Render a filename from a user template.
+/// Render a relative output path from a user template.
 ///
 /// Supported placeholders:
-/// - `{title}` -> video title (sanitized)
-/// - `{id}` -> platform video ID (sanitized)
+/// - `{title}` / `{{ title }}` -> video title (sanitized)
+/// - `{id}` / `{{ id }}` -> platform video ID (sanitized)
 /// - `{ext}` / `%(ext)s` -> final container extension (`mkv`)
-fn render_output_filename(template: &str, title: &str, platform_video_id: &str) -> String {
+/// - `{{ source_custom_name/or default }}` -> source display name
+/// - `{{ season_by_year__episode_by_date_and_index }}` -> `SYYYYEYYYYMMDD-III`
+fn render_output_relative_path(
+    template: &str,
+    title: &str,
+    platform_video_id: &str,
+    template_data: &OutputTemplateData,
+) -> PathBuf {
     let safe_title = sanitize_filename_component(title);
     let safe_id = sanitize_filename_component(platform_video_id);
+    let safe_source = sanitize_filename_component(&template_data.source_name);
+    let season_episode = format!(
+        "S{}E{}-{:03}",
+        template_data.season_year,
+        template_data.episode_date.format("%Y%m%d"),
+        template_data.episode_index
+    );
 
     let mut rendered = template
         .replace("{title}", &safe_title)
         .replace("{id}", &safe_id)
         .replace("{ext}", "mkv")
-        .replace("%(ext)s", "mkv");
+        .replace("%(ext)s", "mkv")
+        .replace("{{ ext }}", "mkv")
+        .replace("{{ext}}", "mkv")
+        .replace("{{ title }}", &safe_title)
+        .replace("{{title}}", &safe_title)
+        .replace("{{ id }}", &safe_id)
+        .replace("{{id}}", &safe_id)
+        .replace("{{ source_custom_name/or default }}", &safe_source)
+        .replace("{{source_custom_name/or default}}", &safe_source)
+        .replace("{{ source_custom_name_or_default }}", &safe_source)
+        .replace("{{source_custom_name_or_default}}", &safe_source)
+        .replace(
+            "{{ season_by_year__episode_by_date_and_index }}",
+            &season_episode,
+        )
+        .replace(
+            "{{season_by_year__episode_by_date_and_index}}",
+            &season_episode,
+        );
 
-    // Prevent path traversal / nested directories from templates.
-    rendered = sanitize_filename_component(&rendered);
-
-    if rendered.is_empty() {
+    if rendered.trim().is_empty() {
         rendered = format!("{safe_title}-{safe_id}.mkv");
     }
 
-    let is_mkv_extension = std::path::Path::new(&rendered)
+    let rendered = rendered.replace('\\', "/");
+    let mut segments: Vec<String> = rendered
+        .split('/')
+        .map(str::trim)
+        .filter(|segment| !segment.is_empty() && *segment != "." && *segment != "..")
+        .map(sanitize_filename_component)
+        .filter(|segment| !segment.is_empty())
+        .collect();
+
+    if segments.is_empty() {
+        segments.push(format!("{safe_title}-{safe_id}.mkv"));
+    }
+
+    let last_segment = segments
+        .last_mut()
+        .expect("segments is guaranteed to contain at least one segment");
+
+    let is_mkv_extension = Path::new(last_segment)
         .extension()
         .is_some_and(|ext| ext.eq_ignore_ascii_case("mkv"));
     if !is_mkv_extension {
-        rendered.push_str(".mkv");
+        last_segment.push_str(".mkv");
     }
 
-    // Handle legacy templates that accidentally specify extension twice.
-    while rendered.ends_with(".mkv.mkv") {
-        rendered.truncate(rendered.len().saturating_sub(4));
+    while last_segment.ends_with(".mkv.mkv") {
+        last_segment.truncate(last_segment.len().saturating_sub(4));
     }
 
-    rendered
+    segments
+        .into_iter()
+        .fold(PathBuf::new(), |mut path, segment| {
+            path.push(segment);
+            path
+        })
+}
+
+/// Validate a user-provided naming template before persisting profile changes.
+///
+/// Allowed placeholders:
+/// - `{title}`, `{id}`, `{ext}`
+/// - `%(ext)s`
+/// - `{{ title }}`, `{{ id }}`, `{{ ext }}`
+/// - `{{ source_custom_name/or default }}`
+/// - `{{ season_by_year__episode_by_date_and_index }}`
+pub fn validate_output_template(template: &str) -> Result<(), String> {
+    let template = template.trim();
+    if template.is_empty() {
+        return Err("Naming template cannot be empty".to_string());
+    }
+
+    if let Some(raw) = find_unknown_double_brace_placeholder(template) {
+        return Err(format!(
+            "Unsupported template placeholder '{{{{ {raw} }}}}'. Allowed placeholders: title, id, ext, source_custom_name/or default, season_by_year__episode_by_date_and_index"
+        ));
+    }
+
+    if let Some(raw) = find_unknown_single_brace_placeholder(template) {
+        return Err(format!(
+            "Unsupported template placeholder '{{{raw}}}'. Allowed placeholders: title, id, ext"
+        ));
+    }
+
+    let normalized = template.replace('\\', "/");
+    for segment in normalized.split('/') {
+        let trimmed = segment.trim();
+        if trimmed == "." || trimmed == ".." {
+            return Err(
+                "Naming template cannot contain path traversal segments ('.' or '..')".to_string(),
+            );
+        }
+    }
+
+    Ok(())
+}
+
+fn find_unknown_double_brace_placeholder(template: &str) -> Option<String> {
+    const ALLOWED: &[&str] = &[
+        "title",
+        "id",
+        "ext",
+        "source_custom_name/or default",
+        "source_custom_name_or_default",
+        "season_by_year__episode_by_date_and_index",
+    ];
+
+    let mut rest = template;
+    while let Some(start) = rest.find("{{") {
+        let after_start = &rest[start + 2..];
+        let Some(end) = after_start.find("}}") else {
+            return Some("<unclosed-double-brace-placeholder>".to_string());
+        };
+        let placeholder = after_start[..end].trim();
+        if !ALLOWED.contains(&placeholder) {
+            return Some(placeholder.to_string());
+        }
+        rest = &after_start[end + 2..];
+    }
+
+    None
+}
+
+fn find_unknown_single_brace_placeholder(template: &str) -> Option<String> {
+    const ALLOWED: &[&str] = &["title", "id", "ext"];
+
+    let mut rest = template;
+    while let Some(start) = rest.find('{') {
+        if rest[start..].starts_with("{{") {
+            rest = &rest[start + 2..];
+            continue;
+        }
+
+        let after_start = &rest[start + 1..];
+        let Some(end) = after_start.find('}') else {
+            return Some("<unclosed-single-brace-placeholder>".to_string());
+        };
+        let placeholder = after_start[..end].trim();
+        if !ALLOWED.contains(&placeholder) {
+            return Some(placeholder.to_string());
+        }
+        rest = &after_start[end + 1..];
+    }
+
+    None
 }
 
 /// Sanitize text so it is safe as a single filename component.
@@ -552,6 +699,16 @@ pub fn filter_entries(
 mod tests {
     use super::*;
 
+    fn template_data() -> OutputTemplateData {
+        OutputTemplateData {
+            source_name: "F1 Channel".to_string(),
+            season_year: 2026,
+            episode_date: NaiveDate::from_ymd_opt(2026, 3, 18).expect("valid date"),
+            episode_index: 7,
+            fallback_title: "Fallback".to_string(),
+        }
+    }
+
     #[test]
     fn test_platform_detection() {
         assert_eq!(
@@ -594,26 +751,52 @@ mod tests {
 
     #[test]
     fn test_render_output_filename_default_template() {
-        let output = render_output_filename("{title}-{id}.{ext}", "Great Race", "Hx4xrg6wVNI");
-        assert_eq!(output, "Great Race-Hx4xrg6wVNI.mkv");
+        let output = render_output_relative_path(
+            "{title}-{id}.{ext}",
+            "Great Race",
+            "Hx4xrg6wVNI",
+            &template_data(),
+        );
+        assert_eq!(output, PathBuf::from("Great Race-Hx4xrg6wVNI.mkv"));
     }
 
     #[test]
     fn test_render_output_filename_legacy_double_ext_template() {
-        let output =
-            render_output_filename("{title}-{id}.{ext}.%(ext)s", "F1 overtakes", "Hx4xrg6wVNI");
-        assert_eq!(output, "F1 overtakes-Hx4xrg6wVNI.mkv");
+        let output = render_output_relative_path(
+            "{title}-{id}.{ext}.%(ext)s",
+            "F1 overtakes",
+            "Hx4xrg6wVNI",
+            &template_data(),
+        );
+        assert_eq!(output, PathBuf::from("F1 overtakes-Hx4xrg6wVNI.mkv"));
     }
 
     #[test]
     fn test_render_output_filename_sanitizes_path_chars() {
-        let output = render_output_filename("../{title}/{id}", "a/b:c*?", "id/1");
-        assert!(!output.contains('/'));
-        assert!(!output.contains('\\'));
+        let output =
+            render_output_relative_path("../{title}/{id}", "a/b:c*?", "id/1", &template_data());
+        let output_str = output.to_string_lossy();
+        assert!(!output_str.contains(".."));
+        assert!(!output_str.contains('\\'));
         assert!(
-            std::path::Path::new(&output)
+            output
                 .extension()
                 .is_some_and(|ext| ext.eq_ignore_ascii_case("mkv"))
+        );
+    }
+
+    #[test]
+    fn test_render_output_filename_advanced_template_with_folders() {
+        let output = render_output_relative_path(
+            "{{ source_custom_name/or default }}/{{ season_by_year__episode_by_date_and_index }} - {{ title }}.{{ ext }}",
+            "F1 Overtake Breakdown",
+            "Hx4xrg6wVNI",
+            &template_data(),
+        );
+
+        assert_eq!(
+            output,
+            PathBuf::from("F1 Channel/S2026E20260318-007 - F1 Overtake Breakdown.mkv")
         );
     }
 
@@ -679,5 +862,25 @@ mod tests {
         let filtered = filter_entries(&entries, true, false, None);
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].title, "Regular Video");
+    }
+
+    #[test]
+    fn test_validate_output_template_accepts_advanced_folders() {
+        let template = "{{ source_custom_name/or default }}/{{ season_by_year__episode_by_date_and_index }} - {{ title }}.{{ ext }}";
+        assert!(validate_output_template(template).is_ok());
+    }
+
+    #[test]
+    fn test_validate_output_template_rejects_unknown_placeholder() {
+        let template = "{{ source }}/{{ title }}.{{ ext }}";
+        let error = validate_output_template(template).expect_err("template should fail");
+        assert!(error.contains("Unsupported template placeholder"));
+    }
+
+    #[test]
+    fn test_validate_output_template_rejects_traversal_segment() {
+        let template = "../{{ title }}.{{ ext }}";
+        let error = validate_output_template(template).expect_err("template should fail");
+        assert!(error.contains("path traversal"));
     }
 }

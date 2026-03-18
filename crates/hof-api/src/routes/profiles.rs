@@ -17,6 +17,7 @@ use utoipa::ToSchema;
 use hof_core::{
     db::{self, CreateProfile, UpdateProfile},
     domain::profile::{Profile, Quality},
+    ytdlp::validate_output_template,
 };
 
 use crate::AppState;
@@ -230,11 +231,19 @@ pub async fn create_profile(
             .into_response();
     };
 
+    if let Err(message) = validate_output_template(req.naming_template.trim()) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse { error: message }),
+        )
+            .into_response();
+    }
+
     let data = CreateProfile {
         user_id,
         name: &req.name,
         quality: req.quality,
-        naming_template: &req.naming_template,
+        naming_template: req.naming_template.trim(),
         output_dir: &req.output_dir,
         include_livestreams: req.include_livestreams,
         include_shorts: req.include_shorts,
@@ -345,10 +354,25 @@ pub async fn update_profile(
             .into_response();
     };
 
+    let validated_naming_template = match req.naming_template.as_deref() {
+        Some(template) => {
+            let template = template.trim();
+            if let Err(message) = validate_output_template(template) {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse { error: message }),
+                )
+                    .into_response();
+            }
+            Some(template.to_string())
+        }
+        None => None,
+    };
+
     let data = UpdateProfile {
         name: req.name.as_deref(),
         quality: req.quality,
-        naming_template: req.naming_template.as_deref(),
+        naming_template: validated_naming_template.as_deref(),
         output_dir: req.output_dir.as_deref(),
         include_livestreams: req.include_livestreams,
         include_shorts: req.include_shorts,

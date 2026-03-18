@@ -11,6 +11,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use chrono::Datelike;
 use kameo::Reply;
 use kameo::prelude::*;
 use sqlx::PgPool;
@@ -21,7 +22,7 @@ use ulid::Ulid;
 use crate::db;
 use crate::domain::profile::Quality;
 use crate::domain::video::{DownloadProgress, Video};
-use crate::ytdlp::{DownloadResult, YtdlpClient, YtdlpError};
+use crate::ytdlp::{DownloadRequest, DownloadResult, OutputTemplateData, YtdlpClient, YtdlpError};
 
 const INCOMPLETE_DIR_NAME: &str = "incomplete";
 const COMPLETED_DIR_NAME: &str = "completed";
@@ -37,6 +38,10 @@ pub struct DownloadConfig {
     pub output_dir: PathBuf,
     /// Naming template for the output file.
     pub naming_template: String,
+    /// Source id for template context.
+    pub source_id: Ulid,
+    /// Source display name for template context.
+    pub source_name: String,
 }
 
 /// Result of a download operation, sent back to the supervisor.
@@ -177,17 +182,19 @@ impl DownloadWorker {
 
         // Build the video URL
         let url = self.build_video_url();
+        let template_data = self.build_template_data().await;
 
         // Execute download with timeout
         let incomplete_dir = self.incomplete_dir();
-        let download_future = self.ytdlp.download_video_to_dir(
-            &url,
-            &incomplete_dir,
-            &self.config.naming_template,
-            &self.config.quality,
+        let download_future = self.ytdlp.download_video_to_dir(DownloadRequest {
+            url: &url,
+            output_dir: &incomplete_dir,
+            naming_template: &self.config.naming_template,
+            template_data: &template_data,
+            quality: &self.config.quality,
             video_id,
-            Some(self.progress_tx.clone()),
-        );
+            progress_tx: Some(self.progress_tx.clone()),
+        });
 
         let result = tokio::time::timeout(self.config.timeout, download_future).await;
 
@@ -319,6 +326,46 @@ impl DownloadWorker {
             }
             Err(error) => Err(error),
         }
+    }
+
+    async fn build_template_data(&self) -> OutputTemplateData {
+        let publication_time = self.video.published_at.unwrap_or(self.video.created_at);
+        let episode_index = self
+            .episode_index_for_day(publication_time.date_naive())
+            .await
+            .unwrap_or(1);
+
+        OutputTemplateData {
+            source_name: self.config.source_name.clone(),
+            episode_date: publication_time.date_naive(),
+            season_year: publication_time.year(),
+            episode_index,
+            fallback_title: self.video.title.clone(),
+        }
+    }
+
+    async fn episode_index_for_day(&self, day: chrono::NaiveDate) -> Option<usize> {
+        let videos = db::list_videos_for_source(&self.pool, self.config.source_id)
+            .await
+            .ok()?;
+
+        let mut day_videos: Vec<&Video> = videos
+            .iter()
+            .filter(|video| video.published_at.unwrap_or(video.created_at).date_naive() == day)
+            .collect();
+
+        day_videos.sort_by(|a, b| {
+            let a_time = a.published_at.unwrap_or(a.created_at);
+            let b_time = b.published_at.unwrap_or(b.created_at);
+            a_time
+                .cmp(&b_time)
+                .then_with(|| a.id.to_string().cmp(&b.id.to_string()))
+        });
+
+        day_videos
+            .iter()
+            .position(|video| video.id == self.video.id)
+            .map(|idx| idx + 1)
     }
 
     /// Handle a download error.

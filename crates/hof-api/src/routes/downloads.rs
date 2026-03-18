@@ -434,7 +434,11 @@ pub async fn retry_download(
     // Enqueue the download
     match state
         .supervisor
-        .tell(EnqueueDownload { video, profile })
+        .tell(EnqueueDownload {
+            video,
+            profile,
+            source,
+        })
         .await
     {
         Ok(()) => (

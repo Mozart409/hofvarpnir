@@ -426,6 +426,7 @@ impl SourceIndexerActor {
             .tell(EnqueueDownload {
                 video,
                 profile: self.profile.clone(),
+                source: self.source.clone(),
             })
             .await
         {
