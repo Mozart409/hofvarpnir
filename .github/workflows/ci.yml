@@ -6,9 +6,6 @@ on:
     branches: [main]
 jobs:
   fmt:
-    concurrency:
-      group: fmt-${{ github.workflow }}-${{ github.head_ref || github.ref }}
-      cancel-in-progress: true
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -31,9 +28,6 @@ jobs:
         run: nix develop .#default --command cargo fmt --all -- --check
   clippy:
     runs-on: ubuntu-latest
-    concurrency:
-      group: clippy-${{ github.workflow }}-${{ github.head_ref || github.ref }}
-      cancel-in-progress: true
     steps:
       - uses: actions/checkout@v4
       - name: Setup Nix
@@ -55,9 +49,6 @@ jobs:
         run: nix develop .#default --command cargo clippy --all-targets --all-features -- -D warnings
   test:
     runs-on: ubuntu-latest
-    concurrency:
-      group: test-${{ github.workflow }}-${{ github.head_ref || github.ref }}
-      cancel-in-progress: true
     steps:
       - uses: actions/checkout@v4
       - name: Setup Nix
@@ -79,9 +70,6 @@ jobs:
         run: nix develop .#default --command cargo test --all-features
   build:
     runs-on: ubuntu-latest
-    concurrency:
-      group: build-${{ github.workflow }}-${{ github.head_ref || github.ref }}
-      cancel-in-progress: true
     steps:
       - uses: actions/checkout@v4
       - name: Setup Nix
@@ -111,10 +99,6 @@ jobs:
           - runner: ubuntu-24.04-arm
             arch: arm64
     runs-on: ${{ matrix.runner }}
-    # Separate concurrency group for container builds - don't cancel long-running builds
-    concurrency:
-      group: container-${{ github.workflow }}-${{ matrix.arch }}-${{ github.head_ref || github.ref }}
-      cancel-in-progress: false
     permissions:
       contents: read
       packages: write
@@ -132,19 +116,18 @@ jobs:
 
       - name: Push arch-specific image to GHCR (main branch only)
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        env:
+          REPO: ${{ github.repository }}
         run: |
           nix develop .#default --command skopeo copy \
             --dest-creds="${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}" \
             docker-archive:result \
-            "docker://ghcr.io/${{ github.repository }}:dev-${{ matrix.arch }}"
+            "docker://ghcr.io/${REPO,,}:dev-${{ matrix.arch }}"
 
   container-manifest:
     needs: container
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     runs-on: ubuntu-latest
-    concurrency:
-      group: container-manifest-${{ github.workflow }}-${{ github.head_ref || github.ref }}
-      cancel-in-progress: false
     permissions:
       contents: read
       packages: write
@@ -155,15 +138,19 @@ jobs:
         uses: DeterminateSystems/nix-installer-action@main
 
       - name: Create and push multi-arch manifest
+        env:
+          REPO: ${{ github.repository }}
         run: |
+          REPO_LOWER="${REPO,,}"
+          
           nix develop .#default --command skopeo login \
             -u "${{ github.actor }}" \
             -p "${{ secrets.GITHUB_TOKEN }}" \
             ghcr.io
 
           # Create manifest list combining both architectures
-          docker manifest create "ghcr.io/${{ github.repository }}:dev" \
-            "ghcr.io/${{ github.repository }}:dev-amd64" \
-            "ghcr.io/${{ github.repository }}:dev-arm64"
+          docker manifest create "ghcr.io/${REPO_LOWER}:dev" \
+            "ghcr.io/${REPO_LOWER}:dev-amd64" \
+            "ghcr.io/${REPO_LOWER}:dev-arm64"
 
-          docker manifest push "ghcr.io/${{ github.repository }}:dev"
+          docker manifest push "ghcr.io/${REPO_LOWER}:dev"
