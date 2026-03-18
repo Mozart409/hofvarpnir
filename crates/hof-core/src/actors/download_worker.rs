@@ -23,6 +23,9 @@ use crate::domain::profile::Quality;
 use crate::domain::video::{DownloadProgress, Video};
 use crate::ytdlp::{DownloadResult, YtdlpClient, YtdlpError};
 
+const INCOMPLETE_DIR_NAME: &str = "incomplete";
+const COMPLETED_DIR_NAME: &str = "completed";
+
 /// Configuration for a download worker.
 #[derive(Debug, Clone)]
 pub struct DownloadConfig {
@@ -176,9 +179,10 @@ impl DownloadWorker {
         let url = self.build_video_url();
 
         // Execute download with timeout
+        let incomplete_dir = self.incomplete_dir();
         let download_future = self.ytdlp.download_video_to_dir(
             &url,
-            &self.config.output_dir,
+            &incomplete_dir,
             &self.config.naming_template,
             &self.config.quality,
             video_id,
@@ -240,7 +244,22 @@ impl DownloadWorker {
     /// Handle a successful download.
     async fn handle_success(&self, result: DownloadResult) -> DownloadOutcome {
         let video_id = self.video.id;
-        let file_path_str = result.file_path.to_string_lossy().to_string();
+        let completed_dir = self.completed_dir();
+        let final_path = match Self::move_to_completed(&result.file_path, &completed_dir).await {
+            Ok(path) => path,
+            Err(error) => {
+                let message = format!(
+                    "Downloaded media but failed to move file into completed directory: {error}"
+                );
+                error!(video_id = %video_id, error = %message, "Failed to finalize completed file");
+                return DownloadOutcome::Failed {
+                    video_id,
+                    error: message,
+                    is_rate_limited: false,
+                };
+            }
+        };
+        let file_path_str = final_path.to_string_lossy().to_string();
 
         info!(
             file_path = %file_path_str,
@@ -259,8 +278,46 @@ impl DownloadWorker {
 
         DownloadOutcome::Success {
             video_id,
-            file_path: result.file_path,
+            file_path: final_path,
             file_size_bytes: result.file_size_bytes,
+        }
+    }
+
+    fn incomplete_dir(&self) -> PathBuf {
+        self.config.output_dir.join(INCOMPLETE_DIR_NAME)
+    }
+
+    fn completed_dir(&self) -> PathBuf {
+        self.config.output_dir.join(COMPLETED_DIR_NAME)
+    }
+
+    async fn move_to_completed(
+        source_path: &std::path::Path,
+        completed_dir: &std::path::Path,
+    ) -> std::io::Result<PathBuf> {
+        tokio::fs::create_dir_all(completed_dir).await?;
+
+        let Some(file_name) = source_path.file_name() else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Downloaded file path has no filename",
+            ));
+        };
+
+        let destination_path = completed_dir.join(file_name);
+
+        if tokio::fs::try_exists(&destination_path).await? {
+            tokio::fs::remove_file(&destination_path).await?;
+        }
+
+        match tokio::fs::rename(source_path, &destination_path).await {
+            Ok(()) => Ok(destination_path),
+            Err(error) if error.kind() == std::io::ErrorKind::CrossesDevices => {
+                tokio::fs::copy(source_path, &destination_path).await?;
+                tokio::fs::remove_file(source_path).await?;
+                Ok(destination_path)
+            }
+            Err(error) => Err(error),
         }
     }
 

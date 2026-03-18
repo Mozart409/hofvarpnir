@@ -148,6 +148,7 @@ async fn recover_from_crash(pool: &PgPool, default_output_dir: &Path) -> Result<
 
     // Clean up part files in default directory
     clean_part_files(default_output_dir).await?;
+    clean_part_files(&default_output_dir.join("incomplete")).await?;
 
     info!("Crash recovery complete");
     Ok(())
@@ -368,7 +369,10 @@ async fn collect_output_directories(pool: &PgPool) -> Result<Vec<PathBuf>> {
 
     let mut dirs: Vec<PathBuf> = profiles
         .into_iter()
-        .map(|p| PathBuf::from(&p.output_dir))
+        .flat_map(|p| {
+            let base = PathBuf::from(&p.output_dir);
+            [base.clone(), base.join("incomplete")]
+        })
         .collect();
 
     // Deduplicate
