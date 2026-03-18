@@ -184,7 +184,7 @@ mod tests {
     #[test]
     fn test_download_timeout_calculation() {
         // 4 hours in seconds
-        let timeout = Duration::from_secs(4 * 3600);
+        let timeout = Duration::from_hours(4);
         assert_eq!(timeout.as_secs(), 14400);
     }
 
