@@ -89,8 +89,12 @@ impl Actor for SchedulerActor {
             running: false,
         };
 
-        // Start the scheduling loop
-        actor_ref.tell(StartScheduler).await?;
+        // Start the scheduling loop.
+        // Use try_send() to avoid potential deadlock from self-tell with bounded mailbox.
+        if let Err(e) = actor_ref.tell(StartScheduler).try_send() {
+            error!(error = %e, "Failed to start scheduler loop");
+            return Err(e.into());
+        }
 
         Ok(scheduler)
     }
