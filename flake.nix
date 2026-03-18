@@ -50,6 +50,7 @@
           opencode
           opentofu
           dbeaver-bin
+          playwright-driver.browsers
           postgresql_17
           rust
           sqlx-cli
@@ -61,6 +62,8 @@
           lefthook install
           cog install-hook
           export COMPOSE_BAKE=true
+          export PLAYWRIGHT_BROWSERS_PATH=${pkgs.playwright-driver.browsers}
+          export PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS=true
         '';
       };
     });
