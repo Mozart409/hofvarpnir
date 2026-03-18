@@ -7,9 +7,6 @@ on:
 
 jobs:
   build:
-    concurrency:
-      group: build-${{ github.workflow }}-${{ github.ref }}
-      cancel-in-progress: true
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -57,10 +54,6 @@ jobs:
           - runner: ubuntu-24.04-arm
             arch: arm64
     runs-on: ${{ matrix.runner }}
-    # Separate concurrency group for container builds - don't cancel long-running builds
-    concurrency:
-      group: container-${{ github.workflow }}-${{ matrix.arch }}-${{ github.ref }}
-      cancel-in-progress: false
     permissions:
       contents: read
       packages: write
@@ -81,18 +74,17 @@ jobs:
         run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
       - name: Push arch-specific image to GHCR
+        env:
+          REPO: ${{ github.repository }}
         run: |
           nix develop .#default --command skopeo copy \
             --dest-creds="${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}" \
             docker-archive:result \
-            "docker://ghcr.io/${{ github.repository }}:${{ steps.version.outputs.version }}-${{ matrix.arch }}"
+            "docker://ghcr.io/${REPO,,}:${{ steps.version.outputs.version }}-${{ matrix.arch }}"
 
   container-manifest:
     needs: container
     runs-on: ubuntu-latest
-    concurrency:
-      group: container-manifest-${{ github.workflow }}-${{ github.ref }}
-      cancel-in-progress: false
     permissions:
       contents: read
       packages: write
@@ -107,7 +99,11 @@ jobs:
         run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
       - name: Create and push multi-arch manifests
+        env:
+          REPO_RAW: ${{ github.repository }}
         run: |
+          REPO="ghcr.io/${REPO_RAW,,}"
+          
           nix develop .#default --command skopeo login \
             -u "${{ github.actor }}" \
             -p "${{ secrets.GITHUB_TOKEN }}" \
@@ -115,7 +111,6 @@ jobs:
 
           VERSION="${{ steps.version.outputs.version }}"
           MAJOR_MINOR=$(echo "${VERSION}" | cut -d. -f1,2)
-          REPO="ghcr.io/${{ github.repository }}"
 
           # Create manifest for semver tag (e.g., 1.2.3)
           docker manifest create "${REPO}:${VERSION}" \
