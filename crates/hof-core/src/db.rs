@@ -77,6 +77,7 @@ pub async fn run_migrations(pool: &PgPool) -> Result<(), DbError> {
 pub struct CreateUser<'a> {
     pub email: &'a str,
     pub name: &'a str,
+    pub password_hash: &'a str,
 }
 
 /// Data for updating an existing user.
@@ -84,6 +85,7 @@ pub struct CreateUser<'a> {
 pub struct UpdateUser<'a> {
     pub email: Option<&'a str>,
     pub name: Option<&'a str>,
+    pub password_hash: Option<&'a str>,
 }
 
 /// Create a new user.
@@ -95,14 +97,15 @@ pub async fn create_user(pool: &PgPool, data: CreateUser<'_>) -> Result<User, Db
     let id = Ulid::new();
     let row = sqlx::query_as::<_, UserRow>(
         r"
-        INSERT INTO users (id, email, name)
-        VALUES ($1, $2, $3)
-        RETURNING id, email, name, created_at, updated_at
+        INSERT INTO users (id, email, name, password_hash)
+        VALUES ($1, $2, $3, $4)
+        RETURNING id, email, name, password_hash, created_at, updated_at
         ",
     )
     .bind(id.to_string())
     .bind(data.email)
     .bind(data.name)
+    .bind(data.password_hash)
     .fetch_one(pool)
     .await?;
 
@@ -117,7 +120,7 @@ pub async fn create_user(pool: &PgPool, data: CreateUser<'_>) -> Result<User, Db
 pub async fn get_user(pool: &PgPool, id: Ulid) -> Result<User, DbError> {
     let row = sqlx::query_as::<_, UserRow>(
         r"
-        SELECT id, email, name, created_at, updated_at
+        SELECT id, email, name, password_hash, created_at, updated_at
         FROM users
         WHERE id = $1
         ",
@@ -138,7 +141,7 @@ pub async fn get_user(pool: &PgPool, id: Ulid) -> Result<User, DbError> {
 pub async fn get_user_by_email(pool: &PgPool, email: &str) -> Result<User, DbError> {
     let row = sqlx::query_as::<_, UserRow>(
         r"
-        SELECT id, email, name, created_at, updated_at
+        SELECT id, email, name, password_hash, created_at, updated_at
         FROM users
         WHERE email = $1
         ",
@@ -159,7 +162,7 @@ pub async fn get_user_by_email(pool: &PgPool, email: &str) -> Result<User, DbErr
 pub async fn list_users(pool: &PgPool) -> Result<Vec<User>, DbError> {
     let rows = sqlx::query_as::<_, UserRow>(
         r"
-        SELECT id, email, name, created_at, updated_at
+        SELECT id, email, name, password_hash, created_at, updated_at
         FROM users
         ORDER BY created_at DESC
         ",
@@ -183,14 +186,16 @@ pub async fn update_user(pool: &PgPool, id: Ulid, data: UpdateUser<'_>) -> Resul
         r"
         UPDATE users
         SET email = COALESCE($2, email),
-            name = COALESCE($3, name)
+            name = COALESCE($3, name),
+            password_hash = COALESCE($4, password_hash)
         WHERE id = $1
-        RETURNING id, email, name, created_at, updated_at
+        RETURNING id, email, name, password_hash, created_at, updated_at
         ",
     )
     .bind(id.to_string())
     .bind(data.email)
     .bind(data.name)
+    .bind(data.password_hash)
     .fetch_optional(pool)
     .await?
     .ok_or(DbError::NotFound)?;
@@ -1327,6 +1332,7 @@ mod tests {
             CreateUser {
                 email: "test@example.com",
                 name: "Test User",
+                password_hash: "$argon2id$v=19$m=16,t=2,p=1$dGVzdHNhbHQ$test",
             },
         )
         .await
@@ -1355,6 +1361,7 @@ mod tests {
             CreateUser {
                 email: "crud@example.com",
                 name: "CRUD User",
+                password_hash: "$argon2id$v=19$m=16,t=2,p=1$dGVzdHNhbHQ$test",
             },
         )
         .await
@@ -1371,6 +1378,7 @@ mod tests {
             UpdateUser {
                 name: Some("Updated Name"),
                 email: None,
+                password_hash: None,
             },
         )
         .await

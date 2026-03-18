@@ -5,11 +5,16 @@ use serde::{Deserialize, Serialize};
 use ulid::Ulid;
 
 /// Authentication and ownership boundary.
+///
+/// Note: `password_hash` is intentionally excluded from serialization
+/// to prevent accidental exposure in API responses.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct User {
     pub id: Ulid,
     pub email: String,
     pub name: String,
+    #[serde(skip_serializing)]
+    pub password_hash: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -20,6 +25,7 @@ pub struct UserRow {
     pub id: String,
     pub email: String,
     pub name: String,
+    pub password_hash: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -32,6 +38,7 @@ impl TryFrom<UserRow> for User {
             id: Ulid::from_string(&row.id)?,
             email: row.email,
             name: row.name,
+            password_hash: row.password_hash,
             created_at: row.created_at,
             updated_at: row.updated_at,
         })
