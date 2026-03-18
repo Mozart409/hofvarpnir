@@ -492,7 +492,10 @@ fn render_output_filename(template: &str, title: &str, platform_video_id: &str) 
         rendered = format!("{safe_title}-{safe_id}.mkv");
     }
 
-    if !rendered.contains('.') {
+    let is_mkv_extension = std::path::Path::new(&rendered)
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("mkv"));
+    if !is_mkv_extension {
         rendered.push_str(".mkv");
     }
 
