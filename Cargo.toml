@@ -65,6 +65,11 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 futures = "0.3"
 tokio-stream = "0.1"
 
+# Authentication
+argon2 = "0.5"
+tower-sessions = "0.14"
+tower-sessions-sqlx-store = { version = "0.15", features = ["postgres"] }
+
 [workspace.lints.rust]
 unsafe_code = "forbid"
 
