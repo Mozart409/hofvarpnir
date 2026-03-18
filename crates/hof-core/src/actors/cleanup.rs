@@ -122,7 +122,7 @@ impl Message<StartCleanup> for CleanupActor {
             interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
             // Run immediately on start
-            if let Err(e) = actor_ref.tell(RunCleanup).await {
+            if let Err(e) = actor_ref.tell(RunCleanup).try_send() {
                 error!(error = %e, "Failed to run initial cleanup");
             }
 
@@ -133,7 +133,7 @@ impl Message<StartCleanup> for CleanupActor {
                     break;
                 }
 
-                if let Err(e) = actor_ref.tell(RunCleanup).await {
+                if let Err(e) = actor_ref.tell(RunCleanup).try_send() {
                     error!(error = %e, "Failed to trigger cleanup");
                     break;
                 }

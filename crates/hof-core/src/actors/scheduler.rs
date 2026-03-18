@@ -154,7 +154,7 @@ impl Message<StartScheduler> for SchedulerActor {
                 }
 
                 // Trigger a check
-                if let Err(e) = actor_ref.tell(CheckSources).await {
+                if let Err(e) = actor_ref.tell(CheckSources).try_send() {
                     error!(error = %e, "Failed to send CheckSources message");
                     break;
                 }

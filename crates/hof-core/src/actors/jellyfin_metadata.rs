@@ -123,7 +123,7 @@ impl Message<ScheduleNextCheck> for JellyfinMetadataActor {
 
         tokio::spawn(async move {
             tokio::time::sleep(interval).await;
-            if let Err(e) = actor_ref.tell(RunCheck).await {
+            if let Err(e) = actor_ref.tell(RunCheck).try_send() {
                 error!(error = %e, "Failed to trigger metadata check");
             }
         });

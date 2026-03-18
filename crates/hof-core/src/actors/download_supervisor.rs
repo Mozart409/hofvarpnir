@@ -396,7 +396,7 @@ impl Message<ProcessPendingDownloads> for DownloadSupervisor {
                     profile,
                     source,
                 })
-                .await
+                .try_send()
                 .map_err(|e| e.to_string())?;
         }
 
