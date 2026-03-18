@@ -258,6 +258,7 @@ ctx.actor_ref().tell(SomeMessage).try_send().ok();
 ```
 
 This pattern is commonly needed when:
+
 - Spawning periodic tasks within an actor that need to trigger the actor again
 - Processing items in a loop and enqueueing more work to the same actor
 - Implementing state machines where the actor transitions states by sending itself messages
@@ -303,6 +304,7 @@ crates/
 ## CI Requirements
 
 All PRs must pass:
+
 1. `cargo fmt --all -- --check`
 2. `cargo clippy --all-targets --all-features -- -D warnings`
 3. `cargo test --all-features`
@@ -311,6 +313,7 @@ All PRs must pass:
 ## Environment Variables
 
 Required for development:
+
 - `DATABASE_URL` - PostgreSQL connection string
 - `PORT` - Server port (default: 3000)
 - `YT_DLP_PATH` - Path to yt-dlp binary
@@ -319,6 +322,6 @@ Required for development:
 ## Language Standards
 
 - **Edition**: 2024
-- **MSRV**: 1.88.0
+- **MSRV**: 1.94.0
 - **Unsafe**: Forbidden (workspace lint)
 - **Clippy**: All + Pedantic enabled
