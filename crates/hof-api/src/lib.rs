@@ -19,7 +19,7 @@ use tokio::sync::broadcast;
 use utoipa::OpenApi;
 use utoipa_scalar::{Scalar, Servable};
 
-use routes::{downloads, profiles, sources};
+use routes::{downloads, health, profiles, sources};
 
 /// Shared application state for API handlers.
 #[derive(Clone)]
@@ -62,6 +62,9 @@ impl AppState {
         description = "Video archival system API for managing profiles, sources, and downloads."
     ),
     paths(
+        health::health_check,
+        health::liveness,
+        health::readiness,
         profiles::list_profiles,
         profiles::create_profile,
         profiles::get_profile,
@@ -78,6 +81,9 @@ impl AppState {
         downloads::retry_download,
     ),
     components(schemas(
+        health::HealthResponse,
+        health::HealthStatus,
+        health::ComponentHealth,
         profiles::ProfileResponse,
         profiles::CreateProfileRequest,
         profiles::UpdateProfileRequest,
@@ -92,6 +98,7 @@ impl AppState {
         hof_core::domain::video::VideoStatus,
     )),
     tags(
+        (name = "health", description = "Health check endpoints"),
         (name = "profiles", description = "Profile management endpoints"),
         (name = "sources", description = "Source management endpoints"),
         (name = "downloads", description = "Download management endpoints")
@@ -108,6 +115,7 @@ pub struct ApiDoc;
 /// * `state` - Shared application state
 pub fn router(state: AppState) -> Router {
     Router::new()
+        .nest("/health", health::router())
         .nest("/v1/profiles", profiles::router())
         .nest("/v1/sources", sources::router())
         .nest("/v1/downloads", downloads::router())
