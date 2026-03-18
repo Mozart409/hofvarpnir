@@ -92,3 +92,62 @@ jobs:
             ${{ runner.os }}-cargo-
       - name: Build
         run: nix develop .#default --command cargo build --all-features --release
+
+  container:
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Nix
+        uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Setup Nix cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
+
+      - name: Build container
+        run: nix build .#container
+
+      - name: Push arch-specific image to GHCR (main branch only)
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        run: |
+          nix develop .#default --command skopeo copy \
+            --dest-creds="${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}" \
+            docker-archive:result \
+            "docker://ghcr.io/${{ github.repository }}:dev-${{ matrix.arch }}"
+
+  container-manifest:
+    needs: container
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Nix
+        uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Create and push multi-arch manifest
+        run: |
+          nix develop .#default --command skopeo login \
+            -u "${{ github.actor }}" \
+            -p "${{ secrets.GITHUB_TOKEN }}" \
+            ghcr.io
+
+          # Create manifest list combining both architectures
+          docker manifest create "ghcr.io/${{ github.repository }}:dev" \
+            "ghcr.io/${{ github.repository }}:dev-amd64" \
+            "ghcr.io/${{ github.repository }}:dev-arm64"
+
+          docker manifest push "ghcr.io/${{ github.repository }}:dev"
