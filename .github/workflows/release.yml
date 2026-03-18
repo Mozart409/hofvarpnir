@@ -5,12 +5,11 @@ on:
     tags:
       - 'v*.*.*'
 
-concurrency:
-  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
-  cancel-in-progress: true
-
 jobs:
   build:
+    concurrency:
+      group: build-${{ github.workflow }}-${{ github.ref }}
+      cancel-in-progress: true
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -58,6 +57,10 @@ jobs:
           - runner: ubuntu-24.04-arm
             arch: arm64
     runs-on: ${{ matrix.runner }}
+    # Separate concurrency group for container builds - don't cancel long-running builds
+    concurrency:
+      group: container-${{ github.workflow }}-${{ matrix.arch }}-${{ github.ref }}
+      cancel-in-progress: false
     permissions:
       contents: read
       packages: write
@@ -87,6 +90,9 @@ jobs:
   container-manifest:
     needs: container
     runs-on: ubuntu-latest
+    concurrency:
+      group: container-manifest-${{ github.workflow }}-${{ github.ref }}
+      cancel-in-progress: false
     permissions:
       contents: read
       packages: write
