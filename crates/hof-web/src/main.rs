@@ -11,7 +11,7 @@ async fn main() {
         .init();
 
     // Load configuration
-    let config = Config::from_env().expect("Failed to load configuration");
+    let config = Config::load().expect("Failed to load configuration");
 
     // Initialize database
     let pool = db::create_pool()
@@ -47,17 +47,21 @@ async fn main() {
 
     // Create API state
     let api_state = hof_api::AppState::new(
-        pool,
+        pool.clone(),
         actor_system.supervisor.clone(),
         actor_system.scheduler.clone(),
         progress_tx,
     );
 
+    // Create session layer
+    let session_layer = hof_web::session_layer(pool).await;
+
     // Build the application router
     let app = axum::Router::new()
-        .nest("/api", hof_api::router(api_state))
+        .nest("/api", hof_api::router(api_state.clone()))
         .nest("/docs", hof_api::scalar_router())
-        .merge(hof_web::router());
+        .merge(hof_web::router(api_state))
+        .layer(session_layer);
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000")
         .await
