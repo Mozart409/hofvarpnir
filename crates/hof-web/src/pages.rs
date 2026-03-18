@@ -1249,8 +1249,15 @@ fn profile_editor(profile: &Profile) -> Markup {
 }
 
 fn source_editor(source: &Source) -> Markup {
+    // Determine border color based on error state
+    let border_class = if source.last_error.is_some() {
+        "border-rose-300 bg-rose-50/60"
+    } else {
+        "border-slate-200 bg-slate-50/60"
+    };
+
     html! {
-        details class="group rounded-xl border border-slate-200 bg-slate-50/60 p-4 open:bg-white" {
+        details class=(format!("group rounded-xl border {} p-4 open:bg-white", border_class)) {
             summary class="cursor-pointer list-none" {
                 div class="flex flex-wrap items-center justify-between gap-3" {
                     div class="min-w-0" {
@@ -1259,7 +1266,23 @@ fn source_editor(source: &Source) -> Markup {
                         }
                         p class="truncate text-xs text-slate-500" { (source.id.to_string()) }
                     }
-                    (status_chip(source_type_label(&source.source_type), "slate"))
+                    div class="flex items-center gap-2" {
+                        @if source.last_error.is_some() {
+                            (status_chip(&format!("Error ({})", source.index_error_count), "rose"))
+                        }
+                        (status_chip(source_type_label(&source.source_type), "slate"))
+                    }
+                }
+            }
+
+            // Show error message if present
+            @if let Some(ref error) = source.last_error {
+                div class="mt-3 rounded-lg border border-rose-200 bg-rose-50 p-3" {
+                    p class="text-sm font-medium text-rose-800" { "Last Indexing Error:" }
+                    p class="mt-1 text-sm text-rose-700 font-mono whitespace-pre-wrap break-all" { (error) }
+                    p class="mt-2 text-xs text-rose-600" {
+                        "Consecutive errors: " (source.index_error_count)
+                    }
                 }
             }
             form class="mt-4 grid gap-4 md:grid-cols-2" method="post" action={(format!("/sources/{}", source.id))} {

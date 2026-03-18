@@ -24,6 +24,10 @@ pub struct Source {
     /// Per-source retention override (days).
     pub retention_days: Option<i32>,
     pub last_indexed_at: Option<DateTime<Utc>>,
+    /// Last error encountered during indexing.
+    pub last_error: Option<String>,
+    /// Number of consecutive indexing errors.
+    pub index_error_count: i32,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -40,6 +44,8 @@ pub struct SourceRow {
     pub cutoff_date: NaiveDate,
     pub retention_days: Option<i32>,
     pub last_indexed_at: Option<DateTime<Utc>>,
+    pub last_error: Option<String>,
+    pub index_error_count: i32,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -58,6 +64,8 @@ impl TryFrom<SourceRow> for Source {
             cutoff_date: row.cutoff_date,
             retention_days: row.retention_days,
             last_indexed_at: row.last_indexed_at,
+            last_error: row.last_error,
+            index_error_count: row.index_error_count,
             created_at: row.created_at,
             updated_at: row.updated_at,
         })

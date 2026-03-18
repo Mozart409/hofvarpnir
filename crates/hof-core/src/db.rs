@@ -461,7 +461,7 @@ pub async fn create_source(pool: &PgPool, data: CreateSource<'_>) -> Result<Sour
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
         RETURNING id, profile_id, url, source_type, custom_name,
                   index_frequency_secs, cutoff_date, retention_days,
-                  last_indexed_at, created_at, updated_at
+                  last_indexed_at, last_error, index_error_count, created_at, updated_at
         ",
     )
     .bind(id.to_string())
@@ -488,7 +488,7 @@ pub async fn get_source(pool: &PgPool, id: Ulid) -> Result<Source, DbError> {
         r"
         SELECT id, profile_id, url, source_type, custom_name,
                index_frequency_secs, cutoff_date, retention_days,
-               last_indexed_at, created_at, updated_at
+               last_indexed_at, last_error, index_error_count, created_at, updated_at
         FROM sources
         WHERE id = $1
         ",
@@ -514,7 +514,7 @@ pub async fn list_sources_for_profile(
         r"
         SELECT id, profile_id, url, source_type, custom_name,
                index_frequency_secs, cutoff_date, retention_days,
-               last_indexed_at, created_at, updated_at
+               last_indexed_at, last_error, index_error_count, created_at, updated_at
         FROM sources
         WHERE profile_id = $1
         ORDER BY created_at DESC
@@ -540,7 +540,7 @@ pub async fn list_sources(pool: &PgPool) -> Result<Vec<Source>, DbError> {
         r"
         SELECT id, profile_id, url, source_type, custom_name,
                index_frequency_secs, cutoff_date, retention_days,
-               last_indexed_at, created_at, updated_at
+               last_indexed_at, last_error, index_error_count, created_at, updated_at
         FROM sources
         ORDER BY created_at DESC
         ",
@@ -568,7 +568,7 @@ pub async fn list_sources_due_for_indexing(pool: &PgPool) -> Result<Vec<Source>,
         r"
         SELECT id, profile_id, url, source_type, custom_name,
                index_frequency_secs, cutoff_date, retention_days,
-               last_indexed_at, created_at, updated_at
+               last_indexed_at, last_error, index_error_count, created_at, updated_at
         FROM sources
         WHERE last_indexed_at IS NULL
            OR last_indexed_at + make_interval(secs => index_frequency_secs) < NOW()
@@ -606,7 +606,7 @@ pub async fn update_source(
         WHERE id = $1
         RETURNING id, profile_id, url, source_type, custom_name,
                   index_frequency_secs, cutoff_date, retention_days,
-                  last_indexed_at, created_at, updated_at
+                  last_indexed_at, last_error, index_error_count, created_at, updated_at
         ",
     )
     .bind(id.to_string())
@@ -625,7 +625,7 @@ pub async fn update_source(
     Ok(Source::try_from(row)?)
 }
 
-/// Update the last indexed timestamp for a source.
+/// Update the last indexed timestamp for a source and clear any error state.
 ///
 /// # Errors
 ///
@@ -638,12 +638,46 @@ pub async fn update_source_last_indexed(
     let result = sqlx::query(
         r"
         UPDATE sources
-        SET last_indexed_at = $2
+        SET last_indexed_at = $2,
+            last_error = NULL,
+            index_error_count = 0
         WHERE id = $1
         ",
     )
     .bind(id.to_string())
     .bind(last_indexed_at)
+    .execute(pool)
+    .await?;
+
+    if result.rows_affected() == 0 {
+        return Err(DbError::NotFound);
+    }
+
+    Ok(())
+}
+
+/// Record an indexing error for a source.
+///
+/// Increments the error count and stores the error message.
+///
+/// # Errors
+///
+/// Returns `DbError::NotFound` if the source doesn't exist.
+pub async fn record_source_indexing_error(
+    pool: &PgPool,
+    id: Ulid,
+    error: &str,
+) -> Result<(), DbError> {
+    let result = sqlx::query(
+        r"
+        UPDATE sources
+        SET last_error = $2,
+            index_error_count = index_error_count + 1
+        WHERE id = $1
+        ",
+    )
+    .bind(id.to_string())
+    .bind(error)
     .execute(pool)
     .await?;
 
