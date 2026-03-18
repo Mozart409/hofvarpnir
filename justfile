@@ -89,3 +89,9 @@ ci: clear
     SQLX_OFFLINE=true cargo build --release
     SQLX_OFFLINE=true cargo test --all-features
     cargo clippy --all-targets --all-features -- -D warnings
+
+build-oci: clear
+    nix build .#container
+
+build-oci-minimal: clear
+    nix build .#container-minimal
