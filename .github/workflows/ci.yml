@@ -4,11 +4,11 @@ on:
     branches: [main]
   push:
     branches: [main]
-concurrency:
-  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
-  cancel-in-progress: true
 jobs:
   fmt:
+    concurrency:
+      group: fmt-${{ github.workflow }}-${{ github.head_ref || github.ref }}
+      cancel-in-progress: true
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -31,6 +31,9 @@ jobs:
         run: nix develop .#default --command cargo fmt --all -- --check
   clippy:
     runs-on: ubuntu-latest
+    concurrency:
+      group: clippy-${{ github.workflow }}-${{ github.head_ref || github.ref }}
+      cancel-in-progress: true
     steps:
       - uses: actions/checkout@v4
       - name: Setup Nix
@@ -52,6 +55,9 @@ jobs:
         run: nix develop .#default --command cargo clippy --all-targets --all-features -- -D warnings
   test:
     runs-on: ubuntu-latest
+    concurrency:
+      group: test-${{ github.workflow }}-${{ github.head_ref || github.ref }}
+      cancel-in-progress: true
     steps:
       - uses: actions/checkout@v4
       - name: Setup Nix
@@ -73,6 +79,9 @@ jobs:
         run: nix develop .#default --command cargo test --all-features
   build:
     runs-on: ubuntu-latest
+    concurrency:
+      group: build-${{ github.workflow }}-${{ github.head_ref || github.ref }}
+      cancel-in-progress: true
     steps:
       - uses: actions/checkout@v4
       - name: Setup Nix
@@ -102,6 +111,10 @@ jobs:
           - runner: ubuntu-24.04-arm
             arch: arm64
     runs-on: ${{ matrix.runner }}
+    # Separate concurrency group for container builds - don't cancel long-running builds
+    concurrency:
+      group: container-${{ github.workflow }}-${{ matrix.arch }}-${{ github.head_ref || github.ref }}
+      cancel-in-progress: false
     permissions:
       contents: read
       packages: write
@@ -129,6 +142,9 @@ jobs:
     needs: container
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     runs-on: ubuntu-latest
+    concurrency:
+      group: container-manifest-${{ github.workflow }}-${{ github.head_ref || github.ref }}
+      cancel-in-progress: false
     permissions:
       contents: read
       packages: write
