@@ -88,6 +88,17 @@ background = false
 on_change_strategy = "kill_then_restart"
 env.RUST_LOG = "info"
 
+[jobs.css-watch]
+command = ["just", "css-watch"]
+need_stdout = true
+allow_warnings = true
+background = true
+
+[jobs.css-build]
+command = ["just", "css-build"]
+need_stdout = true
+allow_warnings = true
+
 # Run the TUI binary
 [jobs.tui]
 command = [

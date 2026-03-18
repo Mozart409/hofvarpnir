@@ -27,6 +27,10 @@ pre-commit:
       glob: "flake.nix"
       run: keep-sorted flake.nix
       stage_fixed: true
+    - name: css-build
+      glob: "{crates/hof-web/src/**/*.rs,crates/hof-web/assets/input.css}"
+      run: just css-build
+      stage_fixed: true
     - name: cargo-deny
       glob: "Cargo.{toml,lock}"
       run: cargo deny check
