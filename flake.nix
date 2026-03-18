@@ -34,6 +34,7 @@
       # Common build arguments
       commonArgs = {
         inherit src;
+        pname = "hofvarpnir";
         strictDeps = true;
 
         # Build dependencies (native)
@@ -100,28 +101,29 @@
             pkgs.busybox
           ];
 
-          # Create non-root user and required directories
-          extraCommands = ''
+          # Enable fakeroot for chown support
+          enableFakechroot = true;
+          fakeRootCommands = ''
             # Create user and group
-            mkdir -p etc
-            echo "${containerUser}:x:${containerUid}:${containerGid}::/home/${containerUser}:/bin/sh" > etc/passwd
-            echo "${containerUser}:x:${containerGid}:" > etc/group
+            mkdir -p ./etc
+            echo "${containerUser}:x:${containerUid}:${containerGid}::/home/${containerUser}:/bin/sh" > ./etc/passwd
+            echo "${containerUser}:x:${containerGid}:" > ./etc/group
 
             # Create home directory
-            mkdir -p home/${containerUser}
-            chown ${containerUid}:${containerGid} home/${containerUser}
+            mkdir -p ./home/${containerUser}
+            chown ${containerUid}:${containerGid} ./home/${containerUser}
 
             # Create downloads directory (will be mounted as volume)
-            mkdir -p data/downloads
-            chown ${containerUid}:${containerGid} data/downloads
+            mkdir -p ./data/downloads
+            chown ${containerUid}:${containerGid} ./data/downloads
 
             # Create incomplete downloads directory
-            mkdir -p data/incomplete
-            chown ${containerUid}:${containerGid} data/incomplete
+            mkdir -p ./data/incomplete
+            chown ${containerUid}:${containerGid} ./data/incomplete
 
             # Create tmp directory
-            mkdir -p tmp
-            chmod 1777 tmp
+            mkdir -p ./tmp
+            chmod 1777 ./tmp
           '';
 
           config = {
@@ -190,15 +192,17 @@
             pkgs.wget
           ];
 
-          extraCommands = ''
-            mkdir -p etc
-            echo "${containerUser}:x:${containerUid}:${containerGid}::/home/${containerUser}:/bin/false" > etc/passwd
-            echo "${containerUser}:x:${containerGid}:" > etc/group
-            mkdir -p home/${containerUser}
-            chown ${containerUid}:${containerGid} home/${containerUser}
-            mkdir -p data/downloads data/incomplete tmp
-            chown ${containerUid}:${containerGid} data/downloads data/incomplete
-            chmod 1777 tmp
+          # Enable fakeroot for chown support
+          enableFakechroot = true;
+          fakeRootCommands = ''
+            mkdir -p ./etc
+            echo "${containerUser}:x:${containerUid}:${containerGid}::/home/${containerUser}:/bin/false" > ./etc/passwd
+            echo "${containerUser}:x:${containerGid}:" > ./etc/group
+            mkdir -p ./home/${containerUser}
+            chown ${containerUid}:${containerGid} ./home/${containerUser}
+            mkdir -p ./data/downloads ./data/incomplete ./tmp
+            chown ${containerUid}:${containerGid} ./data/downloads ./data/incomplete
+            chmod 1777 ./tmp
           '';
 
           config = {
