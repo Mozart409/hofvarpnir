@@ -251,8 +251,15 @@ impl DownloadWorker {
     /// Handle a successful download.
     async fn handle_success(&self, result: DownloadResult) -> DownloadOutcome {
         let video_id = self.video.id;
+        let incomplete_dir = self.incomplete_dir();
         let completed_dir = self.completed_dir();
-        let final_path = match Self::move_to_completed(&result.file_path, &completed_dir).await {
+        let final_path = match Self::move_to_completed(
+            &result.file_path,
+            &incomplete_dir,
+            &completed_dir,
+        )
+        .await
+        {
             Ok(path) => path,
             Err(error) => {
                 let message = format!(
@@ -300,18 +307,28 @@ impl DownloadWorker {
 
     async fn move_to_completed(
         source_path: &std::path::Path,
+        incomplete_dir: &std::path::Path,
         completed_dir: &std::path::Path,
     ) -> std::io::Result<PathBuf> {
-        tokio::fs::create_dir_all(completed_dir).await?;
+        // Compute relative path from incomplete_dir to preserve subdirectory structure.
+        // e.g., incomplete/AliSiddiq/video.mkv -> AliSiddiq/video.mkv -> completed/AliSiddiq/video.mkv
+        let relative_path = source_path
+            .strip_prefix(incomplete_dir)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
 
-        let Some(file_name) = source_path.file_name() else {
+        if relative_path.as_os_str().is_empty() {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
                 "Downloaded file path has no filename",
             ));
-        };
+        }
 
-        let destination_path = completed_dir.join(file_name);
+        let destination_path = completed_dir.join(relative_path);
+
+        // Create parent directories if the template includes subdirectories
+        if let Some(parent) = destination_path.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
 
         if tokio::fs::try_exists(&destination_path).await? {
             tokio::fs::remove_file(&destination_path).await?;
@@ -420,6 +437,9 @@ impl Message<GetStatus> for DownloadWorker {
 
 #[cfg(test)]
 mod tests {
+    use super::DownloadWorker;
+    use tempfile::TempDir;
+
     #[test]
     fn test_build_video_url_youtube() {
         // We can't easily test the full actor, but we can test URL building logic
@@ -461,5 +481,119 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[tokio::test]
+    async fn test_move_to_completed_preserves_subdirectory() {
+        let temp = TempDir::new().unwrap();
+        let incomplete_dir = temp.path().join("incomplete");
+        let completed_dir = temp.path().join("completed");
+
+        // Create subdirectory structure: incomplete/AliSiddiq/video.mkv
+        let subdir = incomplete_dir.join("AliSiddiq");
+        std::fs::create_dir_all(&subdir).unwrap();
+        let source_file = subdir.join("video.mkv");
+        std::fs::write(&source_file, b"test content").unwrap();
+
+        let result =
+            DownloadWorker::move_to_completed(&source_file, &incomplete_dir, &completed_dir)
+                .await
+                .unwrap();
+
+        // Should preserve subdirectory: completed/AliSiddiq/video.mkv
+        assert_eq!(result, completed_dir.join("AliSiddiq").join("video.mkv"));
+        assert!(result.exists());
+        assert!(!source_file.exists());
+    }
+
+    #[tokio::test]
+    async fn test_move_to_completed_flat_file() {
+        let temp = TempDir::new().unwrap();
+        let incomplete_dir = temp.path().join("incomplete");
+        let completed_dir = temp.path().join("completed");
+
+        // Create flat file: incomplete/video.mkv
+        std::fs::create_dir_all(&incomplete_dir).unwrap();
+        let source_file = incomplete_dir.join("video.mkv");
+        std::fs::write(&source_file, b"test content").unwrap();
+
+        let result =
+            DownloadWorker::move_to_completed(&source_file, &incomplete_dir, &completed_dir)
+                .await
+                .unwrap();
+
+        // Should be: completed/video.mkv
+        assert_eq!(result, completed_dir.join("video.mkv"));
+        assert!(result.exists());
+        assert!(!source_file.exists());
+    }
+
+    #[tokio::test]
+    async fn test_move_to_completed_nested_subdirectories() {
+        let temp = TempDir::new().unwrap();
+        let incomplete_dir = temp.path().join("incomplete");
+        let completed_dir = temp.path().join("completed");
+
+        // Create nested structure: incomplete/Channel/2026/video.mkv
+        let subdir = incomplete_dir.join("Channel").join("2026");
+        std::fs::create_dir_all(&subdir).unwrap();
+        let source_file = subdir.join("video.mkv");
+        std::fs::write(&source_file, b"test content").unwrap();
+
+        let result =
+            DownloadWorker::move_to_completed(&source_file, &incomplete_dir, &completed_dir)
+                .await
+                .unwrap();
+
+        // Should preserve full structure: completed/Channel/2026/video.mkv
+        assert_eq!(
+            result,
+            completed_dir.join("Channel").join("2026").join("video.mkv")
+        );
+        assert!(result.exists());
+    }
+
+    #[tokio::test]
+    async fn test_move_to_completed_overwrites_existing() {
+        let temp = TempDir::new().unwrap();
+        let incomplete_dir = temp.path().join("incomplete");
+        let completed_dir = temp.path().join("completed");
+
+        // Create source file
+        std::fs::create_dir_all(&incomplete_dir).unwrap();
+        let source_file = incomplete_dir.join("video.mkv");
+        std::fs::write(&source_file, b"new content").unwrap();
+
+        // Create existing destination file
+        std::fs::create_dir_all(&completed_dir).unwrap();
+        let dest_file = completed_dir.join("video.mkv");
+        std::fs::write(&dest_file, b"old content").unwrap();
+
+        let result =
+            DownloadWorker::move_to_completed(&source_file, &incomplete_dir, &completed_dir)
+                .await
+                .unwrap();
+
+        assert_eq!(result, dest_file);
+        assert_eq!(std::fs::read_to_string(&result).unwrap(), "new content");
+    }
+
+    #[tokio::test]
+    async fn test_move_to_completed_invalid_prefix() {
+        let temp = TempDir::new().unwrap();
+        let incomplete_dir = temp.path().join("incomplete");
+        let completed_dir = temp.path().join("completed");
+        let other_dir = temp.path().join("other");
+
+        // Create file in a different directory
+        std::fs::create_dir_all(&other_dir).unwrap();
+        let source_file = other_dir.join("video.mkv");
+        std::fs::write(&source_file, b"test content").unwrap();
+
+        // Should fail because source_file is not under incomplete_dir
+        let result =
+            DownloadWorker::move_to_completed(&source_file, &incomplete_dir, &completed_dir).await;
+
+        assert!(result.is_err());
     }
 }
