@@ -304,7 +304,8 @@ impl YtdlpClient {
     /// # Arguments
     ///
     /// * `url` - The video URL
-    /// * `output_filename` - The output filename (without path)
+    /// * `output_dir` - The output directory
+    /// * `naming_template` - Filename template (e.g. `"{title}-{id}.{ext}"`)
     /// * `quality` - The quality setting from the profile
     /// * `video_id` - The internal video ID for progress tracking
     /// * `progress_tx` - Channel to send progress updates
@@ -316,7 +317,8 @@ impl YtdlpClient {
     pub async fn download_video(
         &self,
         url: &str,
-        output_filename: &str,
+        output_dir: &Path,
+        naming_template: &str,
         quality: &Quality,
         video_id: Ulid,
         progress_tx: Option<mpsc::Sender<DownloadProgress>>,
@@ -329,10 +331,15 @@ impl YtdlpClient {
 
         let platform_video_id = video.id.clone();
 
+        // Build output filename from template.
+        // We resolve placeholders ourselves because this library path API expects
+        // a concrete output path, not yt-dlp style template placeholders.
+        let output_filename =
+            render_output_filename(naming_template, &video.title, &platform_video_id);
+        let output_path = output_dir.join(output_filename);
+
         // Build download with quality settings
         let video_quality = quality_to_yt_quality(quality);
-
-        let output_path: PathBuf = output_filename.into();
 
         // Use the fluent download builder
         let result_path = self
@@ -403,14 +410,10 @@ impl YtdlpClient {
             .await
             .map_err(|e| YtdlpError::DownloadError(format!("Failed to create output dir: {e}")))?;
 
-        // For now, use a simple filename - the actual template processing
-        // would be done by yt-dlp's -o option in a more complete implementation
-        let output_filename = format!("{naming_template}.%(ext)s");
-        let output_path = output_dir.join(&output_filename);
-
         self.download_video(
             url,
-            output_path.to_string_lossy().as_ref(),
+            output_dir,
+            naming_template,
             quality,
             video_id,
             progress_tx,
@@ -464,6 +467,55 @@ fn quality_to_yt_quality(quality: &Quality) -> VideoQuality {
         Quality::Q480p => VideoQuality::CustomHeight(480),
         Quality::AudioOnly => VideoQuality::Worst, // Audio-only handled differently
     }
+}
+
+/// Render a filename from a user template.
+///
+/// Supported placeholders:
+/// - `{title}` -> video title (sanitized)
+/// - `{id}` -> platform video ID (sanitized)
+/// - `{ext}` / `%(ext)s` -> final container extension (`mkv`)
+fn render_output_filename(template: &str, title: &str, platform_video_id: &str) -> String {
+    let safe_title = sanitize_filename_component(title);
+    let safe_id = sanitize_filename_component(platform_video_id);
+
+    let mut rendered = template
+        .replace("{title}", &safe_title)
+        .replace("{id}", &safe_id)
+        .replace("{ext}", "mkv")
+        .replace("%(ext)s", "mkv");
+
+    // Prevent path traversal / nested directories from templates.
+    rendered = sanitize_filename_component(&rendered);
+
+    if rendered.is_empty() {
+        rendered = format!("{safe_title}-{safe_id}.mkv");
+    }
+
+    if !rendered.contains('.') {
+        rendered.push_str(".mkv");
+    }
+
+    // Handle legacy templates that accidentally specify extension twice.
+    while rendered.ends_with(".mkv.mkv") {
+        rendered.truncate(rendered.len().saturating_sub(4));
+    }
+
+    rendered
+}
+
+/// Sanitize text so it is safe as a single filename component.
+fn sanitize_filename_component(value: &str) -> String {
+    let sanitized: String = value
+        .chars()
+        .map(|ch| match ch {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
+            c if c.is_control() => '_',
+            c => c,
+        })
+        .collect();
+
+    sanitized.trim().to_string()
 }
 
 /// Filter playlist entries based on profile settings.
@@ -534,6 +586,31 @@ mod tests {
         assert_eq!(
             YtdlpClient::detect_platform("https://example.com/video"),
             "generic"
+        );
+    }
+
+    #[test]
+    fn test_render_output_filename_default_template() {
+        let output = render_output_filename("{title}-{id}.{ext}", "Great Race", "Hx4xrg6wVNI");
+        assert_eq!(output, "Great Race-Hx4xrg6wVNI.mkv");
+    }
+
+    #[test]
+    fn test_render_output_filename_legacy_double_ext_template() {
+        let output =
+            render_output_filename("{title}-{id}.{ext}.%(ext)s", "F1 overtakes", "Hx4xrg6wVNI");
+        assert_eq!(output, "F1 overtakes-Hx4xrg6wVNI.mkv");
+    }
+
+    #[test]
+    fn test_render_output_filename_sanitizes_path_chars() {
+        let output = render_output_filename("../{title}/{id}", "a/b:c*?", "id/1");
+        assert!(!output.contains('/'));
+        assert!(!output.contains('\\'));
+        assert!(
+            std::path::Path::new(&output)
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("mkv"))
         );
     }
 

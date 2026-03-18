@@ -57,6 +57,7 @@
           sqruff
           tailwindcss_4
           trivy
+          ffmpeg
           yt-dlp
         ];
         shellHook = ''

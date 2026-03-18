@@ -17,7 +17,7 @@ use crate::db;
 use crate::domain::source::Source;
 use crate::ytdlp::YtdlpClient;
 
-use super::download_supervisor::DownloadSupervisor;
+use super::download_supervisor::{DownloadSupervisor, ProcessPendingDownloads};
 use super::source_indexer::{IndexingResult, SourceIndexerActor, SourceIndexerArgs};
 
 /// Default interval for checking which sources need indexing.
@@ -202,37 +202,47 @@ impl Message<CheckSources> for SchedulerActor {
 
         if sources.is_empty() {
             debug!("No sources due for indexing");
-            return;
+        } else {
+            info!(count = sources.len(), "Found sources due for indexing");
+
+            for source in sources {
+                // Skip if already being indexed
+                if self.active_indexers.contains_key(&source.id) {
+                    debug!(source_id = %source.id, "Source already being indexed");
+                    continue;
+                }
+
+                // Rate limit: don't index too frequently
+                if let Some(last) = self.last_indexed.get(&source.id)
+                    && last.elapsed() < Duration::from_secs(MIN_INDEX_INTERVAL_SECS)
+                {
+                    debug!(
+                        source_id = %source.id,
+                        elapsed_secs = last.elapsed().as_secs(),
+                        "Source indexed too recently, skipping"
+                    );
+                    continue;
+                }
+
+                // Spawn indexer for this source
+                if let Err(e) = self.spawn_indexer(&source, ctx.actor_ref().clone()).await {
+                    error!(
+                        source_id = %source.id,
+                        error = %e,
+                        "Failed to spawn indexer"
+                    );
+                }
+            }
         }
 
-        info!(count = sources.len(), "Found sources due for indexing");
-
-        for source in sources {
-            // Skip if already being indexed
-            if self.active_indexers.contains_key(&source.id) {
-                debug!(source_id = %source.id, "Source already being indexed");
-                continue;
+        // Always sweep pending/retry-ready downloads every scheduler tick,
+        // even when no sources are due for indexing.
+        match self.supervisor.tell(ProcessPendingDownloads).await {
+            Ok(()) => {
+                debug!("Triggered pending download processing from scheduler tick");
             }
-
-            // Rate limit: don't index too frequently
-            if let Some(last) = self.last_indexed.get(&source.id)
-                && last.elapsed() < Duration::from_secs(MIN_INDEX_INTERVAL_SECS)
-            {
-                debug!(
-                    source_id = %source.id,
-                    elapsed_secs = last.elapsed().as_secs(),
-                    "Source indexed too recently, skipping"
-                );
-                continue;
-            }
-
-            // Spawn indexer for this source
-            if let Err(e) = self.spawn_indexer(&source, ctx.actor_ref().clone()).await {
-                error!(
-                    source_id = %source.id,
-                    error = %e,
-                    "Failed to spawn indexer"
-                );
+            Err(error) => {
+                error!(%error, "Failed to contact supervisor for pending sweep");
             }
         }
     }

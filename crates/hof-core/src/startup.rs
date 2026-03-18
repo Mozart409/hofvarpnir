@@ -15,7 +15,9 @@ use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
 use crate::actors::cleanup::{CleanupActor, CleanupActorArgs, CleanupPartFiles};
-use crate::actors::download_supervisor::{DownloadSupervisor, DownloadSupervisorArgs};
+use crate::actors::download_supervisor::{
+    DownloadSupervisor, DownloadSupervisorArgs, ProcessPendingDownloads,
+};
 use crate::actors::scheduler::{SchedulerActor, SchedulerArgs};
 use crate::config::Config;
 use crate::db;
@@ -73,6 +75,9 @@ pub async fn initialize(pool: PgPool, config: &Config) -> Result<ActorSystem> {
     // Phase 0.6: Verify yt-dlp binary exists
     verify_ytdlp_binary(&config.download.ytdlp_path).await?;
 
+    // Phase 0.7: Verify ffmpeg is available for audio/video muxing
+    verify_ffmpeg_binary().await?;
+
     // Phase 1: Crash recovery
     recover_from_crash(&pool, &config.storage.default_output_dir).await?;
 
@@ -94,6 +99,18 @@ pub async fn initialize(pool: PgPool, config: &Config) -> Result<ActorSystem> {
     let supervisor = start_supervisor(pool.clone(), ytdlp.clone(), config, progress_tx);
     let scheduler = start_scheduler(pool.clone(), ytdlp.clone(), supervisor.clone());
     let cleanup = start_cleanup(pool.clone(), config);
+
+    // Phase 4.5: Kick pending/retry-eligible downloads after startup recovery.
+    // This ensures videos reset from `downloading` -> `pending` are resumed
+    // without waiting for the next indexing cycle.
+    match supervisor.tell(ProcessPendingDownloads).await {
+        Ok(()) => {
+            info!("Triggered pending download processing after startup");
+        }
+        Err(error) => {
+            warn!(%error, "Could not contact supervisor for startup pending processing");
+        }
+    }
 
     // Phase 5: Initial cleanup of part files
     let output_dirs = collect_output_directories(&pool).await?;
@@ -272,6 +289,40 @@ async fn verify_ytdlp_binary(ytdlp_path: &Path) -> Result<()> {
         Err(e) => Err(color_eyre::eyre::eyre!(
             "Failed to verify yt-dlp binary at '{}': {}",
             ytdlp_path.display(),
+            e
+        )),
+    }
+}
+
+/// Verify that ffmpeg exists and is executable.
+async fn verify_ffmpeg_binary() -> Result<()> {
+    let output = tokio::process::Command::new("ffmpeg")
+        .arg("-version")
+        .output()
+        .await;
+
+    match output {
+        Ok(output) if output.status.success() => {
+            let version_stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+            let version_line = version_stdout.lines().next().unwrap_or("unknown");
+            info!(version = %version_line, "ffmpeg binary verified");
+            Ok(())
+        }
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            Err(color_eyre::eyre::eyre!(
+                "ffmpeg is installed but failed to run: {}",
+                stderr.trim()
+            ))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(color_eyre::eyre::eyre!(
+            "ffmpeg binary not found on PATH. \
+             Video downloads requiring merge/mux will fail. \
+             Install ffmpeg and restart the application. \
+             Nix users: add `ffmpeg` to your dev shell and run `nix develop`."
+        )),
+        Err(e) => Err(color_eyre::eyre::eyre!(
+            "Failed to verify ffmpeg binary: {}",
             e
         )),
     }
