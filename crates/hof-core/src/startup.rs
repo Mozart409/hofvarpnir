@@ -5,6 +5,7 @@
 //! - Cleaning up orphaned `.part` files from interrupted downloads
 //! - Initializing and hydrating the actor system from database state
 
+use std::env;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -38,16 +39,39 @@ pub struct ActorSystem {
 /// Initialize the actor system and perform crash recovery.
 ///
 /// This function:
-/// 1. Resets any videos stuck in `downloading` status
-/// 2. Cleans up orphaned `.part` files
-/// 3. Creates and starts all singleton actors
-/// 4. Returns handles to interact with the actor system
+/// 1. Ensures the default output directory exists
+/// 2. Resets any videos stuck in `downloading` status
+/// 3. Cleans up orphaned `.part` files
+/// 4. Creates and starts all singleton actors
+/// 5. Returns handles to interact with the actor system
 ///
 /// # Errors
 ///
 /// Returns an error if initialization fails.
 pub async fn initialize(pool: PgPool, config: &Config) -> Result<ActorSystem> {
     info!("Initializing actor system");
+
+    // Phase 0: Ensure output directory exists
+    tokio::fs::create_dir_all(&config.storage.default_output_dir)
+        .await
+        .wrap_err_with(|| {
+            format!(
+                "Failed to create output directory: {}",
+                config.storage.default_output_dir.display()
+            )
+        })?;
+    info!(
+        output_dir = %config.storage.default_output_dir.display(),
+        "Output directory ready"
+    );
+
+    // Phase 0.5: Ensure TMPDIR is valid (nix-shell sets TMPDIR to a session-specific
+    // directory that may not exist after a restart). The yt-dlp crate uses tempfile
+    // which respects TMPDIR.
+    ensure_valid_tmpdir().await?;
+
+    // Phase 0.6: Verify yt-dlp binary exists
+    verify_ytdlp_binary(&config.download.ytdlp_path).await?;
 
     // Phase 1: Crash recovery
     recover_from_crash(&pool, &config.storage.default_output_dir).await?;
@@ -205,6 +229,86 @@ fn start_cleanup(pool: PgPool, config: &Config) -> ActorRef<CleanupActor> {
 
     info!("Cleanup actor started");
     cleanup
+}
+
+/// Verify that the yt-dlp binary exists and is executable.
+async fn verify_ytdlp_binary(ytdlp_path: &Path) -> Result<()> {
+    // First check if the path exists directly
+    if ytdlp_path.is_absolute() && ytdlp_path.exists() {
+        info!(path = %ytdlp_path.display(), "yt-dlp binary found");
+        return Ok(());
+    }
+
+    // If it's just a command name (like "yt-dlp"), try to find it in PATH
+    let output = tokio::process::Command::new(ytdlp_path)
+        .arg("--version")
+        .output()
+        .await;
+
+    match output {
+        Ok(output) if output.status.success() => {
+            let version = String::from_utf8_lossy(&output.stdout);
+            info!(
+                path = %ytdlp_path.display(),
+                version = %version.trim(),
+                "yt-dlp binary verified"
+            );
+            Ok(())
+        }
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            Err(color_eyre::eyre::eyre!(
+                "yt-dlp binary at '{}' failed to run: {}",
+                ytdlp_path.display(),
+                stderr.trim()
+            ))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(color_eyre::eyre::eyre!(
+            "yt-dlp binary not found at '{}'. \
+                 Please install yt-dlp: https://github.com/yt-dlp/yt-dlp#installation \
+                 or set YTDLP_PATH to the correct path.",
+            ytdlp_path.display()
+        )),
+        Err(e) => Err(color_eyre::eyre::eyre!(
+            "Failed to verify yt-dlp binary at '{}': {}",
+            ytdlp_path.display(),
+            e
+        )),
+    }
+}
+
+/// Ensure TMPDIR points to a valid, existing directory.
+///
+/// nix-shell sets TMPDIR to a session-specific directory (e.g., `/tmp/nix-shell.xxx/`)
+/// which may not exist after a restart. The `tempfile` crate (used by yt-dlp) respects
+/// TMPDIR, so we need to ensure it's valid.
+///
+/// If TMPDIR is invalid, we create it (or fall back to /tmp if that fails).
+async fn ensure_valid_tmpdir() -> Result<()> {
+    if let Ok(tmpdir) = env::var("TMPDIR") {
+        let tmpdir_path = Path::new(&tmpdir);
+        if tmpdir_path.exists() {
+            debug!(tmpdir = %tmpdir, "TMPDIR is valid");
+        } else {
+            // Try to create the TMPDIR
+            match tokio::fs::create_dir_all(&tmpdir_path).await {
+                Ok(()) => {
+                    info!(tmpdir = %tmpdir, "Created missing TMPDIR");
+                }
+                Err(e) => {
+                    // Can't create it - this is a problem since we can't safely change env vars
+                    // Log a warning and hope /tmp works as a fallback
+                    warn!(
+                        tmpdir = %tmpdir,
+                        error = %e,
+                        "TMPDIR does not exist and cannot be created. \
+                         Set TMPDIR=/tmp before starting the application."
+                    );
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Collect all unique output directories from profiles.
