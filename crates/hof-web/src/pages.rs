@@ -6,9 +6,9 @@ use std::time::Duration;
 use axum::{
     Form, Router,
     extract::{Path, State},
-    http::StatusCode,
+    http::{StatusCode, header},
     response::{
-        IntoResponse, Redirect,
+        IntoResponse, Redirect, Response,
         sse::{Event, KeepAlive, Sse},
     },
     routing::{get, post},
@@ -27,12 +27,33 @@ use hof_core::{
     ytdlp::validate_output_template,
 };
 use maud::{DOCTYPE, Markup, PreEscaped, Render, html};
+use rust_embed::Embed;
 use serde::Deserialize;
 use tokio_stream::wrappers::BroadcastStream;
 use tower_sessions::Session;
 use ulid::Ulid;
 
 use crate::auth::AuthUser;
+
+/// Static assets embedded at compile time.
+#[derive(Embed)]
+#[folder = "assets/"]
+struct Assets;
+
+/// Serve embedded static assets.
+async fn serve_asset(Path(path): Path<String>) -> Response {
+    match Assets::get(&path) {
+        Some(content) => {
+            let mime = mime_guess::from_path(&path).first_or_octet_stream();
+            (
+                [(header::CONTENT_TYPE, mime.as_ref())],
+                content.data.into_owned(),
+            )
+                .into_response()
+        }
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum NavItem {
@@ -131,8 +152,6 @@ pub struct RegisterForm {
 }
 
 pub fn router(state: AppState) -> Router {
-    let assets_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets");
-
     Router::new()
         // Auth routes (no session required)
         .route("/login", get(login_page).post(login))
@@ -151,7 +170,8 @@ pub fn router(state: AppState) -> Router {
         .route("/downloads", get(downloads_page))
         .route("/downloads/{id}/retry", post(retry_download))
         .route("/web/downloads/progress", get(download_progress_sse))
-        .nest_service("/assets", tower_http::services::ServeDir::new(assets_dir))
+        // Static assets (embedded at compile time)
+        .route("/assets/{*path}", get(serve_asset))
         .with_state(state)
 }
 
