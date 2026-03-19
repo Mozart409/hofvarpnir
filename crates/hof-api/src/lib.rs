@@ -9,7 +9,7 @@
 
 pub mod routes;
 
-use axum::Router;
+use axum::{Json, Router, routing::get};
 use hof_core::actors::download_supervisor::DownloadSupervisor;
 use hof_core::actors::scheduler::SchedulerActor;
 use hof_core::domain::video::DownloadProgress;
@@ -125,6 +125,17 @@ pub fn router(state: AppState) -> Router {
 /// Build the Scalar `OpenAPI` documentation router.
 ///
 /// Mount at `/docs` in the top-level application.
+///
+/// Provides:
+/// - `/docs/` - Scalar UI for interactive API documentation
+/// - `/docs/openapi.json` - Raw `OpenAPI` specification in JSON format
 pub fn scalar_router() -> Router {
-    Router::new().merge(Scalar::with_url("/", ApiDoc::openapi()))
+    Router::new()
+        .merge(Scalar::with_url("/", ApiDoc::openapi()))
+        .route("/openapi.json", get(openapi_json))
+}
+
+/// Serve the `OpenAPI` specification as JSON.
+async fn openapi_json() -> Json<utoipa::openapi::OpenApi> {
+    Json(ApiDoc::openapi())
 }
