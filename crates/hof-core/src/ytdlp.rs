@@ -180,7 +180,7 @@ pub struct IndexResult {
 
 impl IndexResult {
     fn from_playlist(playlist: &Playlist, platform: &str) -> Self {
-        // Extract best thumbnail from first entry if available
+        // Try to get thumbnail from first entry
         let thumbnail_url = playlist.entries.first().and_then(|e| e.thumbnail.clone());
 
         Self {
@@ -333,10 +333,24 @@ impl YtdlpClient {
         debug!(
             title = %playlist.title,
             entries = playlist.entries.len(),
+            uploader_id = ?playlist.uploader_id,
             "Source indexed"
         );
 
-        Ok(IndexResult::from_playlist(&playlist, &platform))
+        let mut result = IndexResult::from_playlist(&playlist, &platform);
+
+        // For YouTube channels, if no thumbnail from playlist, try fetching first video's metadata
+        if platform == "youtube"
+            && result.thumbnail_url.is_none()
+            && let Some(first_entry) = playlist.entries.first()
+            && let Ok(video) = extractor.fetch_video(&first_entry.url).await
+            && let Some(thumbnail) = video.thumbnail
+        {
+            debug!(thumbnail = %thumbnail, "Found thumbnail from first video");
+            result.thumbnail_url = Some(thumbnail);
+        }
+
+        Ok(result)
     }
 
     /// Download a video with progress reporting.
@@ -678,7 +692,8 @@ fn find_unknown_single_brace_placeholder(template: &str) -> Option<String> {
 }
 
 /// Sanitize text so it is safe as a single filename component.
-fn sanitize_filename_component(value: &str) -> String {
+#[must_use]
+pub fn sanitize_filename_component(value: &str) -> String {
     let sanitized: String = value
         .chars()
         .map(|ch| match ch {

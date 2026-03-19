@@ -11,6 +11,7 @@ pub mod routes;
 
 use axum::{Json, Router, routing::get};
 use hof_core::actors::download_supervisor::DownloadSupervisor;
+use hof_core::actors::jellyfin_metadata::JellyfinMetadataActor;
 use hof_core::actors::scheduler::SchedulerActor;
 use hof_core::domain::video::DownloadProgress;
 use kameo::actor::ActorRef;
@@ -30,6 +31,8 @@ pub struct AppState {
     pub supervisor: ActorRef<DownloadSupervisor>,
     /// Reference to the scheduler actor.
     pub scheduler: ActorRef<SchedulerActor>,
+    /// Reference to the Jellyfin metadata actor.
+    pub jellyfin_metadata: ActorRef<JellyfinMetadataActor>,
     /// Broadcast channel for download progress updates (for SSE).
     pub progress_tx: broadcast::Sender<DownloadProgress>,
 }
@@ -41,12 +44,14 @@ impl AppState {
         pool: PgPool,
         supervisor: ActorRef<DownloadSupervisor>,
         scheduler: ActorRef<SchedulerActor>,
+        jellyfin_metadata: ActorRef<JellyfinMetadataActor>,
         progress_tx: broadcast::Sender<DownloadProgress>,
     ) -> Self {
         Self {
             pool,
             supervisor,
             scheduler,
+            jellyfin_metadata,
             progress_tx,
         }
     }
@@ -76,6 +81,7 @@ impl AppState {
         sources::update_source,
         sources::delete_source,
         sources::trigger_index,
+        sources::trigger_metadata,
         downloads::list_downloads,
         downloads::get_download_progress,
         downloads::retry_download,
@@ -91,6 +97,7 @@ impl AppState {
         sources::CreateSourceRequest,
         sources::UpdateSourceRequest,
         sources::IndexTriggerResponse,
+        sources::MetadataTriggerResponse,
         downloads::VideoResponse,
         downloads::RetryResponse,
         hof_core::domain::profile::Quality,

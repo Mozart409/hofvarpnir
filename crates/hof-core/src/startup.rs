@@ -18,6 +18,7 @@ use crate::actors::cleanup::{CleanupActor, CleanupActorArgs, CleanupPartFiles};
 use crate::actors::download_supervisor::{
     DownloadSupervisor, DownloadSupervisorArgs, ProcessPendingDownloads,
 };
+use crate::actors::jellyfin_metadata::{JellyfinMetadataActor, JellyfinMetadataActorArgs};
 use crate::actors::scheduler::{SchedulerActor, SchedulerArgs};
 use crate::config::Config;
 use crate::db;
@@ -34,6 +35,8 @@ pub struct ActorSystem {
     pub scheduler: ActorRef<SchedulerActor>,
     /// The cleanup actor (enforces retention and quotas).
     pub cleanup: ActorRef<CleanupActor>,
+    /// The Jellyfin metadata actor (generates metadata files).
+    pub jellyfin_metadata: ActorRef<JellyfinMetadataActor>,
     /// Channel receiver for download progress updates.
     pub progress_rx: mpsc::Receiver<DownloadProgress>,
 }
@@ -99,6 +102,7 @@ pub async fn initialize(pool: PgPool, config: &Config) -> Result<ActorSystem> {
     let supervisor = start_supervisor(pool.clone(), ytdlp.clone(), config, progress_tx);
     let scheduler = start_scheduler(pool.clone(), ytdlp.clone(), supervisor.clone());
     let cleanup = start_cleanup(pool.clone(), config);
+    let jellyfin_metadata = start_jellyfin_metadata(pool.clone());
 
     // Phase 4.5: Kick pending/retry-eligible downloads after startup recovery.
     // This ensures videos reset from `downloading` -> `pending` are resumed
@@ -127,6 +131,7 @@ pub async fn initialize(pool: PgPool, config: &Config) -> Result<ActorSystem> {
         supervisor,
         scheduler,
         cleanup,
+        jellyfin_metadata,
         progress_rx,
     })
 }
@@ -247,6 +252,19 @@ fn start_cleanup(pool: PgPool, config: &Config) -> ActorRef<CleanupActor> {
 
     info!("Cleanup actor started");
     cleanup
+}
+
+/// Start the Jellyfin metadata actor.
+fn start_jellyfin_metadata(pool: PgPool) -> ActorRef<JellyfinMetadataActor> {
+    let args = JellyfinMetadataActorArgs {
+        pool,
+        check_interval: None, // Use default (24 hours)
+    };
+
+    let jellyfin_metadata = JellyfinMetadataActor::spawn(args);
+
+    info!("Jellyfin metadata actor started");
+    jellyfin_metadata
 }
 
 /// Verify that the yt-dlp binary exists and is executable.
@@ -406,12 +424,19 @@ pub async fn shutdown(system: ActorSystem) -> Result<()> {
     system.supervisor.wait_for_shutdown().await;
     info!("Download supervisor stopped");
 
-    // Cleanup last
+    // Cleanup
     if let Err(e) = system.cleanup.stop_gracefully().await {
         warn!(error = %e, "Error stopping cleanup");
     }
     system.cleanup.wait_for_shutdown().await;
     info!("Cleanup actor stopped");
+
+    // Jellyfin metadata last
+    if let Err(e) = system.jellyfin_metadata.stop_gracefully().await {
+        warn!(error = %e, "Error stopping jellyfin metadata");
+    }
+    system.jellyfin_metadata.wait_for_shutdown().await;
+    info!("Jellyfin metadata actor stopped");
 
     info!("Actor system shutdown complete");
     Ok(())
