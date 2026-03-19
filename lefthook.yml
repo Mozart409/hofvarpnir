@@ -76,7 +76,7 @@ pre-push:
 
         for i in $(seq 1 60); do
           if curl -fsS http://127.0.0.1:13000/api/health/ready >/dev/null; then
-            exit 0
+            break
           fi
           if ! docker ps --format '{{.Names}}' | grep -q '^hof-smoke-app$'; then
             docker logs hof-smoke-app
@@ -85,8 +85,21 @@ pre-push:
           sleep 1
         done
 
-        docker logs hof-smoke-app
-        exit 1
+        # Verify health endpoint is reachable (final check after loop)
+        if ! curl -fsS http://127.0.0.1:13000/api/health/ready >/dev/null; then
+          echo "Health check failed after timeout"
+          docker logs hof-smoke-app
+          exit 1
+        fi
+
+        # Verify static assets are served correctly
+        if ! curl -fsS http://127.0.0.1:13000/assets/app.css >/dev/null; then
+          echo "Static asset app.css not found - assets directory missing from container"
+          docker logs hof-smoke-app
+          exit 1
+        fi
+
+        echo "Smoke test passed: health endpoint and static assets OK"
     - name: clippy-pedantic
       glob: "*.rs"
       run: cargo clippy --all-targets -- -W clippy::pedantic
