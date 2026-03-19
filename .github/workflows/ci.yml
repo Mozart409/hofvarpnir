@@ -137,16 +137,18 @@ jobs:
       - name: Setup Nix
         uses: DeterminateSystems/nix-installer-action@main
 
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Create and push multi-arch manifest
         env:
           REPO: ${{ github.repository }}
         run: |
           REPO_LOWER="${REPO,,}"
-          
-          nix develop .#default --command skopeo login \
-            -u "${{ github.actor }}" \
-            -p "${{ secrets.GITHUB_TOKEN }}" \
-            ghcr.io
 
           # Create manifest list combining both architectures
           docker manifest create "ghcr.io/${REPO_LOWER}:dev" \
