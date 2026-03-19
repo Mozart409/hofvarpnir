@@ -40,6 +40,8 @@ pre-push:
   jobs:
     - name: test
       run: just test
+    - name: container-smoke
+      run: nix build --impure .#container && docker load < result && docker run --rm --entrypoint /bin/sh hofvarpnir:latest -c 'test -x /bin/hofvarpnir'
     - name: clippy-pedantic
       glob: "*.rs"
       run: cargo clippy --all-targets -- -W clippy::pedantic
