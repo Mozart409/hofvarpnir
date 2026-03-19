@@ -27,6 +27,8 @@ tokio-stream.workspace = true
 tower-sessions.workspace = true
 tower-sessions-sqlx-store.workspace = true
 sqlx.workspace = true
+rust-embed.workspace = true
+mime_guess.workspace = true
 
 [lints]
 workspace = true
