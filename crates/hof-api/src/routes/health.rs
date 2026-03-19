@@ -57,7 +57,7 @@ pub fn router() -> Router<AppState> {
 /// Use this for monitoring dashboards.
 #[utoipa::path(
     get,
-    path = "/health",
+    path = "/api/health",
     responses(
         (status = 200, description = "System is healthy", body = HealthResponse),
         (status = 503, description = "System is unhealthy", body = HealthResponse),
@@ -98,7 +98,7 @@ pub async fn health_check(State(state): State<AppState>) -> impl IntoResponse {
 /// Use this for `livenessProbe` in Kubernetes.
 #[utoipa::path(
     get,
-    path = "/health/live",
+    path = "/api/health/live",
     responses(
         (status = 200, description = "Process is alive"),
     ),
@@ -114,7 +114,7 @@ pub async fn liveness() -> StatusCode {
 /// Use this for `readinessProbe` in Kubernetes and Docker HEALTHCHECK.
 #[utoipa::path(
     get,
-    path = "/health/ready",
+    path = "/api/health/ready",
     responses(
         (status = 200, description = "Service is ready"),
         (status = 503, description = "Service is not ready"),
