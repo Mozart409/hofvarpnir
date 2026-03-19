@@ -56,23 +56,23 @@ The REST API is documented with OpenAPI and available via Scalar at `/docs` when
 
 Key endpoints:
 
-- `GET /api/profiles` - Manage download profiles
-- `GET /api/sources` - Manage video sources (channels, playlists)
-- `GET /api/downloads` - List and manage downloads
-- `GET /api/downloads/progress` - SSE stream for live progress (JSON)
-- `GET /web/downloads/progress` - SSE stream for live progress (HTML)
+- `GET /api/v1/profiles` - Manage download profiles
+- `GET /api/v1/sources` - Manage video sources (channels, playlists)
+- `GET /api/v1/downloads` - List and manage downloads
+- `GET /api/v1/downloads/progress` - SSE stream for live progress (JSON)
+- `GET /web/v1/downloads/progress` - SSE stream for live progress (HTML)
 
 ## Configuration
 
 Configuration is loaded from environment variables:
 
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `DATABASE_URL` | PostgreSQL connection string | - |
-| `PORT` | Server port | 3000 |
-| `YT_DLP_PATH` | Path to yt-dlp binary | yt-dlp |
-| `DOWNLOAD_CONCURRENCY` | Max simultaneous downloads | 3 |
-| `DOWNLOAD_TIMEOUT` | Per-download timeout (hours) | 4 |
+| Variable               | Description                  | Default |
+| ---------------------- | ---------------------------- | ------- |
+| `DATABASE_URL`         | PostgreSQL connection string | -       |
+| `PORT`                 | Server port                  | 3000    |
+| `YT_DLP_PATH`          | Path to yt-dlp binary        | yt-dlp  |
+| `DOWNLOAD_CONCURRENCY` | Max simultaneous downloads   | 3       |
+| `DOWNLOAD_TIMEOUT`     | Per-download timeout (hours) | 4       |
 
 ## Development
 
@@ -81,9 +81,10 @@ See [GOALS.md](./GOALS.md) for detailed architecture and implementation roadmap.
 ## CI/CD
 
 This project uses GitHub Actions for continuous integration and deployment:
+
 - `.github/workflows/ci.yml` - Runs on pull requests and pushes to main branch
-- `.github/workflows/release.yml` - Creates GitHub releases when pushing version tags (v*.*.*)
+- `.github/workflows/release.yml` - Creates GitHub releases when pushing version tags (v*.*.\*)
 
 ## License
 
-MIT
+GPL-3.0-or-later see [LICENSE](./LICENSE)
