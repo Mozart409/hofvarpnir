@@ -7,6 +7,7 @@ services:
   hofvarpnir:
     container_name: hofvarpnir
     image: ghcr.io/mozart409/hofvarpnir:dev
+    pull_policy: always
     environment:
       DATABASE_URL: postgresql://postgres:postgres@postgres:5432/hofvarpnir_dev
       RUST_LOG: info,hof_core=debug
