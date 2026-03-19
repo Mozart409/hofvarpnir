@@ -154,7 +154,7 @@
 
           config = {
             # Run as the application binary
-            Cmd = ["/bin/hof-web"];
+            Cmd = ["/bin/hofvarpnir"];
 
             # Run as non-root user
             User = "${containerUid}:${containerGid}";
@@ -170,9 +170,8 @@
               "HOME=/home/${containerUser}"
               "PORT=3000"
               "RUST_LOG=info"
-              "YT_DLP_PATH=${pkgs.yt-dlp}/bin/yt-dlp"
-              "DOWNLOAD_DIR=/data/downloads"
-              "INCOMPLETE_DIR=/data/incomplete"
+              "YTDLP_PATH=${pkgs.yt-dlp}/bin/yt-dlp"
+              "DEFAULT_OUTPUT_DIR=/data/downloads"
             ];
 
             # Volume mount points for persistence
@@ -229,7 +228,7 @@
           '';
 
           config = {
-            Cmd = ["/bin/hof-web"];
+            Cmd = ["/bin/hofvarpnir"];
             User = "${containerUid}:${containerGid}";
             ExposedPorts."3000/tcp" = {};
             Env = [
@@ -237,9 +236,8 @@
               "HOME=/home/${containerUser}"
               "PORT=3000"
               "RUST_LOG=info"
-              "YT_DLP_PATH=${pkgs.yt-dlp}/bin/yt-dlp"
-              "DOWNLOAD_DIR=/data/downloads"
-              "INCOMPLETE_DIR=/data/incomplete"
+              "YTDLP_PATH=${pkgs.yt-dlp}/bin/yt-dlp"
+              "DEFAULT_OUTPUT_DIR=/data/downloads"
             ];
             Volumes = {
               "/data/downloads" = {};

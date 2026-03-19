@@ -6,11 +6,13 @@ services:
   #   image: ghcr.io/user/hofvarpnir:latest
   hofvarpnir:
     container_name: hofvarpnir
-    image: hofvarpnir:latest
+    image: ghcr.io/mozart409/hofvarpnir:dev
     environment:
       DATABASE_URL: postgresql://postgres:postgres@postgres:5432/hofvarpnir_dev
       RUST_LOG: info,hof_core=debug
       PORT: "3000"
+      DEFAULT_OUTPUT_DIR: /data/downloads
+      YTDLP_PATH: /bin/yt-dlp
     ports:
       - "3000:3000"
     volumes:
@@ -34,7 +36,6 @@ services:
     # Adjust if your media user has a different UID
     user: "1000:1000"
     restart: unless-stopped
-
   postgres:
     container_name: postgres
     build:
@@ -56,7 +57,6 @@ services:
       timeout: 5s
       retries: 5
       start_period: 30s
-
   postgres_exporter:
     container_name: postgres_exporter
     image: prometheuscommunity/postgres-exporter:latest
@@ -73,11 +73,9 @@ services:
       - postgres
     command:
       - '--extend.query-path=/etc/postgres_exporter/queries.yaml'
-
 volumes:
   postgres_data:
     driver: local
-
 networks:
   hofvarpnir:
     driver: bridge
