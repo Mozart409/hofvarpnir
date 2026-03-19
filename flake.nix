@@ -28,8 +28,15 @@
       # Crane for building Rust packages
       craneLib = (crane.mkLib pkgs).overrideToolchain rust;
 
-      # Common source filtering for Rust builds
-      src = craneLib.cleanCargoSource ./.;
+      # Common source filtering for Rust builds.
+      # Include SQLx migration files so `sqlx::migrate!("./migrations")`
+      # embeds the full migration set in container builds.
+      src = pkgs.lib.cleanSourceWith {
+        src = ./.;
+        filter = path: type:
+          (craneLib.filterCargoSources path type)
+          || pkgs.lib.hasInfix "/crates/hof-core/migrations/" (toString path);
+      };
 
       # Common build arguments
       commonArgs = {
