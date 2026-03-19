@@ -4,93 +4,33 @@ on:
     branches: [main]
   push:
     branches: [main]
+
 jobs:
-  fmt:
+  check:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - name: Setup Nix
-        uses: cachix/install-nix-action@v24
-        with:
-          extra_nix_config: |
-            access-tokens = github.com=${{ secrets.GITHUB_TOKEN }}
-            experimental-features = nix-command flakes
-      - name: Setup cache
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cache/cargo
-            ~/.cache/nix
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
+        uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Setup Nix cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
+
       - name: Check formatting
         run: nix develop .#default --command cargo fmt --all -- --check
-  clippy:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Setup Nix
-        uses: cachix/install-nix-action@v24
-        with:
-          extra_nix_config: |
-            access-tokens = github.com=${{ secrets.GITHUB_TOKEN }}
-            experimental-features = nix-command flakes
-      - name: Setup cache
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cache/cargo
-            ~/.cache/nix
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
+
       - name: Run clippy
         run: nix develop .#default --command cargo clippy --all-targets --all-features -- -D warnings
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Setup Nix
-        uses: cachix/install-nix-action@v24
-        with:
-          extra_nix_config: |
-            access-tokens = github.com=${{ secrets.GITHUB_TOKEN }}
-            experimental-features = nix-command flakes
-      - name: Setup cache
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cache/cargo
-            ~/.cache/nix
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
+
       - name: Run tests
         run: nix develop .#default --command cargo test --all-features
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Setup Nix
-        uses: cachix/install-nix-action@v24
-        with:
-          extra_nix_config: |
-            access-tokens = github.com=${{ secrets.GITHUB_TOKEN }}
-            experimental-features = nix-command flakes
-      - name: Setup cache
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cache/cargo
-            ~/.cache/nix
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
-      - name: Build
+
+      - name: Build release
         run: nix develop .#default --command cargo build --all-features --release
 
   container:
+    needs: check
     strategy:
       matrix:
         include:
