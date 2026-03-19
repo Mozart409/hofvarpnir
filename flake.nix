@@ -31,11 +31,13 @@
       # Common source filtering for Rust builds.
       # Include SQLx migration files so `sqlx::migrate!("./migrations")`
       # embeds the full migration set in container builds.
+      # Include hof-web assets (app.css, etc.) for static file serving.
       src = pkgs.lib.cleanSourceWith {
         src = ./.;
         filter = path: type:
           (craneLib.filterCargoSources path type)
-          || pkgs.lib.hasInfix "/crates/hof-core/migrations/" (toString path);
+          || pkgs.lib.hasInfix "/crates/hof-core/migrations/" (toString path)
+          || pkgs.lib.hasInfix "/crates/hof-web/assets/" (toString path);
       };
 
       # Common build arguments
