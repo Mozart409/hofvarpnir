@@ -181,7 +181,7 @@ pub async fn generate_metadata(
             warn!(error = %e, url = %url, "Failed to download poster image");
         }
     } else {
-        debug!("No poster URL available");
+        warn!("No poster URL available - run 'Trigger Index' first to fetch channel metadata");
     }
 
     // Download fanart (or copy poster as fallback)

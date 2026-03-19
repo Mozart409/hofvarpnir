@@ -15,6 +15,7 @@ use ulid::Ulid;
 use utoipa::ToSchema;
 
 use hof_core::{
+    actors::jellyfin_metadata::TriggerSourceMetadata,
     actors::scheduler::IndexSource,
     db::{self, CreateSource, UpdateSource},
     domain::source::{Source, SourceType},
@@ -31,6 +32,7 @@ pub fn router() -> Router<AppState> {
             get(get_source).put(update_source).delete(delete_source),
         )
         .route("/{id}/index", post(trigger_index))
+        .route("/{id}/metadata", post(trigger_metadata))
 }
 
 // ============================================================================
@@ -149,6 +151,13 @@ where
 /// Response for manual index trigger.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct IndexTriggerResponse {
+    pub message: String,
+    pub source_id: String,
+}
+
+/// Response for manual metadata generation trigger.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct MetadataTriggerResponse {
     pub message: String,
     pub source_id: String,
 }
@@ -546,5 +555,135 @@ pub async fn trigger_index(
                     .into_response()
             }
         }
+    }
+}
+
+/// Trigger manual Jellyfin metadata generation for a source.
+///
+/// This generates tvshow.nfo, poster.jpg, fanart.jpg, and banner.jpg
+/// for the specified source.
+///
+/// Note: The source must have been indexed first (via Trigger Index) to have
+/// channel metadata (thumbnail URL, channel ID) available for image downloads.
+#[utoipa::path(
+    post,
+    path = "/api/v1/sources/{id}/metadata",
+    tag = "sources",
+    params(
+        ("id" = String, Path, description = "Source ID (ULID)")
+    ),
+    responses(
+        (status = 202, description = "Metadata generation started", body = MetadataTriggerResponse),
+        (status = 400, description = "Invalid ID format or missing channel metadata", body = ErrorResponse),
+        (status = 404, description = "Source not found", body = ErrorResponse),
+        (status = 500, description = "Internal server error", body = ErrorResponse)
+    )
+)]
+pub async fn trigger_metadata(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let Ok(source_id) = Ulid::from_string(&id) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Invalid source ID format".to_string(),
+            }),
+        )
+            .into_response();
+    };
+
+    // Verify source exists and has channel metadata
+    let source = match db::get_source(&state.pool, source_id).await {
+        Ok(s) => s,
+        Err(db::DbError::NotFound) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse {
+                    error: "Source not found".to_string(),
+                }),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "Failed to get source");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "Failed to get source".to_string(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    if source.channel_thumbnail_url.is_none() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Source has no channel metadata. Run 'Trigger Index' first to fetch \
+                        channel information from YouTube."
+                    .to_string(),
+            }),
+        )
+            .into_response();
+    }
+
+    // Send message to jellyfin metadata actor
+    match state
+        .jellyfin_metadata
+        .ask(TriggerSourceMetadata { source_id })
+        .await
+    {
+        Ok(result) if result.success => (
+            StatusCode::ACCEPTED,
+            Json(MetadataTriggerResponse {
+                message: "Metadata generated successfully".to_string(),
+                source_id: source_id.to_string(),
+            }),
+        )
+            .into_response(),
+        Ok(result) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: result.error.unwrap_or_else(|| "Unknown error".to_string()),
+            }),
+        )
+            .into_response(),
+        Err(send_err) => {
+            tracing::error!(error = %send_err, "Failed to trigger metadata generation");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: send_err.to_string(),
+                }),
+            )
+                .into_response()
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_metadata_trigger_response_schema() {
+        let response = MetadataTriggerResponse {
+            message: "Metadata generated successfully".to_string(),
+            source_id: "01ARZ3NDEKTSV4RRFFQ69G5FAV".to_string(),
+        };
+        assert_eq!(response.message, "Metadata generated successfully");
+        assert_eq!(response.source_id, "01ARZ3NDEKTSV4RRFFQ69G5FAV");
+    }
+
+    #[test]
+    fn test_index_trigger_response_schema() {
+        let response = IndexTriggerResponse {
+            message: "Indexing started".to_string(),
+            source_id: "01ARZ3NDEKTSV4RRFFQ69G5FAV".to_string(),
+        };
+        assert_eq!(response.message, "Indexing started");
+        assert_eq!(response.source_id, "01ARZ3NDEKTSV4RRFFQ69G5FAV");
     }
 }
