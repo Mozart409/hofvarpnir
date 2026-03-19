@@ -72,6 +72,29 @@
       containerUser = "hofvarpnir";
       containerUid = "1000";
       containerGid = "1000";
+      licenseBundle = pkgs.writeTextDir "licenses/THIRD_PARTY_LICENSES.md" (builtins.readFile ./THIRD_PARTY_LICENSES.md);
+      imageVersion =
+        let v = builtins.getEnv "OCI_IMAGE_VERSION";
+        in if v != "" then v else "dev";
+      imageRevision =
+        let r = builtins.getEnv "OCI_IMAGE_REVISION";
+        in if r != "" then r else "unknown";
+      imageCreated =
+        let c = builtins.getEnv "OCI_IMAGE_CREATED";
+        in if c != "" then c else "1970-01-01T00:00:00Z";
+      commonLabels = {
+        "org.opencontainers.image.title" = "hofvarpnir";
+        "org.opencontainers.image.description" = "Video archival system with yt-dlp";
+        "org.opencontainers.image.url" = "https://github.com/Mozart409/hofvarpnir";
+        "org.opencontainers.image.source" = "https://github.com/Mozart409/hofvarpnir";
+        "org.opencontainers.image.documentation" = "https://github.com/Mozart409/hofvarpnir#readme";
+        "org.opencontainers.image.licenses" = "SEE LICENSES";
+        "org.opencontainers.image.authors" = "Mozart409";
+        "org.opencontainers.image.vendor" = "Mozart409";
+        "org.opencontainers.image.version" = imageVersion;
+        "org.opencontainers.image.revision" = imageRevision;
+        "org.opencontainers.image.created" = imageCreated;
+      };
     in {
       # Rust package
       packages = {
@@ -89,6 +112,9 @@
           contents = [
             # The application binary
             hofvarpnir
+
+            # License bundle for mixed-license image contents
+            licenseBundle
 
             # Required runtime dependencies
             pkgs.yt-dlp
@@ -161,11 +187,7 @@
             WorkingDir = "/home/${containerUser}";
 
             # Labels for metadata
-            Labels = {
-              "org.opencontainers.image.source" = "https://github.com/user/hofvarpnir";
-              "org.opencontainers.image.description" = "Video archival system with yt-dlp";
-              "org.opencontainers.image.licenses" = "MIT";
-            };
+            Labels = commonLabels;
 
             # Health check - uses wget from busybox
             Healthcheck = {
@@ -185,6 +207,7 @@
 
           contents = [
             hofvarpnir
+            licenseBundle
             pkgs.yt-dlp
             pkgs.ffmpeg
             pkgs.cacert
@@ -223,6 +246,7 @@
               "/data/incomplete" = {};
             };
             WorkingDir = "/home/${containerUser}";
+            Labels = commonLabels;
             Healthcheck = {
               Test = ["CMD" "wget" "-q" "--spider" "http://localhost:3000/api/health/ready"];
               Interval = 30 * 1000000000;
