@@ -15,7 +15,7 @@
     rust-overlay,
     crane,
   }:
-    flake-utils.lib.eachDefaultSystem (system: let
+    flake-utils.lib.eachSystem ["x86_64-linux" "aarch64-linux"] (system: let
       pkgs = import nixpkgs {
         inherit system;
         config.allowUnfree = true;
@@ -59,9 +59,6 @@
         # Runtime dependencies
         buildInputs = with pkgs; [
           openssl
-        ] ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
-          pkgs.darwin.apple_sdk.frameworks.Security
-          pkgs.darwin.apple_sdk.frameworks.SystemConfiguration
         ];
 
         # Environment variables for SQLx offline mode
