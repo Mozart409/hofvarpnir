@@ -15,7 +15,7 @@ jobs:
         uses: DeterminateSystems/nix-installer-action@main
 
       - name: Setup Nix cache
-        uses: DeterminateSystems/magic-nix-cache-action@main
+        uses: DeterminateSystems/flakehub-cache-action@main
 
       - name: Check formatting
         run: nix develop .#default --command cargo fmt --all -- --check
@@ -28,6 +28,9 @@ jobs:
 
       - name: Build release
         run: nix develop .#default --command cargo build --all-features --release
+
+      - name: Warm container cache
+        run: nix build --no-link .#container
 
   container:
     needs: check
@@ -49,20 +52,10 @@ jobs:
         uses: DeterminateSystems/nix-installer-action@main
 
       - name: Setup Nix cache
-        uses: DeterminateSystems/magic-nix-cache-action@main
-
-      - name: Compute OCI metadata
-        id: oci
-        run: |
-          echo "version=dev-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
-          echo "created=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+        uses: DeterminateSystems/flakehub-cache-action@main
 
       - name: Build container
-        env:
-          OCI_IMAGE_VERSION: ${{ steps.oci.outputs.version }}
-          OCI_IMAGE_REVISION: ${{ github.sha }}
-          OCI_IMAGE_CREATED: ${{ steps.oci.outputs.created }}
-        run: nix build --impure .#container
+        run: nix build .#container
 
       - name: Push arch-specific image to GHCR (main branch only)
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'
