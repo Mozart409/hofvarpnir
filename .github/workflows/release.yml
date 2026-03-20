@@ -24,10 +24,10 @@ jobs:
 
       - name: Build binaries
         run: |
-          nix develop .#default --command cargo build --release --bin hofapi --bin hoftui
+          nix develop .#default --command cargo build --release --bin hofvarpnir --bin hofvarpnir-tui
           mkdir -p dist
-          cp target/release/hofapi dist/hofapi-${{ matrix.target }}
-          cp target/release/hoftui dist/hoftui-${{ matrix.target }}
+          cp target/release/hofvarpnir dist/hofvarpnir-${{ matrix.target }}
+          cp target/release/hofvarpnir-tui dist/hofvarpnir-tui-${{ matrix.target }}
 
       - name: Create tarball
         run: |
