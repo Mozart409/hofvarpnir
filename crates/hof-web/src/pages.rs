@@ -17,7 +17,10 @@ use chrono::{NaiveDate, Utc};
 use futures::stream::{Stream, StreamExt};
 use hof_api::AppState;
 use hof_core::{
-    actors::{download_supervisor::EnqueueDownload, scheduler::IndexSource},
+    actors::{
+        download_supervisor::EnqueueDownload, jellyfin_metadata::TriggerSourceMetadata,
+        scheduler::IndexSource,
+    },
     db::{self, CreateProfile, CreateSource, UpdateProfile, UpdateSource},
     domain::{
         profile::{Profile, Quality},
@@ -167,6 +170,7 @@ pub fn router(state: AppState) -> Router {
         .route("/sources/{id}", post(update_source))
         .route("/sources/{id}/delete", post(delete_source))
         .route("/sources/{id}/index", post(trigger_index))
+        .route("/sources/{id}/metadata", post(trigger_metadata))
         .route("/downloads", get(downloads_page))
         .route("/downloads/{id}/retry", post(retry_download))
         .route("/web/downloads/progress", get(download_progress_sse))
@@ -564,7 +568,7 @@ async fn profiles_page(auth: AuthUser, State(state): State<AppState>) -> impl In
                         }
                     }
                     (input_text("Name", "name", "Daily Archive", true, ""))
-                    (input_text("Naming Template", "naming_template", "{title}-{id}.{ext}", true, "{title}-{id}.{ext}"))
+                    (input_text("Naming Template", "naming_template", "{{source_custom_name/or default}}/{{title}}.{{ext}}", true, "{{source_custom_name/or default}}/{{title}}.{{ext}}"))
                     (input_text("Output Directory", "output_dir", "/data/videos", true, ""))
                     (input_number("Storage Quota (GB)", "storage_quota_gb", "100", true, "100"))
                     (input_number("Retention Days", "retention_days", "Optional", false, ""))
@@ -991,6 +995,71 @@ async fn trigger_index(
     }
 }
 
+async fn trigger_metadata(
+    _auth: AuthUser,
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let Ok(source_id) = Ulid::from_string(id.trim()) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            error_page("Invalid source ID provided"),
+        )
+            .into_response();
+    };
+
+    // Check if source has channel metadata
+    match db::get_source(&state.pool, source_id).await {
+        Ok(source) if source.channel_thumbnail_url.is_none() => {
+            return (
+                StatusCode::BAD_REQUEST,
+                error_page(
+                    "Source has no channel metadata. Run 'Trigger Index' first to fetch \
+                     channel information from YouTube.",
+                ),
+            )
+                .into_response();
+        }
+        Err(db::DbError::NotFound) => {
+            return (StatusCode::NOT_FOUND, error_page("Source not found")).into_response();
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "failed to get source");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                error_page("Failed to get source"),
+            )
+                .into_response();
+        }
+        Ok(_) => {}
+    }
+
+    match state
+        .jellyfin_metadata
+        .ask(TriggerSourceMetadata { source_id })
+        .await
+    {
+        Ok(result) if result.success => Redirect::to("/sources").into_response(),
+        Ok(result) => {
+            let error_msg = result.error.unwrap_or_else(|| "Unknown error".to_string());
+            tracing::error!(error = %error_msg, "failed to generate metadata from web form");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                error_page(&format!("Failed to generate metadata: {error_msg}")),
+            )
+                .into_response()
+        }
+        Err(error) => {
+            tracing::error!(%error, "failed to trigger metadata generation from web form");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                error_page("Failed to trigger metadata generation for this source"),
+            )
+                .into_response()
+        }
+    }
+}
+
 async fn downloads_page(_auth: AuthUser, State(state): State<AppState>) -> impl IntoResponse {
     let videos = match db::list_videos(&state.pool, None).await {
         Ok(data) => data,
@@ -1342,6 +1411,9 @@ fn source_editor(source: &Source) -> Markup {
                     }
                     button class="rounded-lg border border-amber-200 bg-amber-50 px-4 py-2 text-sm font-medium text-amber-700 hover:bg-amber-100" type="submit" formaction={(format!("/sources/{}/index", source.id))} {
                         "Trigger Index"
+                    }
+                    button class="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-2 text-sm font-medium text-emerald-700 hover:bg-emerald-100" type="submit" formaction={(format!("/sources/{}/metadata", source.id))} {
+                        "Trigger Image Download"
                     }
                     button class="rounded-lg border border-rose-200 bg-rose-50 px-4 py-2 text-sm font-medium text-rose-700 hover:bg-rose-100" type="submit" formaction={(format!("/sources/{}/delete", source.id))} {
                         "Delete"

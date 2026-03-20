@@ -9,8 +9,11 @@ use kameo::prelude::*;
 use sqlx::PgPool;
 use tracing::{debug, error, info, instrument, warn};
 
+use ulid::Ulid;
+
 use crate::db;
 use crate::jellyfin::{self, JellyfinMetadata};
+use crate::ytdlp::sanitize_filename_component;
 
 /// Default interval for checking metadata (24 hours).
 const DEFAULT_CHECK_INTERVAL: Duration = Duration::from_hours(24);
@@ -185,7 +188,84 @@ impl Message<GetStatus> for JellyfinMetadataActor {
     }
 }
 
+/// Message to trigger metadata generation for a specific source.
+pub struct TriggerSourceMetadata {
+    /// The source ID to generate metadata for.
+    pub source_id: Ulid,
+}
+
+/// Result of triggering metadata for a single source.
+#[derive(Debug, Clone, Reply)]
+pub struct SourceMetadataResult {
+    /// Whether metadata was generated successfully.
+    pub success: bool,
+    /// Error message if generation failed.
+    pub error: Option<String>,
+}
+
+impl Message<TriggerSourceMetadata> for JellyfinMetadataActor {
+    type Reply = SourceMetadataResult;
+
+    #[instrument(skip_all, fields(source_id = %msg.source_id))]
+    async fn handle(
+        &mut self,
+        msg: TriggerSourceMetadata,
+        _ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        match self.generate_source_metadata(msg.source_id).await {
+            Ok(()) => SourceMetadataResult {
+                success: true,
+                error: None,
+            },
+            Err(e) => {
+                let error_msg = e.to_string();
+                warn!(error = %error_msg, "Failed to generate source metadata");
+                SourceMetadataResult {
+                    success: false,
+                    error: Some(error_msg),
+                }
+            }
+        }
+    }
+}
+
 impl JellyfinMetadataActor {
+    /// Generate metadata for a specific source.
+    async fn generate_source_metadata(&self, source_id: Ulid) -> color_eyre::eyre::Result<()> {
+        let source = db::get_source(&self.pool, source_id)
+            .await
+            .map_err(|e| color_eyre::eyre::eyre!("Failed to get source: {e}"))?;
+
+        let profile = db::get_profile(&self.pool, source.profile_id)
+            .await
+            .map_err(|e| color_eyre::eyre::eyre!("Failed to get profile: {e}"))?;
+
+        // Warn if source lacks channel metadata
+        if source.channel_thumbnail_url.is_none() {
+            warn!(
+                source_id = %source_id,
+                "Source has no channel thumbnail URL - run 'Trigger Index' first to fetch channel metadata"
+            );
+        }
+
+        let source_name = sanitize_filename_component(source.display_name());
+        let output_dir = std::path::Path::new(&profile.output_dir)
+            .join("completed")
+            .join(source_name);
+
+        let metadata = JellyfinMetadata::from_source(&source, "youtube");
+
+        jellyfin::generate_metadata(&self.http_client, &metadata, &output_dir).await?;
+
+        db::update_source_jellyfin_metadata_at(&self.pool, source_id, Utc::now())
+            .await
+            .map_err(|e| color_eyre::eyre::eyre!("Failed to update metadata timestamp: {e}"))?;
+
+        info!(source_id = %source_id, "Generated Jellyfin metadata for source");
+
+        Ok(())
+    }
+
     /// Check all sources and generate missing metadata.
     async fn check_all_sources(&self) -> MetadataCheckResult {
         let mut result = MetadataCheckResult {
@@ -228,19 +308,22 @@ impl JellyfinMetadataActor {
                 continue;
             };
 
-            // Determine output directory
-            let output_dir = std::path::Path::new(&profile.output_dir).join("completed");
+            // Skip sources without channel metadata
+            if source.channel_title.is_none() && source.custom_name.is_none() {
+                debug!(source_id = %source.id, "No channel metadata, skipping");
+                continue;
+            }
+
+            // Determine output directory (include source name subdirectory)
+            let source_name = sanitize_filename_component(source.display_name());
+            let output_dir = std::path::Path::new(&profile.output_dir)
+                .join("completed")
+                .join(&source_name);
 
             // Check if metadata needs regeneration
             if !jellyfin::needs_regeneration(&output_dir, source.jellyfin_metadata_at, false) {
                 debug!(source_id = %source.id, "Metadata already exists");
                 result.sources_existing += 1;
-                continue;
-            }
-
-            // Skip sources without channel metadata
-            if source.channel_title.is_none() && source.custom_name.is_none() {
-                debug!(source_id = %source.id, "No channel metadata, skipping");
                 continue;
             }
 

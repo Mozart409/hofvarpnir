@@ -194,6 +194,12 @@ impl SourceIndexerActor {
         );
 
         // Update channel metadata from index result
+        debug!(
+            channel_id = ?index_result.channel_id,
+            channel_name = ?index_result.channel_name,
+            thumbnail_url = ?index_result.thumbnail_url,
+            "Updating channel metadata"
+        );
         if let Err(e) = self.update_channel_metadata(&index_result).await {
             warn!(error = %e, "Failed to update channel metadata");
             result

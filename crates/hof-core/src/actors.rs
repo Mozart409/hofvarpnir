@@ -24,6 +24,7 @@ pub use download_supervisor::{
 pub use download_worker::{DownloadConfig, DownloadOutcome, DownloadWorker, DownloadWorkerArgs};
 pub use jellyfin_metadata::{
     JellyfinMetadataActor, JellyfinMetadataActorArgs, JellyfinMetadataStatus, MetadataCheckResult,
+    SourceMetadataResult, TriggerSourceMetadata,
 };
 pub use scheduler::{SchedulerActor, SchedulerArgs, SchedulerStatus};
 pub use source_indexer::{IndexingResult, SourceIndexerActor, SourceIndexerArgs};
