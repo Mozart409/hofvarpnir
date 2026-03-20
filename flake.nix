@@ -21,6 +21,11 @@
         config.allowUnfree = true;
         overlays = [rust-overlay.overlays.default];
       };
+
+      ociImageVersion = builtins.getEnv "OCI_IMAGE_VERSION";
+      ociImageRevision = builtins.getEnv "OCI_IMAGE_REVISION";
+      ociImageCreated = builtins.getEnv "OCI_IMAGE_CREATED";
+
       rust = pkgs.rust-bin.nightly."2026-02-15".default.override {
         extensions = ["rustfmt" "clippy" "rust-src"];
       };
@@ -77,20 +82,18 @@
         doCheck = false;
       });
 
-      # Container image configuration
       containerUser = "hofvarpnir";
       containerUid = "1000";
       containerGid = "1000";
       licenseBundle = pkgs.writeTextDir "licenses/THIRD_PARTY_LICENSES.md" (builtins.readFile ./THIRD_PARTY_LICENSES.md);
-      imageVersion =
-        let v = builtins.getEnv "OCI_IMAGE_VERSION";
-        in if v != "" then v else "dev";
-      imageRevision =
-        let r = builtins.getEnv "OCI_IMAGE_REVISION";
-        in if r != "" then r else "unknown";
-      imageCreated =
-        let c = builtins.getEnv "OCI_IMAGE_CREATED";
-        in if c != "" then c else "1970-01-01T00:00:00Z";
+
+      imageVersion = if ociImageVersion != "" then ociImageVersion else "dev-${self.shortRev or "unknown"}";
+      imageRevision = if ociImageRevision != "" then ociImageRevision else self.rev or self.dirtyRev or "unknown";
+      imageCreated = let
+        defaultTs = self.lastModifiedDate or "19700101000000";
+        defaultCreated = "${builtins.substring 0 4 defaultTs}-${builtins.substring 4 2 defaultTs}-${builtins.substring 6 2 defaultTs}T${builtins.substring 8 2 defaultTs}:${builtins.substring 10 2 defaultTs}:${builtins.substring 12 2 defaultTs}Z";
+      in if ociImageCreated != "" then ociImageCreated else defaultCreated;
+
       commonLabels = {
         "org.opencontainers.image.title" = "hofvarpnir";
         "org.opencontainers.image.description" = "Video archival system with yt-dlp";
