@@ -82,13 +82,13 @@ pub struct MetadataStatus {
 impl MetadataStatus {
     /// Returns true if all required files exist.
     #[must_use]
-    pub fn is_complete(&self) -> bool {
+    pub const fn is_complete(&self) -> bool {
         self.nfo_exists && self.poster_exists && self.fanart_exists
     }
 
     /// Returns true if any files are missing.
     #[must_use]
-    pub fn has_missing(&self) -> bool {
+    pub const fn has_missing(&self) -> bool {
         !self.is_complete()
     }
 }

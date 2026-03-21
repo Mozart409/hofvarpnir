@@ -40,7 +40,7 @@ pub struct AppState {
 impl AppState {
     /// Create a new `AppState`.
     #[must_use]
-    pub fn new(
+    pub const fn new(
         pool: PgPool,
         supervisor: ActorRef<DownloadSupervisor>,
         scheduler: ActorRef<SchedulerActor>,
