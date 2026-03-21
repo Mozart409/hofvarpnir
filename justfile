@@ -81,7 +81,7 @@ css-build:
     tailwindcss -i crates/hof-web/assets/input.css -o crates/hof-web/assets/app.css --minify
 
 # Testing
-test: clear up mig-run
+test: clear mig-run
     cargo test --all-features -- --include-ignored
 
 # CI simulation

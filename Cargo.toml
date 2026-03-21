@@ -12,70 +12,43 @@ rust-version = "1.94.0"
 name = "hofvarpnir"
 
 [workspace.dependencies]
-# Async runtime
-tokio = { version = "1", features = ["full"] }
-
-# Web framework
+argon2 = "0.5"
 axum = { version = "0.8", features = ["macros"] }
-axum-extra = { version = "0.10", features = ["typed-header"] }
-tower = "0.5"
-tower-http = { version = "0.6", features = ["cors", "trace", "fs"] }
-
-# Actors
+axum-extra = { version = "0.12", features = ["typed-header"] }
+chrono = { version = "0.4", features = ["serde"] }
+color-eyre = "0.6.5"
+crossterm = "0.29"
+dotenvy = "0.15"
+futures = "0.3"
 kameo = "0.19"
-
-# Database
+maud = { version = "0.27", features = ["axum"] }
+mime_guess = "2"
+ratatui = "0.30"
+reqwest = { version = "0.13", default-features = false, features = ["json", "stream", "rustls"] }
+rust-embed = "8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 sqlx = { version = "0.8", features = [
     "runtime-tokio-rustls",
     "postgres",
     "chrono",
-
     "migrate",
 ] }
-
-# Serialization
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-
-# Templating
-maud = { version = "0.27", features = ["axum"] }
-
-# OpenAPI
+thiserror = "2"
+tokio = { version = "1", features = ["full"] }
+tokio-stream = "0.1"
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors", "trace", "fs"] }
+tower-sessions = "0.15"
+tower-sessions-core = "0.15"
+tower-sessions-sqlx-store = { version = "0.15", features = ["postgres"], git = "https://github.com/maxcountryman/tower-sessions-stores" }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+ulid = { version = "1", features = ["serde"] }
 utoipa = { version = "5", features = ["axum_extras", "chrono", "ulid"] }
 utoipa-axum = "0.2"
 utoipa-scalar = { version = "0.3", features = ["axum"] }
-
-# HTTP client (for TUI)
-reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
-
-# TUI
-ratatui = "0.30"
-crossterm = "0.28"
-
-# Configuration
-dotenvy = "0.15"
-
-# yt-dlp
 yt-dlp = "2.7"
-
-# Common utilities
-chrono = { version = "0.4", features = ["serde"] }
-ulid = { version = "1", features = ["serde"] }
-thiserror = "2"
-color-eyre = "0.6.5"
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
-futures = "0.3"
-tokio-stream = "0.1"
-
-# Authentication
-argon2 = "0.5"
-tower-sessions = "0.14"
-tower-sessions-sqlx-store = { version = "0.15", features = ["postgres"] }
-
-# Embedded assets
-rust-embed = "8"
-mime_guess = "2"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
@@ -83,8 +56,16 @@ unsafe_code = "forbid"
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
 pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
 # Selectively allow noisy pedantic lints
 module_name_repetitions = "allow"
 must_use_candidate = "allow"
 missing_errors_doc = "allow"
 missing_panics_doc = "allow"
+# Selectively allow noisy nursery lints
+exhaustive_structs = "allow"
+needless_pass_by_ref_mut = "allow"
+option_if_let_else = "allow"
+significant_drop_tightening = "allow"
+redundant_pub_crate = "allow"
+
