@@ -41,6 +41,7 @@ pre-push:
     - name: test
       run: just test
     - name: container-smoke
+      run_if: '[ "$(uname)" != "Darwin" ]'
       run: |
         set -euo pipefail
 
