@@ -105,7 +105,7 @@ pub struct CreateProfileRequest {
     pub retention_days: Option<i32>,
 }
 
-fn default_storage_quota() -> i64 {
+const fn default_storage_quota() -> i64 {
     // 100 GB default
     100 * 1024 * 1024 * 1024
 }

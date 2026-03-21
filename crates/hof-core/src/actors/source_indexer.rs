@@ -1,7 +1,9 @@
-//! The `SourceIndexerActor` is spawned per source. It calls
-//! `yt-dlp --flat-playlist --dump-json` to discover new videos, filters them
-//! by the source's cutoff date and profile settings (shorts, livestreams),
-//! then sends `EnqueueDownload` messages to the `DownloadSupervisor`.
+//! The `SourceIndexerActor` is spawned per source.
+//!
+//! It calls `yt-dlp --flat-playlist --dump-json` to discover new videos,
+//! filters them by the source's cutoff date and profile settings (shorts,
+//! livestreams), then sends `EnqueueDownload` messages to the
+//! `DownloadSupervisor`.
 
 use std::sync::Arc;
 
@@ -288,7 +290,7 @@ impl SourceIndexerActor {
         // Reload source to get updated channel metadata
         if let Ok(updated_source) = db::get_source(&self.pool, self.source.id).await {
             // Temporarily update our source reference for metadata generation
-            let indexer_with_updated_source = SourceIndexerActor {
+            let indexer_with_updated_source = Self {
                 pool: self.pool.clone(),
                 ytdlp: self.ytdlp.clone(),
                 source: updated_source,

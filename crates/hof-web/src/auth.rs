@@ -95,7 +95,7 @@ where
         // Parse ULID
         let user_id = Ulid::from_string(&user_id_str).map_err(|_| SessionError::InvalidUserId)?;
 
-        Ok(AuthUser { user_id })
+        Ok(Self { user_id })
     }
 }
 
@@ -113,6 +113,6 @@ where
 
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
         let auth_user = AuthUser::from_request_parts(parts, state).await.ok();
-        Ok(MaybeAuthUser(auth_user))
+        Ok(Self(auth_user))
     }
 }

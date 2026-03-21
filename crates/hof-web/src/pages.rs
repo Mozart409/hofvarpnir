@@ -1445,7 +1445,7 @@ fn progress_fragment(progress: &DownloadProgress) -> Markup {
     }
 }
 
-fn quality_options() -> &'static [QualityOption] {
+const fn quality_options() -> &'static [QualityOption] {
     &[
         QualityOption {
             value: "best",
@@ -1487,7 +1487,7 @@ struct QualityOption {
     label: &'static str,
 }
 
-fn quality_label(quality: &Quality) -> &'static str {
+const fn quality_label(quality: &Quality) -> &'static str {
     match quality {
         Quality::Best => "Best",
         Quality::Q4320p => "4320p",
@@ -1500,7 +1500,7 @@ fn quality_label(quality: &Quality) -> &'static str {
     }
 }
 
-fn quality_value(quality: &Quality) -> &'static str {
+const fn quality_value(quality: &Quality) -> &'static str {
     match quality {
         Quality::Best => "best",
         Quality::Q4320p => "4320p",
@@ -1513,7 +1513,7 @@ fn quality_value(quality: &Quality) -> &'static str {
     }
 }
 
-fn source_type_label(source_type: &SourceType) -> &'static str {
+const fn source_type_label(source_type: &SourceType) -> &'static str {
     match source_type {
         SourceType::Channel => "Channel",
         SourceType::Playlist => "Playlist",

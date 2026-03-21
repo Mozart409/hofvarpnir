@@ -103,7 +103,7 @@ pub struct CreateSourceRequest {
     pub retention_days: Option<i32>,
 }
 
-fn default_index_frequency() -> i64 {
+const fn default_index_frequency() -> i64 {
     3600 // 1 hour
 }
 
@@ -515,7 +515,10 @@ pub async fn trigger_index(
     };
 
     // Verify source exists first
-    if let Err(db::DbError::NotFound) = db::get_source(&state.pool, source_id).await {
+    if matches!(
+        db::get_source(&state.pool, source_id).await,
+        Err(db::DbError::NotFound)
+    ) {
         return (
             StatusCode::NOT_FOUND,
             Json(ErrorResponse {
