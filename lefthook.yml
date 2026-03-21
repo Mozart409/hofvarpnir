@@ -9,7 +9,7 @@ pre-commit:
       stage_fixed: true
     - name: clippy
       glob: "*.rs"
-      run: cargo clippy --all-targets -- -D warnings
+      run: cargo clippy --all-targets --all-features -- -D warnings
       stage_fixed: true
     - name: sqruff
       glob: "**/*.sql"
@@ -100,9 +100,9 @@ pre-push:
         fi
 
         echo "Smoke test passed: health endpoint and static assets OK"
-    - name: clippy-pedantic
+    - name: clippy-all
       glob: "*.rs"
-      run: cargo clippy --all-targets -- -W clippy::pedantic
+      run: cargo clippy --all-targets --all-features -- -D warnings
     - name: sqruff
       glob: "**/*.sql"
       run: sqruff lint
