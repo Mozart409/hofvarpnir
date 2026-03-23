@@ -13,7 +13,6 @@ use ulid::Ulid;
 
 use crate::db;
 use crate::jellyfin::{self, JellyfinMetadata};
-use crate::ytdlp::sanitize_filename_component;
 
 /// Default interval for checking metadata (24 hours).
 const DEFAULT_CHECK_INTERVAL: Duration = Duration::from_hours(24);
@@ -248,10 +247,7 @@ impl JellyfinMetadataActor {
             );
         }
 
-        let source_name = sanitize_filename_component(source.display_name());
-        let output_dir = std::path::Path::new(&profile.output_dir)
-            .join("completed")
-            .join(source_name);
+        let output_dir = source.completed_dir(&profile.output_dir);
 
         let metadata = JellyfinMetadata::from_source(&source, "youtube");
 
@@ -314,11 +310,7 @@ impl JellyfinMetadataActor {
                 continue;
             }
 
-            // Determine output directory (include source name subdirectory)
-            let source_name = sanitize_filename_component(source.display_name());
-            let output_dir = std::path::Path::new(&profile.output_dir)
-                .join("completed")
-                .join(&source_name);
+            let output_dir = source.completed_dir(&profile.output_dir);
 
             // Check if metadata needs regeneration
             if !jellyfin::needs_regeneration(&output_dir, source.jellyfin_metadata_at, false) {

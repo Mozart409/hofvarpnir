@@ -442,7 +442,7 @@ impl SourceIndexerActor {
     /// Generate Jellyfin metadata files if not already generated.
     async fn generate_jellyfin_metadata_if_needed(&self) {
         // Check if we should generate metadata
-        let output_dir = std::path::Path::new(&self.profile.output_dir).join("completed");
+        let output_dir = self.source.completed_dir(&self.profile.output_dir);
 
         // Check if metadata needs regeneration
         if !jellyfin::needs_regeneration(&output_dir, self.source.jellyfin_metadata_at, false) {
