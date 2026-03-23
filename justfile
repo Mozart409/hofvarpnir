@@ -25,7 +25,7 @@ mig-add name: clear
     sqlx mig add -r {{name}}
 
 [working-directory: 'crates/hof-core']
-mig-run: clear
+mig-run: clear up
     sqlx mig run --database-url ${DATABASE_URL}
 
 [working-directory: 'crates/hof-core']
