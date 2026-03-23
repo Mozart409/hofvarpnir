@@ -497,7 +497,7 @@ impl YtdlpClient {
 }
 
 /// Convert our Quality enum to yt-dlp's `VideoQuality`.
-fn quality_to_yt_quality(quality: &Quality) -> VideoQuality {
+const fn quality_to_yt_quality(quality: &Quality) -> VideoQuality {
     match quality {
         Quality::Best => VideoQuality::Best,
         Quality::Q4320p => VideoQuality::CustomHeight(4320),
@@ -534,6 +534,7 @@ fn render_output_relative_path(
         template_data.episode_index
     );
 
+    #[allow(clippy::literal_string_with_formatting_args)]
     let mut rendered = template
         .replace("{title}", &safe_title)
         .replace("{id}", &safe_id)
@@ -868,7 +869,7 @@ mod tests {
 
         let regular = VideoMetadata {
             media_type: Some("video".to_string()),
-            ..meta.clone()
+            ..meta
         };
         assert!(!regular.is_short());
     }
