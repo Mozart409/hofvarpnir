@@ -794,7 +794,7 @@ async fn sources_page(auth: AuthUser, State(state): State<AppState>) -> impl Int
                     }
                     (input_text("URL", "url", "https://youtube.com/@channel", true, ""))
                     (input_text("Custom Name", "custom_name", "Optional label", false, ""))
-                    (input_index_frequency("Index Frequency", "index_frequency_secs", 3600))
+                    (input_index_frequency("Index Frequency", "index_frequency_secs", 43200))
                     (input_cutoff_date("Cutoff Date", "cutoff_date", &default_cutoff_date))
                     (input_number("Retention Days", "retention_days", "Optional", false, ""))
                     div class="md:col-span-2" {
