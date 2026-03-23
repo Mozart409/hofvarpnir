@@ -12,6 +12,7 @@ use tracing::{debug, error, info, instrument, warn};
 use ulid::Ulid;
 
 use crate::db;
+use crate::domain::activity::{ActivityEventType, ActivitySeverity};
 use crate::jellyfin::{self, JellyfinMetadata};
 
 /// Default interval for checking metadata (24 hours).
@@ -258,6 +259,21 @@ impl JellyfinMetadataActor {
             .map_err(|e| color_eyre::eyre::eyre!("Failed to update metadata timestamp: {e}"))?;
 
         info!(source_id = %source_id, "Generated Jellyfin metadata for source");
+
+        let message = format!(
+            "Generated Jellyfin metadata for \"{}\"",
+            source.display_name()
+        );
+        db::log_activity(
+            &self.pool,
+            ActivityEventType::MetadataGenerated,
+            ActivitySeverity::Info,
+            &message,
+            Some(source_id),
+            None,
+            None,
+        )
+        .await;
 
         Ok(())
     }
