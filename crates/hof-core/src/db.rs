@@ -35,7 +35,7 @@ pub enum DbError {
 /// Pool configuration:
 /// - `max_connections: 20` - Sufficient for concurrent downloads + API requests
 /// - `min_connections: 2` - Keep warm connections for quick queries
-/// - `acquire_timeout: 30s` - Generous timeout (downloads aren't time-critical)
+/// - `acquire_timeout: 5s` - Generous timeout (downloads aren't time-critical)
 /// - `idle_timeout: 600s` - Close idle connections after 10 minutes
 /// - `max_lifetime: 1800s` - Recycle connections every 30 minutes
 ///
@@ -49,9 +49,9 @@ pub async fn create_pool() -> Result<PgPool, DbError> {
     let pool = PgPoolOptions::new()
         .max_connections(20)
         .min_connections(2)
-        .acquire_timeout(Duration::from_secs(30))
-        .idle_timeout(Duration::from_mins(10))
-        .max_lifetime(Duration::from_mins(30))
+        .acquire_timeout(Duration::from_secs(5))
+        .idle_timeout(Duration::from_mins(5))
+        .max_lifetime(Duration::from_mins(10))
         .connect(&database_url)
         .await?;
 
