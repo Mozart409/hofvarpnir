@@ -1,0 +1,20 @@
+name: Cleanup untagged GHCR images
+
+on:
+  schedule:
+    - cron: "0 3 * * *" # daily, 3am UTC
+  workflow_dispatch:
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    steps:
+      - name: Delete untagged images
+        uses: actions/delete-package-versions@v5
+        with:
+          package-name: hofvarpnir
+          package-type: container
+          delete-only-untagged-versions: true
+          min-versions-to-keep: 0
