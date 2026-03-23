@@ -6,3 +6,5 @@ target/
 
 # SQLx - commit offline query metadata
 !crates/hof-core/.sqlx/
+
+.claude/
