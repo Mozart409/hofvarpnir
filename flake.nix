@@ -69,27 +69,37 @@
       cargoArtifacts = craneLib.buildDepsOnly commonArgs;
 
       # Build the hof-web binary
-      hofvarpnir = craneLib.buildPackage (commonArgs // {
-        inherit cargoArtifacts;
+      hofvarpnir = craneLib.buildPackage (commonArgs
+        // {
+          inherit cargoArtifacts;
 
-        # Only build the hof-web binary
-        cargoExtraArgs = "-p hof-web";
+          # Only build the hof-web binary
+          cargoExtraArgs = "-p hof-web";
 
-        # Don't run tests during build (run separately)
-        doCheck = false;
-      });
+          # Don't run tests during build (run separately)
+          doCheck = false;
+        });
 
       containerUser = "hofvarpnir";
       containerUid = "1000";
       containerGid = "1000";
       licenseBundle = pkgs.writeTextDir "licenses/THIRD_PARTY_LICENSES.md" (builtins.readFile ./THIRD_PARTY_LICENSES.md);
 
-      imageVersion = if ociImageVersion != "" then ociImageVersion else "dev-${self.shortRev or "unknown"}";
-      imageRevision = if ociImageRevision != "" then ociImageRevision else self.rev or self.dirtyRev or "unknown";
+      imageVersion =
+        if ociImageVersion != ""
+        then ociImageVersion
+        else "dev-${self.shortRev or "unknown"}";
+      imageRevision =
+        if ociImageRevision != ""
+        then ociImageRevision
+        else self.rev or self.dirtyRev or "unknown";
       imageCreated = let
         defaultTs = self.lastModifiedDate or "19700101000000";
         defaultCreated = "${builtins.substring 0 4 defaultTs}-${builtins.substring 4 2 defaultTs}-${builtins.substring 6 2 defaultTs}T${builtins.substring 8 2 defaultTs}:${builtins.substring 10 2 defaultTs}:${builtins.substring 12 2 defaultTs}Z";
-      in if ociImageCreated != "" then ociImageCreated else defaultCreated;
+      in
+        if ociImageCreated != ""
+        then ociImageCreated
+        else defaultCreated;
 
       commonLabels = {
         "org.opencontainers.image.title" = "hofvarpnir";
@@ -201,7 +211,7 @@
             Healthcheck = {
               Test = ["CMD" "wget" "-q" "--spider" "http://localhost:3000/api/health/ready"];
               Interval = 30 * 1000000000; # 30 seconds in nanoseconds
-              Timeout = 10 * 1000000000;  # 10 seconds
+              Timeout = 10 * 1000000000; # 10 seconds
               Retries = 3;
               StartPeriod = 60 * 1000000000; # 60 seconds
             };
@@ -281,6 +291,7 @@
           cargo-workspaces
           cocogitto
           dbeaver-bin
+          deadbranch
           docker
           docker-buildx
           docker-compose
@@ -302,7 +313,7 @@
           ffmpeg
           yt-dlp
           # Container image tools
-          skopeo  # For pushing OCI images to registries
+          skopeo # For pushing OCI images to registries
         ];
         shellHook = ''
           lefthook install

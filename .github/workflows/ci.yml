@@ -4,36 +4,24 @@ on:
     branches: [main]
   push:
     branches: [main]
-
 jobs:
   check:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - name: Setup Nix
         uses: DeterminateSystems/nix-installer-action@main
-
       - name: Setup Nix cache
         uses: DeterminateSystems/flakehub-cache-action@main
-
       - name: Check formatting
         run: nix develop .#default --command cargo fmt --all -- --check
-
       - name: Run clippy
         run: nix develop .#default --command cargo clippy --all-targets --all-features -- -D warnings
-
       - name: Run tests
         run: nix develop .#default --command cargo test --all-features
-
-      - name: Build release
-        run: nix develop .#default --command cargo build --all-features --release
-
-      - name: Warm container cache
-        run: nix build --no-link .#container
-
   container:
     needs: check
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     strategy:
       matrix:
         include:
@@ -47,18 +35,13 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@v4
-
       - name: Setup Nix
         uses: DeterminateSystems/nix-installer-action@main
-
       - name: Setup Nix cache
         uses: DeterminateSystems/flakehub-cache-action@main
-
       - name: Build container
         run: nix build .#container
-
-      - name: Push arch-specific image to GHCR (main branch only)
-        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+      - name: Push arch-specific image to GHCR
         env:
           REPO: ${{ github.repository }}
         run: |
@@ -66,7 +49,6 @@ jobs:
             --dest-creds="${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}" \
             docker-archive:result \
             "docker://ghcr.io/${REPO,,}:dev-${{ matrix.arch }}"
-
   container-manifest:
     needs: container
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
@@ -76,17 +58,14 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@v4
-
       - name: Setup Nix
         uses: DeterminateSystems/nix-installer-action@main
-
       - name: Login to GHCR
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Create and push multi-arch manifest
         env:
           REPO: ${{ github.repository }}
