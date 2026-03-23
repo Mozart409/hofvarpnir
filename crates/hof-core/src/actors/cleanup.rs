@@ -15,6 +15,7 @@ use tracing::{debug, error, info, instrument, warn};
 use ulid::Ulid;
 
 use crate::db;
+use crate::domain::activity::{ActivityEventType, ActivitySeverity};
 use crate::domain::video::{Video, VideoStatus};
 
 /// Default cleanup interval.
@@ -364,6 +365,20 @@ impl CleanupActor {
 
         // Update video status to cleaned
         db::update_video_status(&self.pool, video.id, VideoStatus::Cleaned).await?;
+
+        #[allow(clippy::cast_precision_loss)]
+        let size_mb = bytes as f64 / 1_048_576.0;
+        let message = format!("Cleaned \"{}\" ({size_mb:.1} MB freed)", video.title);
+        db::log_activity(
+            &self.pool,
+            ActivityEventType::VideoCleaned,
+            ActivitySeverity::Info,
+            &message,
+            None,
+            Some(video.id),
+            None,
+        )
+        .await;
 
         Ok(bytes)
     }

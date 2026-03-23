@@ -6,6 +6,7 @@ use std::time::Duration;
 use ulid::Ulid;
 
 use crate::domain::{
+    activity::{ActivityEvent, ActivityEventRow, ActivityEventType, ActivitySeverity},
     profile::{Profile, ProfileRow, Quality},
     source::{Source, SourceRow, SourceType},
     user::{User, UserRow},
@@ -35,7 +36,7 @@ pub enum DbError {
 /// Pool configuration:
 /// - `max_connections: 20` - Sufficient for concurrent downloads + API requests
 /// - `min_connections: 2` - Keep warm connections for quick queries
-/// - `acquire_timeout: 30s` - Generous timeout (downloads aren't time-critical)
+/// - `acquire_timeout: 5s` - Generous timeout (downloads aren't time-critical)
 /// - `idle_timeout: 600s` - Close idle connections after 10 minutes
 /// - `max_lifetime: 1800s` - Recycle connections every 30 minutes
 ///
@@ -49,9 +50,9 @@ pub async fn create_pool() -> Result<PgPool, DbError> {
     let pool = PgPoolOptions::new()
         .max_connections(20)
         .min_connections(2)
-        .acquire_timeout(Duration::from_secs(30))
-        .idle_timeout(Duration::from_mins(10))
-        .max_lifetime(Duration::from_mins(30))
+        .acquire_timeout(Duration::from_secs(5))
+        .idle_timeout(Duration::from_mins(5))
+        .max_lifetime(Duration::from_mins(10))
         .connect(&database_url)
         .await?;
 
@@ -1447,6 +1448,159 @@ pub async fn get_video_ids_for_source(
         .collect();
 
     Ok(ulids)
+}
+
+// ============================================================================
+// Activity Event CRUD
+// ============================================================================
+
+/// Data required to create a new activity event.
+#[derive(Debug, Clone)]
+pub struct CreateActivityEvent<'a> {
+    pub event_type: ActivityEventType,
+    pub severity: ActivitySeverity,
+    pub message: &'a str,
+    pub source_id: Option<Ulid>,
+    pub video_id: Option<Ulid>,
+    pub profile_id: Option<Ulid>,
+}
+
+/// Create a new activity event.
+///
+/// # Errors
+///
+/// Returns an error if the database operation fails.
+pub async fn create_activity_event(
+    pool: &PgPool,
+    data: CreateActivityEvent<'_>,
+) -> Result<ActivityEvent, DbError> {
+    let id = Ulid::new();
+    let row = sqlx::query_as::<_, ActivityEventRow>(
+        r"
+        INSERT INTO activity_events (id, event_type, severity, message, source_id, video_id, profile_id)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        RETURNING id, event_type, severity, message, source_id, video_id, profile_id, created_at
+        ",
+    )
+    .bind(id.to_string())
+    .bind(data.event_type)
+    .bind(data.severity)
+    .bind(data.message)
+    .bind(data.source_id.map(|id| id.to_string()))
+    .bind(data.video_id.map(|id| id.to_string()))
+    .bind(data.profile_id.map(|id| id.to_string()))
+    .fetch_one(pool)
+    .await?;
+
+    Ok(ActivityEvent::try_from(row)?)
+}
+
+/// List activity events in reverse-chronological order.
+///
+/// # Errors
+///
+/// Returns an error if the database operation fails.
+pub async fn list_activity_events(
+    pool: &PgPool,
+    limit: i64,
+    offset: i64,
+    severity: Option<ActivitySeverity>,
+    source_id: Option<Ulid>,
+) -> Result<Vec<ActivityEvent>, DbError> {
+    let rows = sqlx::query_as::<_, ActivityEventRow>(
+        r"
+        SELECT id, event_type, severity, message, source_id, video_id, profile_id, created_at
+        FROM activity_events
+        WHERE ($1::activity_severity IS NULL OR severity = $1)
+          AND ($2::text IS NULL OR source_id = $2)
+        ORDER BY created_at DESC
+        LIMIT $3 OFFSET $4
+        ",
+    )
+    .bind(severity)
+    .bind(source_id.map(|id| id.to_string()))
+    .bind(limit)
+    .bind(offset)
+    .fetch_all(pool)
+    .await?;
+
+    rows.into_iter()
+        .map(ActivityEvent::try_from)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(DbError::from)
+}
+
+/// Count activity events (for pagination).
+///
+/// # Errors
+///
+/// Returns an error if the database operation fails.
+pub async fn count_activity_events(
+    pool: &PgPool,
+    severity: Option<ActivitySeverity>,
+    source_id: Option<Ulid>,
+) -> Result<i64, DbError> {
+    let row: (i64,) = sqlx::query_as(
+        r"
+        SELECT COUNT(*)
+        FROM activity_events
+        WHERE ($1::activity_severity IS NULL OR severity = $1)
+          AND ($2::text IS NULL OR source_id = $2)
+        ",
+    )
+    .bind(severity)
+    .bind(source_id.map(|id| id.to_string()))
+    .fetch_one(pool)
+    .await?;
+
+    Ok(row.0)
+}
+
+/// Delete activity events older than a given timestamp.
+///
+/// # Errors
+///
+/// Returns an error if the database operation fails.
+pub async fn cleanup_old_activity_events(
+    pool: &PgPool,
+    before: DateTime<Utc>,
+) -> Result<u64, DbError> {
+    let result = sqlx::query("DELETE FROM activity_events WHERE created_at < $1")
+        .bind(before)
+        .execute(pool)
+        .await?;
+
+    Ok(result.rows_affected())
+}
+
+/// Fire-and-forget activity event logging.
+///
+/// Logs errors via tracing but never fails. Intended for use in actors
+/// where we don't want event logging to block or disrupt the main flow.
+pub async fn log_activity(
+    pool: &PgPool,
+    event_type: ActivityEventType,
+    severity: ActivitySeverity,
+    message: &str,
+    source_id: Option<Ulid>,
+    video_id: Option<Ulid>,
+    profile_id: Option<Ulid>,
+) {
+    if let Err(e) = create_activity_event(
+        pool,
+        CreateActivityEvent {
+            event_type,
+            severity,
+            message,
+            source_id,
+            video_id,
+            profile_id,
+        },
+    )
+    .await
+    {
+        tracing::warn!(error = %e, "Failed to log activity event");
+    }
 }
 
 #[cfg(test)]

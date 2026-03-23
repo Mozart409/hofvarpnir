@@ -1,3 +1,5 @@
+use std::path::{Path, PathBuf};
+
 use chrono::{DateTime, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use ulid::Ulid;
@@ -104,5 +106,17 @@ impl Source {
             .as_deref()
             .or(self.channel_title.as_deref())
             .unwrap_or(&self.url)
+    }
+
+    /// Returns the completed output directory for this source.
+    ///
+    /// Path: `{output_dir}/completed/{sanitized_source_name}/`
+    #[must_use]
+    pub fn completed_dir(&self, output_dir: &str) -> PathBuf {
+        use crate::ytdlp::sanitize_filename_component;
+
+        Path::new(output_dir)
+            .join("completed")
+            .join(sanitize_filename_component(self.display_name()))
     }
 }

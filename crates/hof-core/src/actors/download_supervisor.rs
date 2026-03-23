@@ -20,6 +20,7 @@ use ulid::Ulid;
 
 use crate::config::DownloadConfig as AppDownloadConfig;
 use crate::db;
+use crate::domain::activity::{ActivityEventType, ActivitySeverity};
 use crate::domain::profile::Profile;
 use crate::domain::source::Source;
 use crate::domain::video::{DownloadProgress, Video, VideoStatus};
@@ -264,6 +265,22 @@ impl Message<DownloadStarting> for DownloadSupervisor {
     async fn handle(&mut self, msg: DownloadStarting, _ctx: &mut Context<Self, Self::Reply>) {
         debug!(video_id = %msg.video_id, "Download starting");
         self.last_download_start = Some(Instant::now());
+
+        // Look up video title for the activity message
+        let message = match db::get_video(&self.pool, msg.video_id).await {
+            Ok(v) => format!("Started downloading \"{}\"", v.title),
+            Err(_) => format!("Started downloading video {}", msg.video_id),
+        };
+        db::log_activity(
+            &self.pool,
+            ActivityEventType::DownloadStarted,
+            ActivitySeverity::Info,
+            &message,
+            None,
+            Some(msg.video_id),
+            None,
+        )
+        .await;
     }
 }
 
@@ -329,6 +346,23 @@ impl Message<ReportOutcome> for DownloadSupervisor {
                 );
                 // Reset rate limit backoff on success
                 self.rate_limit_backoff_multiplier = 1;
+
+                #[allow(clippy::cast_precision_loss)]
+                let size_mb = file_size_bytes as f64 / 1_048_576.0;
+                let message = format!(
+                    "Completed \"{}\" ({size_mb:.1} MB)",
+                    file_path.file_name().unwrap_or_default().to_string_lossy()
+                );
+                db::log_activity(
+                    &self.pool,
+                    ActivityEventType::DownloadCompleted,
+                    ActivitySeverity::Success,
+                    &message,
+                    None,
+                    Some(video_id),
+                    None,
+                )
+                .await;
             }
             DownloadOutcome::Failed {
                 video_id,
@@ -494,6 +528,17 @@ impl DownloadSupervisor {
             if let Err(e) = db::mark_video_failed(&self.pool, video_id, error, None).await {
                 error!(error = %e, "Failed to mark video as permanently failed");
             }
+            let message = format!("Permanently failed after {attempts} attempts — {error}");
+            db::log_activity(
+                &self.pool,
+                ActivityEventType::DownloadFailed,
+                ActivitySeverity::Error,
+                &message,
+                None,
+                Some(video_id),
+                None,
+            )
+            .await;
         } else {
             // Schedule retry with exponential backoff
             // attempts is guaranteed non-negative here since we only get here after incrementing
@@ -517,6 +562,18 @@ impl DownloadSupervisor {
             {
                 error!(error = %e, "Failed to schedule retry");
             }
+
+            let message = format!("Retry #{attempts} scheduled at {next_retry} — {error}");
+            db::log_activity(
+                &self.pool,
+                ActivityEventType::RetryScheduled,
+                ActivitySeverity::Warning,
+                &message,
+                None,
+                Some(video_id),
+                None,
+            )
+            .await;
         }
     }
 }

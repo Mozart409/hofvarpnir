@@ -50,7 +50,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
-      packages: write
+      actions: write
     steps:
       - uses: actions/checkout@v4
 
@@ -69,15 +69,12 @@ jobs:
           export OCI_IMAGE_CREATED
           nix build --impure .#container-minimal
 
-      - name: Push arch-specific image to GHCR
-        env:
-          REPO: ${{ github.repository }}
-        run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          nix develop .#default --command skopeo copy \
-            --dest-creds="${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}" \
-            docker-archive:result \
-            "docker://ghcr.io/${REPO,,}:${VERSION}-${{ matrix.arch }}"
+      - name: Upload container image
+        uses: actions/upload-artifact@v4
+        with:
+          name: container-${{ matrix.arch }}
+          path: result
+          retention-days: 1
 
   container-manifest:
     needs: container
@@ -85,7 +82,13 @@ jobs:
     permissions:
       contents: read
       packages: write
+      actions: read
     steps:
+      - name: Download container images
+        uses: actions/download-artifact@v4
+        with:
+          pattern: container-*
+
       - name: Login to GHCR
         uses: docker/login-action@v3
         with:
@@ -93,39 +96,35 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Setup Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
       - name: Create and push multi-arch manifests
         env:
           REPO_RAW: ${{ github.repository }}
+          REVISION: ${{ github.sha }}
         run: |
-          REPO="ghcr.io/${REPO_RAW,,}"
           VERSION="${GITHUB_REF_NAME#v}"
           MAJOR_MINOR=$(echo "${VERSION}" | cut -d. -f1,2)
-          REVISION="${{ github.sha }}"
 
-          annotate_and_push() {
-            local tag="$1"
-            docker buildx imagetools create \
-              --tag "${REPO}:${tag}" \
-              --annotation "index:org.opencontainers.image.title=hofvarpnir" \
-              --annotation "index:org.opencontainers.image.description=Video archival system with yt-dlp" \
-              --annotation "index:org.opencontainers.image.url=https://github.com/Mozart409/hofvarpnir" \
-              --annotation "index:org.opencontainers.image.source=https://github.com/Mozart409/hofvarpnir" \
-              --annotation "index:org.opencontainers.image.documentation=https://github.com/Mozart409/hofvarpnir#readme" \
-              --annotation "index:org.opencontainers.image.licenses=SEE LICENSES" \
-              --annotation "index:org.opencontainers.image.authors=Mozart409" \
-              --annotation "index:org.opencontainers.image.vendor=Mozart409" \
-              --annotation "index:org.opencontainers.image.version=${VERSION}" \
-              --annotation "index:org.opencontainers.image.revision=${REVISION}" \
-              "${REPO}:${VERSION}-amd64" \
-              "${REPO}:${VERSION}-arm64"
-          }
+          # Build the multi-arch manifest from local archives
+          buildah manifest create hofvarpnir
+          buildah manifest add hofvarpnir docker-archive:container-amd64/result
+          buildah manifest add hofvarpnir docker-archive:container-arm64/result
 
-          annotate_and_push "${VERSION}"
-          annotate_and_push "${MAJOR_MINOR}"
-          annotate_and_push "latest"
+          # Add OCI annotations to the manifest index
+          buildah manifest annotate --index --annotation "org.opencontainers.image.title=hofvarpnir" hofvarpnir
+          buildah manifest annotate --index --annotation "org.opencontainers.image.description=Video archival system with yt-dlp" hofvarpnir
+          buildah manifest annotate --index --annotation "org.opencontainers.image.url=https://github.com/Mozart409/hofvarpnir" hofvarpnir
+          buildah manifest annotate --index --annotation "org.opencontainers.image.source=https://github.com/Mozart409/hofvarpnir" hofvarpnir
+          buildah manifest annotate --index --annotation "org.opencontainers.image.documentation=https://github.com/Mozart409/hofvarpnir#readme" hofvarpnir
+          buildah manifest annotate --index --annotation "org.opencontainers.image.licenses=SEE LICENSES" hofvarpnir
+          buildah manifest annotate --index --annotation "org.opencontainers.image.authors=Mozart409" hofvarpnir
+          buildah manifest annotate --index --annotation "org.opencontainers.image.vendor=Mozart409" hofvarpnir
+          buildah manifest annotate --index --annotation "org.opencontainers.image.version=${VERSION}" hofvarpnir
+          buildah manifest annotate --index --annotation "org.opencontainers.image.revision=${REVISION}" hofvarpnir
+
+          # Push to each tag
+          for TAG in "${VERSION}" "${MAJOR_MINOR}" "latest"; do
+            buildah manifest push --all hofvarpnir "docker://ghcr.io/${REPO_RAW,,}:${TAG}"
+          done
 
   release:
     needs: [build, container-manifest]
