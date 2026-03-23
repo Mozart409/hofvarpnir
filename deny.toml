@@ -101,7 +101,6 @@ allow = [
     # yt-dlp crate and its dependencies
     "GPL-3.0-only",
     "GPL-3.0-or-later",
-    "OpenSSL",
 ]
 # The confidence threshold for detecting a license from license text.
 # The higher the value, the more closely the license text must be to the
