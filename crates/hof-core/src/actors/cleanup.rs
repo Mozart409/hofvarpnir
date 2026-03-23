@@ -19,7 +19,7 @@ use crate::domain::activity::{ActivityEventType, ActivitySeverity};
 use crate::domain::video::{Video, VideoStatus};
 
 /// Default cleanup interval.
-const DEFAULT_CLEANUP_INTERVAL_SECS: u64 = 3600; // 1 hour
+const DEFAULT_CLEANUP_INTERVAL_SECS: u64 = 60 * 15; // seconds x minutes
 
 /// The cleanup actor.
 ///
