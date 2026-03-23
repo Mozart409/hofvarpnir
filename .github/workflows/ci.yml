@@ -32,7 +32,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
-      packages: write
+      actions: write
     steps:
       - uses: actions/checkout@v4
       - name: Setup Nix
@@ -41,14 +41,12 @@ jobs:
         uses: DeterminateSystems/flakehub-cache-action@main
       - name: Build container
         run: nix build .#container
-      - name: Push arch-specific image to GHCR
-        env:
-          REPO: ${{ github.repository }}
-        run: |
-          nix develop .#default --command skopeo copy \
-            --dest-creds="${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}" \
-            docker-archive:result \
-            "docker://ghcr.io/${REPO,,}:dev-${{ matrix.arch }}"
+      - name: Upload container image
+        uses: actions/upload-artifact@v4
+        with:
+          name: container-${{ matrix.arch }}
+          path: result
+          retention-days: 1
   container-manifest:
     needs: container
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
@@ -56,10 +54,12 @@ jobs:
     permissions:
       contents: read
       packages: write
+      actions: read
     steps:
-      - uses: actions/checkout@v4
-      - name: Setup Nix
-        uses: DeterminateSystems/nix-installer-action@main
+      - name: Download container images
+        uses: actions/download-artifact@v4
+        with:
+          pattern: container-*
       - name: Login to GHCR
         uses: docker/login-action@v3
         with:
@@ -72,9 +72,7 @@ jobs:
         run: |
           REPO_LOWER="${REPO,,}"
 
-          # Create manifest list combining both architectures
-          docker manifest create "ghcr.io/${REPO_LOWER}:dev" \
-            "ghcr.io/${REPO_LOWER}:dev-amd64" \
-            "ghcr.io/${REPO_LOWER}:dev-arm64"
-
-          docker manifest push "ghcr.io/${REPO_LOWER}:dev"
+          buildah manifest create hofvarpnir
+          buildah manifest add hofvarpnir docker-archive:container-amd64/result
+          buildah manifest add hofvarpnir docker-archive:container-arm64/result
+          buildah manifest push --all hofvarpnir "docker://ghcr.io/${REPO_LOWER}:dev"
