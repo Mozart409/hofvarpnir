@@ -23,6 +23,7 @@ use hof_core::{
     },
     db::{self, CreateProfile, CreateSource, UpdateProfile, UpdateSource},
     domain::{
+        activity::{ActivityEventType, ActivitySeverity},
         profile::{Profile, Quality},
         source::{Source, SourceType},
         video::{DownloadProgress, VideoStatus},
@@ -64,6 +65,8 @@ enum NavItem {
     Profiles,
     Sources,
     Downloads,
+    Activity,
+    Schedule,
 }
 
 #[derive(Debug, Deserialize)]
@@ -174,6 +177,8 @@ pub fn router(state: AppState) -> Router {
         .route("/downloads", get(downloads_page))
         .route("/downloads/{id}/retry", post(retry_download))
         .route("/web/downloads/progress", get(download_progress_sse))
+        .route("/activity", get(activity_page))
+        .route("/schedule", get(schedule_page))
         // Static assets (embedded at compile time)
         .route("/assets/{*path}", get(serve_asset))
         .with_state(state)
@@ -637,7 +642,19 @@ async fn create_profile(
     };
 
     match db::create_profile(&state.pool, create).await {
-        Ok(_) => Redirect::to("/profiles").into_response(),
+        Ok(profile) => {
+            db::log_activity(
+                &state.pool,
+                ActivityEventType::ProfileCreated,
+                ActivitySeverity::Info,
+                &format!("Created profile \"{}\"", profile.name),
+                None,
+                None,
+                Some(profile.id),
+            )
+            .await;
+            Redirect::to("/profiles").into_response()
+        }
         Err(error) => {
             tracing::error!(%error, "failed to create profile from web form");
             (
@@ -717,7 +734,19 @@ async fn delete_profile(
     };
 
     match db::delete_profile(&state.pool, profile_id).await {
-        Ok(()) => Redirect::to("/profiles").into_response(),
+        Ok(()) => {
+            db::log_activity(
+                &state.pool,
+                ActivityEventType::ProfileDeleted,
+                ActivitySeverity::Info,
+                &format!("Deleted profile {profile_id}"),
+                None,
+                None,
+                Some(profile_id),
+            )
+            .await;
+            Redirect::to("/profiles").into_response()
+        }
         Err(db::DbError::NotFound) => {
             (StatusCode::NOT_FOUND, error_page("Profile not found")).into_response()
         }
@@ -867,7 +896,19 @@ async fn create_source(
     };
 
     match db::create_source(&state.pool, create).await {
-        Ok(_) => Redirect::to("/sources").into_response(),
+        Ok(source) => {
+            db::log_activity(
+                &state.pool,
+                ActivityEventType::SourceCreated,
+                ActivitySeverity::Info,
+                &format!("Added source \"{}\"", source.display_name()),
+                Some(source.id),
+                None,
+                Some(profile_id),
+            )
+            .await;
+            Redirect::to("/sources").into_response()
+        }
         Err(error) => {
             tracing::error!(%error, "failed to create source from web form");
             (
@@ -954,7 +995,19 @@ async fn delete_source(
     };
 
     match db::delete_source(&state.pool, source_id).await {
-        Ok(()) => Redirect::to("/sources").into_response(),
+        Ok(()) => {
+            db::log_activity(
+                &state.pool,
+                ActivityEventType::SourceDeleted,
+                ActivitySeverity::Info,
+                &format!("Deleted source {source_id}"),
+                Some(source_id),
+                None,
+                None,
+            )
+            .await;
+            Redirect::to("/sources").into_response()
+        }
         Err(db::DbError::NotFound) => {
             (StatusCode::NOT_FOUND, error_page("Source not found")).into_response()
         }
@@ -1292,6 +1345,443 @@ async fn download_progress_sse(
             .interval(Duration::from_secs(15))
             .text("keep-alive"),
     )
+}
+
+// ============================================================================
+// Activity Page
+// ============================================================================
+
+#[derive(Debug, Deserialize)]
+struct ActivityQuery {
+    severity: Option<String>,
+    page: Option<i64>,
+}
+
+async fn activity_page(
+    _auth: AuthUser,
+    State(state): State<AppState>,
+    axum::extract::Query(query): axum::extract::Query<ActivityQuery>,
+) -> impl IntoResponse {
+    let page_num = query.page.unwrap_or(1).max(1);
+    let per_page: i64 = 50;
+    let offset = (page_num - 1) * per_page;
+
+    let severity_filter = query.severity.as_deref().and_then(|s| match s {
+        "info" => Some(ActivitySeverity::Info),
+        "success" => Some(ActivitySeverity::Success),
+        "warning" => Some(ActivitySeverity::Warning),
+        "error" => Some(ActivitySeverity::Error),
+        _ => None,
+    });
+
+    let (events_result, count_result) = tokio::join!(
+        db::list_activity_events(&state.pool, per_page, offset, severity_filter.clone(), None),
+        db::count_activity_events(&state.pool, severity_filter.clone(), None)
+    );
+
+    let events = match events_result {
+        Ok(data) => data,
+        Err(error) => {
+            tracing::error!(%error, "failed to load activity events");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                error_page("Failed to load activity log"),
+            );
+        }
+    };
+
+    let total = count_result.unwrap_or(0);
+    let total_pages = (total + per_page - 1) / per_page;
+
+    let current_severity = query.severity.as_deref().unwrap_or("all");
+
+    let page = layout(
+        "Activity",
+        NavItem::Activity,
+        html! {
+            section class="rounded-2xl border border-slate-200 bg-white/80 p-6 shadow-sm" {
+                div class="flex flex-wrap items-center justify-between gap-3" {
+                    h2 class="text-lg font-semibold text-slate-900" { "Activity Log" }
+                    nav class="flex gap-1" {
+                        (severity_filter_link("all", "All", current_severity))
+                        (severity_filter_link("info", "Info", current_severity))
+                        (severity_filter_link("success", "Success", current_severity))
+                        (severity_filter_link("warning", "Warning", current_severity))
+                        (severity_filter_link("error", "Error", current_severity))
+                    }
+                }
+
+                @if events.is_empty() {
+                    p class="mt-4 rounded-lg border border-dashed border-slate-300 bg-slate-50 px-4 py-8 text-center text-sm text-slate-500" {
+                        "No activity events recorded yet."
+                    }
+                } @else {
+                    div class="mt-4 space-y-2" {
+                        @for event in &events {
+                            (activity_event_row(event))
+                        }
+                    }
+
+                    // Pagination
+                    @if total_pages > 1 {
+                        nav class="mt-6 flex items-center justify-center gap-2" {
+                            @if page_num > 1 {
+                                a
+                                    class="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-50"
+                                    href=(format!("/activity?severity={}&page={}", current_severity, page_num - 1))
+                                {
+                                    "Previous"
+                                }
+                            }
+                            span class="text-sm text-slate-500" {
+                                (format!("Page {} of {}", page_num, total_pages))
+                            }
+                            @if page_num < total_pages {
+                                a
+                                    class="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-50"
+                                    href=(format!("/activity?severity={}&page={}", current_severity, page_num + 1))
+                                {
+                                    "Next"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+    );
+
+    (StatusCode::OK, page)
+}
+
+fn severity_filter_link(value: &str, label: &str, current: &str) -> Markup {
+    let active = value == current;
+    let classes = if active {
+        "rounded-full bg-slate-900 px-3 py-1 text-xs font-medium text-white"
+    } else {
+        "rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-600 hover:bg-slate-200"
+    };
+    let href = if value == "all" {
+        "/activity".to_string()
+    } else {
+        format!("/activity?severity={value}")
+    };
+
+    html! {
+        a class=(classes) href=(href) { (label) }
+    }
+}
+
+fn activity_event_row(event: &hof_core::domain::activity::ActivityEvent) -> Markup {
+    let (icon, border_color) = match event.severity {
+        ActivitySeverity::Info => ("i", "border-l-sky-400"),
+        ActivitySeverity::Success => ("✓", "border-l-emerald-400"),
+        ActivitySeverity::Warning => ("!", "border-l-amber-400"),
+        ActivitySeverity::Error => ("✗", "border-l-rose-400"),
+    };
+
+    let severity_badge = match event.severity {
+        ActivitySeverity::Info => ("Info", "bg-sky-100 text-sky-800"),
+        ActivitySeverity::Success => ("Success", "bg-emerald-100 text-emerald-800"),
+        ActivitySeverity::Warning => ("Warning", "bg-amber-100 text-amber-800"),
+        ActivitySeverity::Error => ("Error", "bg-rose-100 text-rose-800"),
+    };
+
+    let event_label = match event.event_type {
+        ActivityEventType::SourceIndexed => "Source Indexed",
+        ActivityEventType::SourceError => "Source Error",
+        ActivityEventType::DownloadStarted => "Download Started",
+        ActivityEventType::DownloadCompleted => "Download Completed",
+        ActivityEventType::DownloadFailed => "Download Failed",
+        ActivityEventType::RetryScheduled => "Retry Scheduled",
+        ActivityEventType::MetadataGenerated => "Metadata Generated",
+        ActivityEventType::VideoCleaned => "Video Cleaned",
+        ActivityEventType::ProfileCreated => "Profile Created",
+        ActivityEventType::ProfileUpdated => "Profile Updated",
+        ActivityEventType::ProfileDeleted => "Profile Deleted",
+        ActivityEventType::SourceCreated => "Source Created",
+        ActivityEventType::SourceDeleted => "Source Deleted",
+    };
+
+    let time_ago = format_time_ago(event.created_at);
+
+    html! {
+        div class=(format!("flex items-start gap-3 rounded-lg border border-slate-200 border-l-4 {} bg-white p-3", border_color)) {
+            span class="mt-0.5 flex h-6 w-6 items-center justify-center rounded-full bg-slate-100 text-xs font-bold text-slate-600" {
+                (icon)
+            }
+            div class="min-w-0 flex-1" {
+                div class="flex flex-wrap items-center gap-2" {
+                    span class=(format!("inline-flex rounded-full px-2 py-0.5 text-xs font-medium {}", severity_badge.1)) {
+                        (severity_badge.0)
+                    }
+                    span class="text-xs font-medium text-slate-500" { (event_label) }
+                    span class="text-xs text-slate-400" title=(event.created_at.to_rfc3339()) { (time_ago) }
+                }
+                p class="mt-1 text-sm text-slate-700" { (event.message) }
+            }
+        }
+    }
+}
+
+// ============================================================================
+// Schedule Page
+// ============================================================================
+
+/// A view model combining source data with computed schedule info.
+struct ScheduleEntry {
+    source: Source,
+    profile_name: String,
+    next_index_at: Option<chrono::DateTime<Utc>>,
+    is_overdue: bool,
+}
+
+async fn schedule_page(_auth: AuthUser, State(state): State<AppState>) -> impl IntoResponse {
+    let (sources_result, profiles_result, recent_activity_result) = tokio::join!(
+        db::list_sources(&state.pool),
+        db::list_profiles(&state.pool),
+        db::list_activity_events(&state.pool, 20, 0, None, None)
+    );
+
+    let sources = match sources_result {
+        Ok(data) => data,
+        Err(error) => {
+            tracing::error!(%error, "failed to load sources for schedule");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                error_page("Failed to load schedule"),
+            );
+        }
+    };
+
+    let profiles = profiles_result.unwrap_or_default();
+    let recent_activity = recent_activity_result.unwrap_or_default();
+
+    // Filter to only source-related activity
+    let recent_runs: Vec<_> = recent_activity
+        .iter()
+        .filter(|e| {
+            matches!(
+                e.event_type,
+                ActivityEventType::SourceIndexed | ActivityEventType::SourceError
+            )
+        })
+        .collect();
+
+    let now = Utc::now();
+
+    // Build schedule entries
+    let mut entries: Vec<ScheduleEntry> = sources
+        .into_iter()
+        .map(|source| {
+            let profile_name = profiles
+                .iter()
+                .find(|p| p.id == source.profile_id)
+                .map_or_else(|| "Unknown".to_string(), |p| p.name.clone());
+
+            let next_index_at = source
+                .last_indexed_at
+                .map(|last| last + chrono::Duration::seconds(source.index_frequency_secs));
+
+            let is_overdue =
+                next_index_at.is_some_and(|next| next < now) && source.last_error.is_some();
+
+            ScheduleEntry {
+                source,
+                profile_name,
+                next_index_at,
+                is_overdue,
+            }
+        })
+        .collect();
+
+    // Sort: overdue first, then by next index time (soonest first)
+    entries.sort_by(|a, b| {
+        b.is_overdue
+            .cmp(&a.is_overdue)
+            .then_with(|| a.next_index_at.cmp(&b.next_index_at))
+    });
+
+    let page = layout(
+        "Schedule",
+        NavItem::Schedule,
+        html! {
+            section class="rounded-2xl border border-slate-200 bg-white/80 p-6 shadow-sm" {
+                h2 class="text-lg font-semibold text-slate-900" { "Upcoming Indexing" }
+                @if entries.is_empty() {
+                    p class="mt-4 rounded-lg border border-dashed border-slate-300 bg-slate-50 px-4 py-8 text-center text-sm text-slate-500" {
+                        "No sources configured yet. Add sources to start scheduling."
+                    }
+                } @else {
+                    div class="mt-4 space-y-2" {
+                        @for entry in &entries {
+                            (schedule_entry_row(entry, now))
+                        }
+                    }
+                }
+            }
+
+            (recent_runs_section(&recent_runs))
+        },
+    );
+
+    (StatusCode::OK, page)
+}
+
+fn recent_runs_section(recent_runs: &[&hof_core::domain::activity::ActivityEvent]) -> Markup {
+    html! {
+        section class="mt-8 rounded-2xl border border-slate-200 bg-white/80 p-6 shadow-sm" {
+            h2 class="text-lg font-semibold text-slate-900" { "Recent Indexing Runs" }
+            @if recent_runs.is_empty() {
+                p class="mt-4 rounded-lg border border-dashed border-slate-300 bg-slate-50 px-4 py-8 text-center text-sm text-slate-500" {
+                    "No indexing runs recorded yet."
+                }
+            } @else {
+                div class="mt-4 overflow-x-auto" {
+                    table class="min-w-full divide-y divide-slate-200 text-sm" {
+                        thead class="bg-slate-50" {
+                            tr {
+                                th class="px-3 py-2 text-left font-semibold text-slate-700" { "Time" }
+                                th class="px-3 py-2 text-left font-semibold text-slate-700" { "Result" }
+                                th class="px-3 py-2 text-left font-semibold text-slate-700" { "Details" }
+                            }
+                        }
+                        tbody class="divide-y divide-slate-100 bg-white" {
+                            @for run in recent_runs {
+                                tr {
+                                    td class="whitespace-nowrap px-3 py-2 text-slate-600" title=(run.created_at.to_rfc3339()) {
+                                        (format_time_ago(run.created_at))
+                                    }
+                                    td class="px-3 py-2" {
+                                        @if run.event_type == ActivityEventType::SourceIndexed {
+                                            span class="inline-flex rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-medium text-emerald-900" {
+                                                "OK"
+                                            }
+                                        } @else {
+                                            span class="inline-flex rounded-full bg-rose-100 px-2.5 py-1 text-xs font-medium text-rose-900" {
+                                                "Error"
+                                            }
+                                        }
+                                    }
+                                    td class="px-3 py-2 text-slate-700" {
+                                        (run.message)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn schedule_entry_row(entry: &ScheduleEntry, now: chrono::DateTime<Utc>) -> Markup {
+    let frequency = format_duration_human(entry.source.index_frequency_secs);
+
+    let (status_text, status_classes) = if entry.is_overdue {
+        let overdue_duration = entry.next_index_at.map_or_else(
+            || "unknown".to_string(),
+            |next| format_time_delta(now - next),
+        );
+        (
+            format!("overdue by {overdue_duration}"),
+            "text-rose-600 font-medium",
+        )
+    } else if let Some(next) = entry.next_index_at {
+        if next > now {
+            (
+                format!("in {}", format_time_delta(next - now)),
+                "text-slate-600",
+            )
+        } else {
+            ("due now".to_string(), "text-amber-600 font-medium")
+        }
+    } else {
+        ("not yet indexed".to_string(), "text-slate-500 italic")
+    };
+
+    let border = if entry.is_overdue {
+        "border-l-4 border-l-rose-400"
+    } else if entry.source.last_error.is_some() {
+        "border-l-4 border-l-amber-400"
+    } else {
+        "border-l-4 border-l-emerald-400"
+    };
+
+    html! {
+        div class=(format!("flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-200 {} bg-white p-4", border)) {
+            div class="min-w-0 flex-1" {
+                div class="flex flex-wrap items-center gap-2" {
+                    p class="text-sm font-semibold text-slate-900" { (entry.source.display_name()) }
+                    span class="rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-500" {
+                        (entry.profile_name)
+                    }
+                }
+                @if let Some(ref error) = entry.source.last_error {
+                    p class="mt-1 truncate text-xs text-rose-600" title=(error) {
+                        "Error: " (error)
+                    }
+                }
+            }
+            div class="flex items-center gap-4 text-right" {
+                div {
+                    p class=(format!("text-sm {}", status_classes)) { (status_text) }
+                    p class="text-xs text-slate-400" { "every " (frequency) }
+                }
+                form method="post" action=(format!("/sources/{}/index", entry.source.id)) {
+                    button class="rounded-lg border border-sky-200 bg-sky-50 px-3 py-1.5 text-xs font-medium text-sky-700 hover:bg-sky-100" type="submit" {
+                        "Index Now"
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn format_time_ago(timestamp: chrono::DateTime<Utc>) -> String {
+    let delta = Utc::now() - timestamp;
+    format_time_delta(delta) + " ago"
+}
+
+fn format_time_delta(delta: chrono::TimeDelta) -> String {
+    let secs = delta.num_seconds().max(0);
+    if secs < 60 {
+        "just now".to_string()
+    } else if secs < 3600 {
+        let mins = secs / 60;
+        format!("{mins}m")
+    } else if secs < 86_400 {
+        let hours = secs / 3600;
+        let mins = (secs % 3600) / 60;
+        if mins > 0 {
+            format!("{hours}h {mins}m")
+        } else {
+            format!("{hours}h")
+        }
+    } else {
+        let days = secs / 86_400;
+        format!("{days}d")
+    }
+}
+
+fn format_duration_human(secs: i64) -> String {
+    if secs < 60 {
+        format!("{secs}s")
+    } else if secs < 3600 {
+        format!("{}m", secs / 60)
+    } else if secs < 86_400 {
+        let h = secs / 3600;
+        let m = (secs % 3600) / 60;
+        if m > 0 {
+            format!("{h}h {m}m")
+        } else {
+            format!("{h}h")
+        }
+    } else {
+        let d = secs / 86_400;
+        format!("{d}d")
+    }
 }
 
 fn metric_card(title: &str, value: impl std::fmt::Display, description: &str) -> Markup {
@@ -1745,6 +2235,8 @@ fn layout(title: &str, active: NavItem, content: impl Render) -> Markup {
                                 (nav_link("/profiles", "Profiles", active == NavItem::Profiles))
                                 (nav_link("/sources", "Sources", active == NavItem::Sources))
                                 (nav_link("/downloads", "Downloads", active == NavItem::Downloads))
+                                (nav_link("/activity", "Activity", active == NavItem::Activity))
+                                (nav_link("/schedule", "Schedule", active == NavItem::Schedule))
                                 form method="post" action="/logout" class="ml-2" {
                                     button
                                         type="submit"

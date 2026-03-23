@@ -14,6 +14,7 @@ use tracing::{debug, error, info, instrument, warn};
 use ulid::Ulid;
 
 use crate::db;
+use crate::domain::activity::{ActivityEventType, ActivitySeverity};
 use crate::domain::source::Source;
 use crate::ytdlp::YtdlpClient;
 
@@ -329,10 +330,41 @@ impl Message<IndexingCompleted> for SchedulerActor {
             "Indexing completed"
         );
 
-        if !msg.result.errors.is_empty() {
-            for error in &msg.result.errors {
-                warn!(source_id = %msg.source_id, error = %error, "Indexing error");
+        // Emit activity event
+        if msg.result.errors.is_empty() {
+            let message = format!(
+                "Indexed successfully — {} new, {} existing, {} filtered",
+                msg.result.new_videos, msg.result.existing_videos, msg.result.filtered_out
+            );
+            db::log_activity(
+                &self.pool,
+                ActivityEventType::SourceIndexed,
+                ActivitySeverity::Success,
+                &message,
+                Some(msg.source_id),
+                None,
+                None,
+            )
+            .await;
+        } else {
+            for err in &msg.result.errors {
+                warn!(source_id = %msg.source_id, error = %err, "Indexing error");
             }
+            let message = format!(
+                "Indexing had {} error(s): {}",
+                msg.result.errors.len(),
+                msg.result.errors.first().unwrap_or(&String::new())
+            );
+            db::log_activity(
+                &self.pool,
+                ActivityEventType::SourceError,
+                ActivitySeverity::Error,
+                &message,
+                Some(msg.source_id),
+                None,
+                None,
+            )
+            .await;
         }
     }
 }

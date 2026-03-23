@@ -312,8 +312,7 @@
           trivy
           ffmpeg
           yt-dlp
-          # Container image tools
-          skopeo # For pushing OCI images to registries
+          claude-code
         ];
         shellHook = ''
           lefthook install
