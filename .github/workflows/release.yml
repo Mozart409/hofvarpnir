@@ -15,7 +15,7 @@ jobs:
           - x86_64-unknown-linux-gnu
           # Add more targets if needed for cross-compilation
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Setup Nix
         uses: DeterminateSystems/nix-installer-action@main
@@ -54,7 +54,7 @@ jobs:
       contents: read
       actions: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Setup Nix
         uses: DeterminateSystems/nix-installer-action@main
@@ -136,7 +136,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Download artifacts
         uses: actions/download-artifact@v4
