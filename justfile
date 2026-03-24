@@ -73,6 +73,11 @@ lint: clear
 dev: clear
     cargo run --bin hofvarpnir
 
+# Run server with CSS watcher
+dev-full: clear
+    just css-watch &
+    cargo run --bin hofvarpnir
+
 # Tailwind CSS
 css-watch:
     tailwindcss -i crates/hof-web/assets/input.css -o crates/hof-web/assets/app.css --watch
