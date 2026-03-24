@@ -14,6 +14,8 @@ use tokio::time::{MissedTickBehavior, interval};
 use tracing::{debug, error, info, instrument, warn};
 use ulid::Ulid;
 
+use chrono::{DateTime, Utc};
+
 use crate::db;
 use crate::domain::activity::{ActivityEventType, ActivitySeverity};
 use crate::domain::video::{Video, VideoStatus};
@@ -34,6 +36,8 @@ pub struct CleanupActor {
     cleanup_interval: Duration,
     /// Whether the cleanup loop is running.
     running: bool,
+    /// Timestamp of the last cleanup run.
+    last_run_at: Option<DateTime<Utc>>,
 }
 
 impl std::fmt::Debug for CleanupActor {
@@ -77,6 +81,7 @@ impl Actor for CleanupActor {
                 .and_then(|d| i32::try_from(d).ok()),
             cleanup_interval,
             running: false,
+            last_run_at: None,
         };
 
         // Start the cleanup loop.
@@ -183,6 +188,7 @@ impl Message<RunCleanup> for CleanupActor {
         _ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
         info!("Running cleanup");
+        self.last_run_at = Some(Utc::now());
 
         let mut result = CleanupResult::default();
 
@@ -231,6 +237,7 @@ pub struct CleanupStatus {
     pub running: bool,
     pub global_retention_days: Option<i32>,
     pub cleanup_interval_secs: u64,
+    pub last_run_at: Option<DateTime<Utc>>,
 }
 
 impl Message<GetCleanupStatus> for CleanupActor {
@@ -245,6 +252,7 @@ impl Message<GetCleanupStatus> for CleanupActor {
             running: self.running,
             global_retention_days: self.global_retention_days,
             cleanup_interval_secs: self.cleanup_interval.as_secs(),
+            last_run_at: self.last_run_at,
         }
     }
 }
