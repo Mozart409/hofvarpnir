@@ -19,7 +19,7 @@ use hof_api::AppState;
 use hof_core::{
     actors::{
         cleanup::{GetCleanupStatus, RunCleanup},
-        download_supervisor::EnqueueDownload,
+        download_supervisor::{CancelDownload, EnqueueDownload},
         jellyfin_metadata::TriggerSourceMetadata,
         scheduler::IndexSource,
     },
@@ -178,6 +178,8 @@ pub fn router(state: AppState) -> Router {
         .route("/sources/{id}/metadata", post(trigger_metadata))
         .route("/downloads", get(downloads_page))
         .route("/downloads/{id}/retry", post(retry_download))
+        .route("/downloads/{id}/cancel", post(cancel_download))
+        .route("/downloads/{id}/delete", post(delete_download))
         .route("/web/downloads/progress", get(download_progress_sse))
         .route("/activity", get(activity_page))
         .route("/schedule", get(schedule_page))
@@ -1200,10 +1202,26 @@ async fn downloads_page(_auth: AuthUser, State(state): State<AppState>) -> impl 
                                         td class="px-3 py-2" { (status_badge(&video.status)) }
                                         td class="px-3 py-2 text-slate-600" { (video.attempts) }
                                         td class="px-3 py-2" {
-                                            @if matches!(video.status, VideoStatus::Failed | VideoStatus::PermanentlyFailed | VideoStatus::Cleaned) {
-                                                form method="post" action={(format!("/downloads/{}/retry", video.id))} {
-                                                    button class="rounded-lg border border-sky-200 bg-sky-50 px-3 py-1.5 text-xs font-medium text-sky-700 hover:bg-sky-100" type="submit" {
-                                                        "Retry"
+                                            div class="flex gap-2" {
+                                                @if matches!(video.status, VideoStatus::Failed | VideoStatus::PermanentlyFailed | VideoStatus::Cleaned) {
+                                                    form method="post" action=(format!("/downloads/{}/retry", video.id)) {
+                                                        button class="rounded-lg border border-sky-200 bg-sky-50 px-3 py-1.5 text-xs font-medium text-sky-700 hover:bg-sky-100" type="submit" {
+                                                            "Retry"
+                                                        }
+                                                    }
+                                                }
+                                                @if matches!(video.status, VideoStatus::Pending | VideoStatus::Downloading) {
+                                                    form method="post" action=(format!("/downloads/{}/cancel", video.id)) {
+                                                        button class="rounded-lg border border-amber-200 bg-amber-50 px-3 py-1.5 text-xs font-medium text-amber-700 hover:bg-amber-100" type="submit" {
+                                                            "Cancel"
+                                                        }
+                                                    }
+                                                }
+                                                @if video.status == VideoStatus::Completed {
+                                                    form method="post" action=(format!("/downloads/{}/delete", video.id)) {
+                                                        button class="rounded-lg border border-rose-200 bg-rose-50 px-3 py-1.5 text-xs font-medium text-rose-700 hover:bg-rose-100" type="submit" {
+                                                            "Delete"
+                                                        }
                                                     }
                                                 }
                                             }
@@ -1345,6 +1363,140 @@ async fn retry_download(
                 .into_response()
         }
     }
+}
+
+async fn cancel_download(
+    _auth: AuthUser,
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let Ok(video_id) = Ulid::from_string(id.trim()) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            error_page("Invalid video ID provided"),
+        )
+            .into_response();
+    };
+
+    let video = match db::get_video(&state.pool, video_id).await {
+        Ok(value) => value,
+        Err(db::DbError::NotFound) => {
+            return (StatusCode::NOT_FOUND, error_page("Video not found")).into_response();
+        }
+        Err(error) => {
+            tracing::error!(%error, "failed to load video for cancel");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                error_page("Failed to load video"),
+            )
+                .into_response();
+        }
+    };
+
+    if !matches!(
+        video.status,
+        VideoStatus::Pending | VideoStatus::Downloading
+    ) {
+        return (
+            StatusCode::BAD_REQUEST,
+            error_page("Only pending or downloading videos can be cancelled"),
+        )
+            .into_response();
+    }
+
+    let cancel_result = state.supervisor.ask(CancelDownload { video_id }).await;
+
+    match cancel_result {
+        Ok(()) => Redirect::to("/downloads").into_response(),
+        Err(error) => {
+            tracing::error!(%error, "failed to cancel download");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                error_page("Failed to cancel download"),
+            )
+                .into_response()
+        }
+    }
+}
+
+async fn delete_download(
+    _auth: AuthUser,
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let Ok(video_id) = Ulid::from_string(id.trim()) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            error_page("Invalid video ID provided"),
+        )
+            .into_response();
+    };
+
+    let video = match db::get_video(&state.pool, video_id).await {
+        Ok(value) => value,
+        Err(db::DbError::NotFound) => {
+            return (StatusCode::NOT_FOUND, error_page("Video not found")).into_response();
+        }
+        Err(error) => {
+            tracing::error!(%error, "failed to load video for delete");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                error_page("Failed to load video"),
+            )
+                .into_response();
+        }
+    };
+
+    if video.status != VideoStatus::Completed {
+        return (
+            StatusCode::BAD_REQUEST,
+            error_page("Only completed videos can be deleted"),
+        )
+            .into_response();
+    }
+
+    // Delete the file from disk
+    if let Some(ref file_path) = video.file_path {
+        let path = std::path::Path::new(file_path);
+        if path.exists()
+            && let Err(error) = tokio::fs::remove_file(path).await
+        {
+            tracing::error!(%error, file_path, "failed to delete video file");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                error_page("Failed to delete video file from disk"),
+            )
+                .into_response();
+        }
+    }
+
+    // Mark as cleaned in DB
+    if let Err(error) = db::update_video_status(&state.pool, video_id, VideoStatus::Cleaned).await {
+        tracing::error!(%error, "failed to mark video as cleaned");
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            error_page("Failed to update video status"),
+        )
+            .into_response();
+    }
+
+    #[allow(clippy::cast_precision_loss)]
+    let size_mb = video.file_size_bytes.unwrap_or(0) as f64 / 1_048_576.0;
+    db::log_activity(
+        &state.pool,
+        ActivityEventType::VideoCleaned,
+        ActivitySeverity::Info,
+        &format!(
+            "Manually deleted \"{}\" ({size_mb:.1} MB freed)",
+            video.title
+        ),
+        None,
+        Some(video_id),
+        None,
+    )
+    .await;
+
+    Redirect::to("/downloads").into_response()
 }
 
 async fn download_progress_sse(

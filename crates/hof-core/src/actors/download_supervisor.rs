@@ -472,6 +472,46 @@ impl Message<GetSupervisorStatus> for DownloadSupervisor {
     }
 }
 
+/// Cancel an active or pending download.
+pub struct CancelDownload {
+    pub video_id: Ulid,
+}
+
+impl Message<CancelDownload> for DownloadSupervisor {
+    type Reply = Result<(), String>;
+
+    async fn handle(
+        &mut self,
+        msg: CancelDownload,
+        _ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        // Stop the worker if actively downloading
+        if let Some(worker_ref) = self.active_downloads.remove(&msg.video_id) {
+            info!(video_id = %msg.video_id, "Cancelling active download");
+            worker_ref.stop_gracefully().await.ok();
+        }
+
+        // Mark as failed in the DB
+        db::update_video_status(&self.pool, msg.video_id, VideoStatus::Failed)
+            .await
+            .map_err(|e| format!("Failed to update video status: {e}"))?;
+
+        db::log_activity(
+            &self.pool,
+            ActivityEventType::DownloadFailed,
+            ActivitySeverity::Info,
+            &format!("Download cancelled by user for video {}", msg.video_id),
+            None,
+            Some(msg.video_id),
+            None,
+        )
+        .await;
+
+        info!(video_id = %msg.video_id, "Download cancelled");
+        Ok(())
+    }
+}
+
 /// Notify the supervisor of a rate limit (429) response.
 pub struct NotifyRateLimited;
 
