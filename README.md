@@ -6,12 +6,19 @@ A self-hosted video archival system that downloads videos from YouTube (and othe
 
 - **Multi-platform support**: YouTube and other platforms via yt-dlp auto-detection
 - **Web UI**: Modern web interface built with htmx and Tailwind CSS
-- **TUI**: Terminal-based management interface (Planned)
 - **Automatic scheduling**: Per-source indexing frequency
 - **Quality presets**: Configurable download quality
 - **Retention policies**: Automatic cleanup with per-source and per-profile settings
 - **Deduplication**: Videos downloaded once regardless of multiple source references
 - **Real-time progress**: SSE-based live download progress in both web and TUI
+
+## Planned
+
+- **TUI**: Terminal-based management interface
+- **OIDC**: Implement Oauth2 for e.g. [PocketID](https://github.com/pocket-id/pocket-id)
+- **Metrics**: Prometheus metrics + Endpoint
+- **Dark Mode**: Tailwindcss darkmode
+- **Keyboard Shortcuts**: Vim motions
 
 ## Tech Stack
 
