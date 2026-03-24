@@ -102,7 +102,7 @@ impl Actor for DownloadWorker {
     type Error = color_eyre::eyre::Error;
 
     #[instrument(skip_all, fields(video_id = %args.video.id))]
-    async fn on_start(args: Self::Args, actor_ref: ActorRef<Self>) -> Result<Self, Self::Error> {
+    async fn on_start(args: Self::Args, _actor_ref: ActorRef<Self>) -> Result<Self, Self::Error> {
         info!(
             video_id = %args.video.id,
             title = %args.video.title,
@@ -116,13 +116,6 @@ impl Actor for DownloadWorker {
             ytdlp: args.ytdlp,
             progress_tx: args.progress_tx,
         };
-
-        // Immediately trigger the download.
-        // Use try_send() to avoid potential deadlock from self-tell with bounded mailbox.
-        if let Err(e) = actor_ref.tell(StartDownload).try_send() {
-            error!(error = %e, "Failed to start download");
-            return Err(e.into());
-        }
 
         Ok(worker)
     }

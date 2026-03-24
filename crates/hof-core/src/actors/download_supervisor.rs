@@ -26,7 +26,9 @@ use crate::domain::source::Source;
 use crate::domain::video::{DownloadProgress, Video, VideoStatus};
 use crate::ytdlp::YtdlpClient;
 
-use super::download_worker::{DownloadConfig, DownloadOutcome, DownloadWorker, DownloadWorkerArgs};
+use super::download_worker::{
+    DownloadConfig, DownloadOutcome, DownloadWorker, DownloadWorkerArgs, StartDownload,
+};
 
 /// Exponential backoff configuration.
 const BACKOFF_BASE_SECS: u64 = 120; // 2 minutes
@@ -239,12 +241,17 @@ impl Message<EnqueueDownload> for DownloadSupervisor {
                 })
                 .await;
 
-            // Wait for the worker to complete
-            worker_ref.wait_for_shutdown().await;
+            // Ask the worker to start the download and wait for the outcome
+            let outcome = worker_ref.ask(StartDownload).await;
 
             // Notify supervisor that download completed
             // The worker will have already updated the database
             let _ = supervisor_ref.tell(DownloadCompleted { video_id }).await;
+
+            // Report the outcome so activity gets logged
+            if let Ok(outcome) = outcome {
+                let _ = supervisor_ref.tell(ReportOutcome { outcome }).await;
+            }
         });
 
         // Update last download start time
