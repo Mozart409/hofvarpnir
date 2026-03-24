@@ -35,7 +35,7 @@ jobs:
           tar -czf hofvarpnir-${{ matrix.target }}-${{ github.ref_name }}.tar.gz -C dist .
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: hofvarpnir-${{ matrix.target }}
           path: hofvarpnir-${{ matrix.target }}-${{ github.ref_name }}.tar.gz
@@ -72,7 +72,7 @@ jobs:
           nix build --impure .#container
 
       - name: Upload container image
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: container-${{ matrix.arch }}
           path: result
