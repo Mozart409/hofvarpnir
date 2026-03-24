@@ -7,6 +7,23 @@ on:
 jobs:
   check:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/hofvarpnir_test
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: hofvarpnir_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - uses: actions/checkout@v4
       - name: Setup Nix
@@ -17,11 +34,14 @@ jobs:
         run: nix develop .#default --command cargo fmt --all -- --check
       - name: Run clippy
         run: nix develop .#default --command cargo clippy --all-targets --all-features -- -D warnings
+      - name: Run migrations
+        run: nix develop .#default --command sh -c "cd crates/hof-core && sqlx migrate run"
       - name: Run tests
-        run: nix develop .#default --command cargo test --all-features
+        run: nix develop .#default --command cargo test --all-features -- --include-ignored
   container:
     needs: check
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    timeout-minutes: 30
     strategy:
       matrix:
         include:
@@ -51,6 +71,7 @@ jobs:
     needs: container
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: read
       packages: write

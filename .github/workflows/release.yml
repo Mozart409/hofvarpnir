@@ -8,6 +8,7 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     strategy:
       matrix:
         target:
@@ -40,6 +41,7 @@ jobs:
           path: hofvarpnir-${{ matrix.target }}-${{ github.ref_name }}.tar.gz
 
   container:
+    timeout-minutes: 30
     strategy:
       matrix:
         include:
@@ -79,6 +81,7 @@ jobs:
   container-manifest:
     needs: container
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: read
       packages: write
@@ -129,6 +132,7 @@ jobs:
   release:
     needs: [build, container-manifest]
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: write
     steps:
