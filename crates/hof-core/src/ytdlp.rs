@@ -534,12 +534,10 @@ fn render_output_relative_path(
         template_data.episode_index
     );
 
+    // Double-brace placeholders MUST be replaced before single-brace ones,
+    // otherwise `{{ext}}` is partially matched by `{ext}` leaving residual braces.
     #[allow(clippy::literal_string_with_formatting_args)]
     let mut rendered = template
-        .replace("{title}", &safe_title)
-        .replace("{id}", &safe_id)
-        .replace("{ext}", "mkv")
-        .replace("%(ext)s", "mkv")
         .replace("{{ ext }}", "mkv")
         .replace("{{ext}}", "mkv")
         .replace("{{ title }}", &safe_title)
@@ -557,7 +555,11 @@ fn render_output_relative_path(
         .replace(
             "{{season_by_year__episode_by_date_and_index}}",
             &season_episode,
-        );
+        )
+        .replace("{title}", &safe_title)
+        .replace("{id}", &safe_id)
+        .replace("{ext}", "mkv")
+        .replace("%(ext)s", "mkv");
 
     if rendered.trim().is_empty() {
         rendered = format!("{safe_title}-{safe_id}.mkv");
@@ -836,6 +838,21 @@ mod tests {
         assert_eq!(
             output,
             PathBuf::from("F1 Channel/S2026E20260318-007 - F1 Overtake Breakdown.mkv")
+        );
+    }
+
+    #[test]
+    fn test_render_output_filename_double_brace_no_spaces() {
+        let output = render_output_relative_path(
+            "{{source_custom_name/or default}}/{{title}}.{{ext}}",
+            "This shot in the F1 movie could've been a lot better",
+            "abc123",
+            &template_data(),
+        );
+
+        assert_eq!(
+            output,
+            PathBuf::from("F1 Channel/This shot in the F1 movie could've been a lot better.mkv")
         );
     }
 

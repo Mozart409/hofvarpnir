@@ -4,7 +4,7 @@
 //! and storage quotas. Videos are only deleted when all referencing sources
 //! agree the retention period has expired.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use kameo::Reply;
@@ -13,6 +13,8 @@ use sqlx::PgPool;
 use tokio::time::{MissedTickBehavior, interval};
 use tracing::{debug, error, info, instrument, warn};
 use ulid::Ulid;
+
+use chrono::{DateTime, Utc};
 
 use crate::db;
 use crate::domain::activity::{ActivityEventType, ActivitySeverity};
@@ -34,6 +36,8 @@ pub struct CleanupActor {
     cleanup_interval: Duration,
     /// Whether the cleanup loop is running.
     running: bool,
+    /// Timestamp of the last cleanup run.
+    last_run_at: Option<DateTime<Utc>>,
 }
 
 impl std::fmt::Debug for CleanupActor {
@@ -77,6 +81,7 @@ impl Actor for CleanupActor {
                 .and_then(|d| i32::try_from(d).ok()),
             cleanup_interval,
             running: false,
+            last_run_at: None,
         };
 
         // Start the cleanup loop.
@@ -167,6 +172,8 @@ pub struct CleanupResult {
     pub retention_cleaned: usize,
     /// Number of videos cleaned up due to quota enforcement.
     pub quota_cleaned: usize,
+    /// Number of orphaned temp files removed.
+    pub temp_files_cleaned: usize,
     /// Total bytes freed.
     pub bytes_freed: i64,
     /// Errors encountered.
@@ -183,6 +190,7 @@ impl Message<RunCleanup> for CleanupActor {
         _ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
         info!("Running cleanup");
+        self.last_run_at = Some(Utc::now());
 
         let mut result = CleanupResult::default();
 
@@ -210,9 +218,19 @@ impl Message<RunCleanup> for CleanupActor {
             }
         }
 
+        // Phase 3: Orphaned temp file cleanup
+        match self.cleanup_temp_files().await {
+            Ok(count) => result.temp_files_cleaned = count,
+            Err(e) => {
+                error!(error = %e, "Temp file cleanup failed");
+                result.errors.push(format!("Temp file cleanup failed: {e}"));
+            }
+        }
+
         info!(
             retention_cleaned = result.retention_cleaned,
             quota_cleaned = result.quota_cleaned,
+            temp_files_cleaned = result.temp_files_cleaned,
             bytes_freed = result.bytes_freed,
             errors = result.errors.len(),
             "Cleanup complete"
@@ -231,6 +249,7 @@ pub struct CleanupStatus {
     pub running: bool,
     pub global_retention_days: Option<i32>,
     pub cleanup_interval_secs: u64,
+    pub last_run_at: Option<DateTime<Utc>>,
 }
 
 impl Message<GetCleanupStatus> for CleanupActor {
@@ -245,6 +264,7 @@ impl Message<GetCleanupStatus> for CleanupActor {
             running: self.running,
             global_retention_days: self.global_retention_days,
             cleanup_interval_secs: self.cleanup_interval.as_secs(),
+            last_run_at: self.last_run_at,
         }
     }
 }
@@ -410,6 +430,54 @@ impl CleanupActor {
         Ok(total_bytes)
     }
 
+    /// Clean up orphaned yt-dlp temp files from all profile output directories.
+    async fn cleanup_temp_files(&self) -> color_eyre::Result<usize> {
+        let profiles = db::list_profiles(&self.pool).await?;
+
+        let mut dirs: Vec<PathBuf> = profiles
+            .into_iter()
+            .flat_map(|p| {
+                let base = PathBuf::from(&p.output_dir);
+                [base.clone(), base.join("incomplete")]
+            })
+            .collect();
+        dirs.sort();
+        dirs.dedup();
+
+        let mut cleaned = 0;
+        for dir in dirs {
+            if !dir.exists() {
+                continue;
+            }
+
+            let mut entries = match tokio::fs::read_dir(&dir).await {
+                Ok(e) => e,
+                Err(e) => {
+                    warn!(dir = %dir.display(), error = %e, "Failed to read directory");
+                    continue;
+                }
+            };
+
+            while let Ok(Some(entry)) = entries.next_entry().await {
+                let path = entry.path();
+                if is_ytdlp_temp_file(&path) {
+                    info!(path = %path.display(), "Cleaning up orphaned temp file");
+                    if let Err(e) = tokio::fs::remove_file(&path).await {
+                        warn!(path = %path.display(), error = %e, "Failed to remove temp file");
+                    } else {
+                        cleaned += 1;
+                    }
+                }
+            }
+        }
+
+        if cleaned > 0 {
+            info!(cleaned, "Temp file cleanup complete");
+        }
+
+        Ok(cleaned)
+    }
+
     /// Get videos for a profile, sorted by download date (oldest first).
     async fn get_profile_videos_by_age(&self, profile_id: Ulid) -> color_eyre::Result<Vec<Video>> {
         let sources = db::list_sources_for_profile(&self.pool, profile_id).await?;
@@ -444,9 +512,31 @@ impl CleanupActor {
     }
 }
 
-/// Message to clean up orphaned .part files.
+/// Message to clean up orphaned .part files and yt-dlp temp files.
 pub struct CleanupPartFiles {
     pub directories: Vec<std::path::PathBuf>,
+}
+
+/// Check whether a file is a yt-dlp temporary artifact.
+///
+/// Matches `.part`, `.ytdl` extensions and `temp_audio_*` / `temp_video_*`
+/// intermediate files left behind after failed merges.
+fn is_ytdlp_temp_file(path: &Path) -> bool {
+    // .part / .ytdl extensions
+    let is_part = path
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("part"));
+    let is_ytdl = path
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("ytdl"));
+
+    // temp_audio_* / temp_video_* intermediate merge files
+    let is_temp_merge = path.file_name().is_some_and(|name| {
+        let n = name.to_string_lossy();
+        n.starts_with("temp_audio_") || n.starts_with("temp_video_")
+    });
+
+    is_part || is_ytdl || is_temp_merge
 }
 
 impl Message<CleanupPartFiles> for CleanupActor {
@@ -476,18 +566,10 @@ impl Message<CleanupPartFiles> for CleanupActor {
             while let Ok(Some(entry)) = entries.next_entry().await {
                 let path = entry.path();
 
-                // yt-dlp creates .part files for in-progress downloads
-                let is_part_file = path
-                    .extension()
-                    .is_some_and(|ext| ext.eq_ignore_ascii_case("part"));
-                let is_ytdl_file = path
-                    .extension()
-                    .is_some_and(|ext| ext.eq_ignore_ascii_case("ytdl"));
-
-                if is_part_file || is_ytdl_file {
-                    info!(path = %path.display(), "Cleaning up orphaned part file");
+                if is_ytdlp_temp_file(&path) {
+                    info!(path = %path.display(), "Cleaning up orphaned temp file");
                     if let Err(e) = tokio::fs::remove_file(&path).await {
-                        warn!(path = %path.display(), error = %e, "Failed to remove part file");
+                        warn!(path = %path.display(), error = %e, "Failed to remove temp file");
                     } else {
                         cleaned += 1;
                     }

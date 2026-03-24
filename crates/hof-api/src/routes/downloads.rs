@@ -14,7 +14,7 @@ use axum::{
         IntoResponse,
         sse::{Event, KeepAlive, Sse},
     },
-    routing::{get, post},
+    routing::{MethodFilter, get, post},
 };
 use chrono::{DateTime, Utc};
 use futures::stream::{Stream, StreamExt};
@@ -24,7 +24,7 @@ use ulid::Ulid;
 use utoipa::ToSchema;
 
 use hof_core::{
-    actors::download_supervisor::EnqueueDownload,
+    actors::download_supervisor::{CancelDownload, EnqueueDownload},
     db::{self},
     domain::video::{Video, VideoStatus},
 };
@@ -34,8 +34,13 @@ use crate::AppState;
 /// Build the downloads router.
 pub fn router() -> Router<AppState> {
     Router::new()
-        .route("/", get(list_downloads))
+        .route("/", get(list_downloads).post(bulk_retry_downloads))
         .route("/progress", get(get_download_progress))
+        .route(
+            "/{id}",
+            get(get_download).on(MethodFilter::DELETE, delete_download),
+        )
+        .route("/{id}/cancel", post(cancel_download))
         .route("/{id}/retry", post(retry_download))
 }
 
@@ -101,6 +106,28 @@ impl From<Video> for VideoResponse {
 /// Response for retry endpoint.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct RetryResponse {
+    pub message: String,
+    pub video_id: String,
+}
+
+/// Response for bulk retry endpoint.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct BulkRetryResponse {
+    pub message: String,
+    pub retried_count: usize,
+    pub video_ids: Vec<String>,
+}
+
+/// Response for cancel endpoint.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct CancelResponse {
+    pub message: String,
+    pub video_id: String,
+}
+
+/// Response for delete endpoint.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct DeleteResponse {
     pub message: String,
     pub video_id: String,
 }
@@ -460,4 +487,398 @@ pub async fn retry_download(
                 .into_response()
         }
     }
+}
+
+/// Get a single video/download by ID.
+///
+/// Returns detailed information about a specific video including
+/// download status, error messages, and file information.
+#[utoipa::path(
+    get,
+    path = "/api/v1/downloads/{id}",
+    tag = "downloads",
+    params(
+        ("id" = String, Path, description = "Video ID (ULID)")
+    ),
+    responses(
+        (status = 200, description = "Video details", body = VideoResponse),
+        (status = 400, description = "Invalid ID format", body = ErrorResponse),
+        (status = 404, description = "Video not found", body = ErrorResponse),
+        (status = 500, description = "Internal server error", body = ErrorResponse)
+    )
+)]
+pub async fn get_download(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let Ok(video_id) = Ulid::from_string(&id) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Invalid video ID format".to_string(),
+            }),
+        )
+            .into_response();
+    };
+
+    match db::get_video(&state.pool, video_id).await {
+        Ok(video) => {
+            let response: VideoResponse = video.into();
+            (StatusCode::OK, Json(response)).into_response()
+        }
+        Err(db::DbError::NotFound) => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: "Video not found".to_string(),
+            }),
+        )
+            .into_response(),
+        Err(e) => {
+            tracing::error!(error = %e, "Failed to get video");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "Failed to get video".to_string(),
+                }),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// Cancel an active download.
+///
+/// Stops an in-progress download and marks the video as failed.
+/// The video can be retried later using the retry endpoint.
+#[utoipa::path(
+    post,
+    path = "/api/v1/downloads/{id}/cancel",
+    tag = "downloads",
+    params(
+        ("id" = String, Path, description = "Video ID (ULID)")
+    ),
+    responses(
+        (status = 200, description = "Download cancelled", body = CancelResponse),
+        (status = 400, description = "Invalid ID format", body = ErrorResponse),
+        (status = 404, description = "Video not found", body = ErrorResponse),
+        (status = 500, description = "Internal server error", body = ErrorResponse)
+    )
+)]
+pub async fn cancel_download(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let Ok(video_id) = Ulid::from_string(&id) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Invalid video ID format".to_string(),
+            }),
+        )
+            .into_response();
+    };
+
+    // Verify video exists
+    match db::get_video(&state.pool, video_id).await {
+        Ok(video) => {
+            // Check if video is actually downloading
+            if video.status != VideoStatus::Downloading {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: "Video is not currently downloading".to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+        }
+        Err(db::DbError::NotFound) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse {
+                    error: "Video not found".to_string(),
+                }),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "Failed to get video");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "Failed to get video".to_string(),
+                }),
+            )
+                .into_response();
+        }
+    }
+
+    // Send cancel message to supervisor
+    match state.supervisor.ask(CancelDownload { video_id }).await {
+        Ok(()) => (
+            StatusCode::OK,
+            Json(CancelResponse {
+                message: "Download cancelled".to_string(),
+                video_id: video_id.to_string(),
+            }),
+        )
+            .into_response(),
+        Err(e) => {
+            tracing::error!(error = %e, "Failed to cancel download");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Failed to cancel download: {e}"),
+                }),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// Delete a video and its file.
+///
+/// Removes the video record from the database and deletes the
+/// downloaded file from disk. This action cannot be undone.
+#[utoipa::path(
+    delete,
+    path = "/api/v1/downloads/{id}",
+    tag = "downloads",
+    params(
+        ("id" = String, Path, description = "Video ID (ULID)")
+    ),
+    responses(
+        (status = 200, description = "Video deleted", body = DeleteResponse),
+        (status = 400, description = "Invalid ID format", body = ErrorResponse),
+        (status = 404, description = "Video not found", body = ErrorResponse),
+        (status = 409, description = "Video is currently downloading", body = ErrorResponse),
+        (status = 500, description = "Internal server error", body = ErrorResponse)
+    )
+)]
+pub async fn delete_download(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let Ok(video_id) = Ulid::from_string(&id) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Invalid video ID format".to_string(),
+            }),
+        )
+            .into_response();
+    };
+
+    // Get the video
+    let video = match db::get_video(&state.pool, video_id).await {
+        Ok(v) => v,
+        Err(db::DbError::NotFound) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse {
+                    error: "Video not found".to_string(),
+                }),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "Failed to get video");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "Failed to get video".to_string(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    // Don't allow deleting while downloading
+    if video.status == VideoStatus::Downloading {
+        return (
+            StatusCode::CONFLICT,
+            Json(ErrorResponse {
+                error: "Cannot delete video while it is downloading. Cancel the download first."
+                    .to_string(),
+            }),
+        )
+            .into_response();
+    }
+
+    // Delete the file if it exists
+    if let Some(file_path) = &video.file_path {
+        let path = std::path::Path::new(file_path);
+        if path.exists()
+            && let Err(e) = tokio::fs::remove_file(path).await
+        {
+            tracing::warn!(error = %e, file_path, "Failed to delete video file");
+        }
+    }
+
+    // Delete the video from database
+    match db::delete_video(&state.pool, video_id).await {
+        Ok(()) => (
+            StatusCode::OK,
+            Json(DeleteResponse {
+                message: "Video deleted".to_string(),
+                video_id: video_id.to_string(),
+            }),
+        )
+            .into_response(),
+        Err(e) => {
+            tracing::error!(error = %e, "Failed to delete video");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "Failed to delete video".to_string(),
+                }),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// Bulk retry all failed downloads.
+///
+/// Resets all failed and permanently failed videos to pending status
+/// and enqueues them for download. Useful for recovering from network
+/// outages or temporary `YouTube` blocks.
+#[utoipa::path(
+    post,
+    path = "/api/v1/downloads/retry",
+    tag = "downloads",
+    responses(
+        (status = 202, description = "Bulk retry started", body = BulkRetryResponse),
+        (status = 500, description = "Internal server error", body = ErrorResponse)
+    )
+)]
+#[allow(clippy::too_many_lines)]
+pub async fn bulk_retry_downloads(State(state): State<AppState>) -> impl IntoResponse {
+    // Get all failed and permanently failed videos
+    let failed_videos = match db::list_videos(&state.pool, Some(VideoStatus::Failed)).await {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::error!(error = %e, "Failed to list failed videos");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "Failed to list failed videos".to_string(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    let permanently_failed =
+        match db::list_videos(&state.pool, Some(VideoStatus::PermanentlyFailed)).await {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::error!(error = %e, "Failed to list permanently failed videos");
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: "Failed to list permanently failed videos".to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+        };
+
+    let cleaned = match db::list_videos(&state.pool, Some(VideoStatus::Cleaned)).await {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::error!(error = %e, "Failed to list cleaned videos");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "Failed to list cleaned videos".to_string(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    let all_videos: Vec<Video> = failed_videos
+        .into_iter()
+        .chain(permanently_failed)
+        .chain(cleaned)
+        .collect();
+
+    let mut retried_ids = Vec::new();
+
+    for video in all_videos {
+        // Reset status to pending
+        if let Err(e) = db::update_video_status(&state.pool, video.id, VideoStatus::Pending).await {
+            tracing::warn!(error = %e, video_id = %video.id, "Failed to reset video status");
+            continue;
+        }
+
+        // Get the source(s) for this video
+        let source_ids = match db::get_sources_for_video(&state.pool, video.id).await {
+            Ok(ids) => ids,
+            Err(e) => {
+                tracing::warn!(error = %e, video_id = %video.id, "Failed to get sources for video");
+                continue;
+            }
+        };
+
+        if source_ids.is_empty() {
+            tracing::warn!(video_id = %video.id, "Video has no linked sources, skipping");
+            continue;
+        }
+
+        // Get the first source and its profile
+        let source = match db::get_source(&state.pool, source_ids[0]).await {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!(error = %e, video_id = %video.id, "Failed to get source");
+                continue;
+            }
+        };
+
+        let profile = match db::get_profile(&state.pool, source.profile_id).await {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::warn!(error = %e, video_id = %video.id, "Failed to get profile");
+                continue;
+            }
+        };
+
+        // Re-fetch the video with updated status
+        let video = match db::get_video(&state.pool, video.id).await {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!(error = %e, video_id = %video.id, "Failed to get updated video");
+                continue;
+            }
+        };
+
+        let video_id = video.id;
+
+        // Enqueue the download
+        if let Err(e) = state
+            .supervisor
+            .tell(EnqueueDownload {
+                video,
+                profile,
+                source,
+            })
+            .await
+        {
+            tracing::warn!(error = %e, %video_id, "Failed to enqueue download");
+            continue;
+        }
+
+        retried_ids.push(video_id);
+    }
+
+    (
+        StatusCode::ACCEPTED,
+        Json(BulkRetryResponse {
+            message: format!("Retrying {} downloads", retried_ids.len()),
+            retried_count: retried_ids.len(),
+            video_ids: retried_ids.iter().map(Ulid::to_string).collect(),
+        }),
+    )
+        .into_response()
 }
