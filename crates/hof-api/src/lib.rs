@@ -4,6 +4,8 @@
 //! - Profile CRUD endpoints
 //! - Source CRUD endpoints with manual indexing trigger
 //! - Download status, progress SSE, and retry endpoints
+//! - Activity log endpoints
+//! - System status and control endpoints
 //! - `OpenAPI` documentation via utoipa + Scalar
 #![allow(clippy::needless_for_each)]
 
@@ -21,7 +23,7 @@ use tokio::sync::broadcast;
 use utoipa::OpenApi;
 use utoipa_scalar::{Scalar, Servable};
 
-use routes::{downloads, health, profiles, sources};
+use routes::{activity, downloads, health, profiles, sources, system};
 
 /// Shared application state for API handlers.
 #[derive(Clone)]
@@ -89,7 +91,14 @@ impl AppState {
         sources::trigger_metadata,
         downloads::list_downloads,
         downloads::get_download_progress,
+        downloads::get_download,
+        downloads::cancel_download,
+        downloads::delete_download,
         downloads::retry_download,
+        downloads::bulk_retry_downloads,
+        activity::list_activity,
+        system::get_system_status,
+        system::trigger_cleanup,
     ),
     components(schemas(
         health::HealthResponse,
@@ -105,15 +114,31 @@ impl AppState {
         sources::MetadataTriggerResponse,
         downloads::VideoResponse,
         downloads::RetryResponse,
+        downloads::BulkRetryResponse,
+        downloads::CancelResponse,
+        downloads::DeleteResponse,
+        activity::ActivityEventResponse,
+        activity::ActivityListResponse,
+        system::SystemStatusResponse,
+        system::SchedulerStatusResponse,
+        system::DownloadsStatusResponse,
+        system::CleanupStatusResponse,
+        system::StatisticsResponse,
+        system::CleanupTriggerResponse,
+        system::CleanupResultResponse,
         hof_core::domain::profile::Quality,
         hof_core::domain::source::SourceType,
         hof_core::domain::video::VideoStatus,
+        hof_core::domain::activity::ActivityEventType,
+        hof_core::domain::activity::ActivitySeverity,
     )),
     tags(
         (name = "health", description = "Health check endpoints"),
         (name = "profiles", description = "Profile management endpoints"),
         (name = "sources", description = "Source management endpoints"),
-        (name = "downloads", description = "Download management endpoints")
+        (name = "downloads", description = "Download management endpoints"),
+        (name = "activity", description = "Activity log endpoints"),
+        (name = "system", description = "System status and control endpoints")
     )
 )]
 pub struct ApiDoc;
@@ -131,6 +156,8 @@ pub fn router(state: AppState) -> Router {
         .nest("/v1/profiles", profiles::router())
         .nest("/v1/sources", sources::router())
         .nest("/v1/downloads", downloads::router())
+        .nest("/v1/activity", activity::router())
+        .nest("/v1/system", system::router())
         .with_state(state)
 }
 
