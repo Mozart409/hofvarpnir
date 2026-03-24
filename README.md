@@ -6,7 +6,7 @@ A self-hosted video archival system that downloads videos from YouTube (and othe
 
 - **Multi-platform support**: YouTube and other platforms via yt-dlp auto-detection
 - **Web UI**: Modern web interface built with htmx and Tailwind CSS
-- **TUI**: Terminal-based management interface
+- **TUI**: Terminal-based management interface (Planned)
 - **Automatic scheduling**: Per-source indexing frequency
 - **Quality presets**: Configurable download quality
 - **Retention policies**: Automatic cleanup with per-source and per-profile settings
