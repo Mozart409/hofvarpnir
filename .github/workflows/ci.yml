@@ -62,7 +62,7 @@ jobs:
       - name: Build container
         run: nix build .#container
       - name: Upload container image
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: container-${{ matrix.arch }}
           path: result
