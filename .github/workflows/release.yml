@@ -112,18 +112,6 @@ jobs:
           buildah manifest add hofvarpnir docker-archive:container-amd64/result
           buildah manifest add hofvarpnir docker-archive:container-arm64/result
 
-          # Add OCI annotations to the manifest index
-          buildah manifest annotate --index --annotation "org.opencontainers.image.title=hofvarpnir" hofvarpnir
-          buildah manifest annotate --index --annotation "org.opencontainers.image.description=Video archival system with yt-dlp" hofvarpnir
-          buildah manifest annotate --index --annotation "org.opencontainers.image.url=https://github.com/Mozart409/hofvarpnir" hofvarpnir
-          buildah manifest annotate --index --annotation "org.opencontainers.image.source=https://github.com/Mozart409/hofvarpnir" hofvarpnir
-          buildah manifest annotate --index --annotation "org.opencontainers.image.documentation=https://github.com/Mozart409/hofvarpnir#readme" hofvarpnir
-          buildah manifest annotate --index --annotation "org.opencontainers.image.licenses=SEE LICENSES" hofvarpnir
-          buildah manifest annotate --index --annotation "org.opencontainers.image.authors=Mozart409" hofvarpnir
-          buildah manifest annotate --index --annotation "org.opencontainers.image.vendor=Mozart409" hofvarpnir
-          buildah manifest annotate --index --annotation "org.opencontainers.image.version=${VERSION}" hofvarpnir
-          buildah manifest annotate --index --annotation "org.opencontainers.image.revision=${REVISION}" hofvarpnir
-
           # Push to each tag
           for TAG in "${VERSION}" "${MAJOR_MINOR}" "latest"; do
             buildah manifest push --all hofvarpnir "docker://ghcr.io/${REPO_RAW,,}:${TAG}"
@@ -143,6 +131,11 @@ jobs:
         with:
           path: artifacts
 
+      - name: Derive image tag
+        id: vars
+        run: |
+          echo "image_tag=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
       - name: Create GitHub Release
         id: create_release
         uses: softprops/action-gh-release@v2
@@ -156,7 +149,7 @@ jobs:
             ## Container Image
 
             ```bash
-            docker pull ghcr.io/${{ github.repository }}:${{ github.ref_name }}
+            docker pull ghcr.io/${{ github.repository }}:${{ steps.vars.outputs.image_tag }}
             ```
 
       - name: Upload release assets
