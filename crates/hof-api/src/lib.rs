@@ -10,6 +10,7 @@
 pub mod routes;
 
 use axum::{Json, Router, routing::get};
+use hof_core::actors::cleanup::CleanupActor;
 use hof_core::actors::download_supervisor::DownloadSupervisor;
 use hof_core::actors::jellyfin_metadata::JellyfinMetadataActor;
 use hof_core::actors::scheduler::SchedulerActor;
@@ -33,6 +34,8 @@ pub struct AppState {
     pub scheduler: ActorRef<SchedulerActor>,
     /// Reference to the Jellyfin metadata actor.
     pub jellyfin_metadata: ActorRef<JellyfinMetadataActor>,
+    /// Reference to the cleanup actor.
+    pub cleanup: ActorRef<CleanupActor>,
     /// Broadcast channel for download progress updates (for SSE).
     pub progress_tx: broadcast::Sender<DownloadProgress>,
 }
@@ -45,6 +48,7 @@ impl AppState {
         supervisor: ActorRef<DownloadSupervisor>,
         scheduler: ActorRef<SchedulerActor>,
         jellyfin_metadata: ActorRef<JellyfinMetadataActor>,
+        cleanup: ActorRef<CleanupActor>,
         progress_tx: broadcast::Sender<DownloadProgress>,
     ) -> Self {
         Self {
@@ -52,6 +56,7 @@ impl AppState {
             supervisor,
             scheduler,
             jellyfin_metadata,
+            cleanup,
             progress_tx,
         }
     }

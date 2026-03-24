@@ -18,7 +18,9 @@ use futures::stream::{Stream, StreamExt};
 use hof_api::AppState;
 use hof_core::{
     actors::{
-        download_supervisor::EnqueueDownload, jellyfin_metadata::TriggerSourceMetadata,
+        cleanup::{GetCleanupStatus, RunCleanup},
+        download_supervisor::EnqueueDownload,
+        jellyfin_metadata::TriggerSourceMetadata,
         scheduler::IndexSource,
     },
     db::{self, CreateProfile, CreateSource, UpdateProfile, UpdateSource},
@@ -179,6 +181,7 @@ pub fn router(state: AppState) -> Router {
         .route("/web/downloads/progress", get(download_progress_sse))
         .route("/activity", get(activity_page))
         .route("/schedule", get(schedule_page))
+        .route("/schedule/cleanup", post(trigger_cleanup))
         // Static assets (embedded at compile time)
         .route("/assets/{*path}", get(serve_asset))
         .with_state(state)
@@ -1048,6 +1051,28 @@ async fn trigger_index(
     }
 }
 
+async fn trigger_cleanup(_auth: AuthUser, State(state): State<AppState>) -> impl IntoResponse {
+    match state.cleanup.ask(RunCleanup).await {
+        Ok(result) => {
+            tracing::info!(
+                retention = result.retention_cleaned,
+                quota = result.quota_cleaned,
+                bytes_freed = result.bytes_freed,
+                "Manual cleanup triggered from web UI"
+            );
+            Redirect::to("/schedule").into_response()
+        }
+        Err(error) => {
+            tracing::error!(%error, "failed to trigger cleanup from web UI");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                error_page("Failed to trigger cleanup"),
+            )
+                .into_response()
+        }
+    }
+}
+
 async fn trigger_metadata(
     _auth: AuthUser,
     State(state): State<AppState>,
@@ -1537,10 +1562,11 @@ struct ScheduleEntry {
 }
 
 async fn schedule_page(_auth: AuthUser, State(state): State<AppState>) -> impl IntoResponse {
-    let (sources_result, profiles_result, recent_activity_result) = tokio::join!(
+    let (sources_result, profiles_result, recent_activity_result, cleanup_status) = tokio::join!(
         db::list_sources(&state.pool),
         db::list_profiles(&state.pool),
-        db::list_activity_events(&state.pool, 20, 0, None, None)
+        db::list_activity_events(&state.pool, 20, 0, None, None),
+        state.cleanup.ask(GetCleanupStatus)
     );
 
     let sources = match sources_result {
@@ -1606,7 +1632,9 @@ async fn schedule_page(_auth: AuthUser, State(state): State<AppState>) -> impl I
         "Schedule",
         NavItem::Schedule,
         html! {
-            section class="rounded-2xl border border-slate-200 bg-white/80 p-6 shadow-sm" {
+            (cleanup_status_section(cleanup_status.ok().as_ref(), now))
+
+            section class="mt-8 rounded-2xl border border-slate-200 bg-white/80 p-6 shadow-sm" {
                 h2 class="text-lg font-semibold text-slate-900" { "Upcoming Indexing" }
                 @if entries.is_empty() {
                     p class="mt-4 rounded-lg border border-dashed border-slate-300 bg-slate-50 px-4 py-8 text-center text-sm text-slate-500" {
@@ -1626,6 +1654,71 @@ async fn schedule_page(_auth: AuthUser, State(state): State<AppState>) -> impl I
     );
 
     (StatusCode::OK, page)
+}
+
+fn cleanup_status_section(
+    status: Option<&hof_core::actors::cleanup::CleanupStatus>,
+    now: chrono::DateTime<Utc>,
+) -> Markup {
+    html! {
+        section class="rounded-2xl border border-slate-200 bg-white/80 p-6 shadow-sm" {
+            div class="flex flex-wrap items-center justify-between gap-4" {
+                div {
+                    h2 class="text-lg font-semibold text-slate-900" { "Cleanup" }
+                    p class="mt-1 text-sm text-slate-500" {
+                        "Enforces retention policies and storage quotas by removing old files."
+                    }
+                }
+                form method="post" action="/schedule/cleanup" {
+                    button class="rounded-lg border border-sky-200 bg-sky-50 px-4 py-2 text-sm font-medium text-sky-700 hover:bg-sky-100" type="submit" {
+                        "Run Now"
+                    }
+                }
+            }
+            @if let Some(status) = status {
+                div class="mt-4 grid gap-4 sm:grid-cols-3" {
+                    // Status
+                    div class="rounded-lg border border-slate-200 bg-slate-50 p-3" {
+                        p class="text-xs font-medium uppercase tracking-wide text-slate-500" { "Status" }
+                        p class="mt-1 text-sm font-semibold text-slate-900" {
+                            @if status.running { "Running" } @else { "Stopped" }
+                        }
+                    }
+                    // Interval
+                    @let interval_secs = i64::try_from(status.cleanup_interval_secs).unwrap_or(i64::MAX);
+                    div class="rounded-lg border border-slate-200 bg-slate-50 p-3" {
+                        p class="text-xs font-medium uppercase tracking-wide text-slate-500" { "Interval" }
+                        p class="mt-1 text-sm font-semibold text-slate-900" {
+                            "every " (format_duration_human(interval_secs))
+                        }
+                    }
+                    // Next run
+                    div class="rounded-lg border border-slate-200 bg-slate-50 p-3" {
+                        p class="text-xs font-medium uppercase tracking-wide text-slate-500" { "Next Run" }
+                        p class="mt-1 text-sm font-semibold text-slate-900" {
+                            @if let Some(last) = status.last_run_at {
+                                @let next = last + chrono::Duration::seconds(interval_secs);
+                                @if next > now {
+                                    "in " (format_time_delta(next - now))
+                                } @else {
+                                    "due now"
+                                }
+                            } @else {
+                                "pending"
+                            }
+                        }
+                    }
+                }
+                @if let Some(days) = status.global_retention_days {
+                    p class="mt-3 text-xs text-slate-500" {
+                        "Global retention: " (days) " days"
+                    }
+                }
+            } @else {
+                p class="mt-4 text-sm text-slate-500" { "Unable to retrieve cleanup status." }
+            }
+        }
+    }
 }
 
 fn recent_runs_section(recent_runs: &[&hof_core::domain::activity::ActivityEvent]) -> Markup {

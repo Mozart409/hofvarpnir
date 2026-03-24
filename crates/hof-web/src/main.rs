@@ -51,6 +51,7 @@ async fn main() {
         actor_system.supervisor.clone(),
         actor_system.scheduler.clone(),
         actor_system.jellyfin_metadata.clone(),
+        actor_system.cleanup.clone(),
         progress_tx,
     );
 
