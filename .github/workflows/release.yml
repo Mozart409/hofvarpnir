@@ -60,14 +60,14 @@ jobs:
       - name: Setup Nix cache
         uses: DeterminateSystems/flakehub-cache-action@main
 
-      - name: Build minimal container
+      - name: Build container
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           export OCI_IMAGE_VERSION="$VERSION"
           export OCI_IMAGE_REVISION="${{ github.sha }}"
           OCI_IMAGE_CREATED="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           export OCI_IMAGE_CREATED
-          nix build --impure .#container-minimal
+          nix build --impure .#container
 
       - name: Upload container image
         uses: actions/upload-artifact@v4
