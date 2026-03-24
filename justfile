@@ -92,6 +92,3 @@ ci: clear
 
 build-oci: clear
     nix build .#container
-
-build-oci-minimal: clear
-    nix build .#container-minimal

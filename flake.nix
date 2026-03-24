@@ -137,7 +137,7 @@
 
             # Required runtime dependencies
             pkgs.yt-dlp
-            pkgs.ffmpeg
+            pkgs.ffmpeg-headless
 
             # TLS/SSL certificates for HTTPS connections
             pkgs.cacert
@@ -218,61 +218,6 @@
           };
         };
 
-        # Minimal container without debugging tools
-        container-minimal = pkgs.dockerTools.buildLayeredImage {
-          name = "hofvarpnir";
-          tag = "minimal";
-
-          contents = [
-            hofvarpnir
-            licenseBundle
-            pkgs.yt-dlp
-            pkgs.ffmpeg
-            pkgs.cacert
-            # wget for healthcheck only
-            pkgs.wget
-          ];
-
-          # Enable fakeroot for chown support
-          enableFakechroot = true;
-          fakeRootCommands = ''
-            mkdir -p ./etc
-            echo "${containerUser}:x:${containerUid}:${containerGid}::/home/${containerUser}:/bin/false" > ./etc/passwd
-            echo "${containerUser}:x:${containerGid}:" > ./etc/group
-            mkdir -p ./home/${containerUser}
-            chown ${containerUid}:${containerGid} ./home/${containerUser}
-            mkdir -p ./data/downloads ./data/incomplete ./tmp
-            chown ${containerUid}:${containerGid} ./data/downloads ./data/incomplete
-            chmod 1777 ./tmp
-          '';
-
-          config = {
-            Cmd = ["/bin/hofvarpnir"];
-            User = "${containerUid}:${containerGid}";
-            ExposedPorts."3000/tcp" = {};
-            Env = [
-              "SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
-              "HOME=/home/${containerUser}"
-              "PORT=3000"
-              "RUST_LOG=info"
-              "YTDLP_PATH=${pkgs.yt-dlp}/bin/yt-dlp"
-              "DEFAULT_OUTPUT_DIR=/data/downloads"
-            ];
-            Volumes = {
-              "/data/downloads" = {};
-              "/data/incomplete" = {};
-            };
-            WorkingDir = "/home/${containerUser}";
-            Labels = commonLabels;
-            Healthcheck = {
-              Test = ["CMD" "wget" "-q" "--spider" "http://localhost:3000/api/health/ready"];
-              Interval = 30 * 1000000000;
-              Timeout = 10 * 1000000000;
-              Retries = 3;
-              StartPeriod = 60 * 1000000000;
-            };
-          };
-        };
       };
 
       # to use other shells, run:
