@@ -75,7 +75,7 @@ dev: clear
 
 # Tailwind CSS
 css-watch:
-    tailwindcss -i crates/hof-web/assets/input.css -o crates/hof-web/assets/app.css --watch
+    tailwindcss -i crates/hof-web/assets/input.css -o crates/hof-web/assets/app.css --watch --minify
 
 css-build:
     tailwindcss -i crates/hof-web/assets/input.css -o crates/hof-web/assets/app.css --minify
