@@ -34,7 +34,7 @@ use hof_core::{
 };
 use maud::{DOCTYPE, Markup, PreEscaped, Render, html};
 use rust_embed::Embed;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tokio_stream::wrappers::BroadcastStream;
 use tower_sessions::Session;
 use ulid::Ulid;
@@ -157,6 +157,44 @@ pub struct RegisterForm {
     email: String,
     password: String,
     password_confirm: String,
+}
+
+// ============================================================================
+// Flash Messages
+// ============================================================================
+
+const FLASH_KEY: &str = "flash_message";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct FlashMessage {
+    level: String,
+    message: String,
+}
+
+async fn set_flash(session: &Session, level: &str, message: &str) {
+    let flash = FlashMessage {
+        level: level.to_string(),
+        message: message.to_string(),
+    };
+    let _ = session.insert(FLASH_KEY, flash).await;
+}
+
+async fn take_flash(session: &Session) -> Option<FlashMessage> {
+    let flash: Option<FlashMessage> = session.get(FLASH_KEY).await.ok().flatten();
+    if flash.is_some() {
+        let _ = session.remove::<FlashMessage>(FLASH_KEY).await;
+    }
+    flash
+}
+
+// ============================================================================
+// Downloads Query
+// ============================================================================
+
+#[derive(Debug, Deserialize)]
+struct DownloadsQuery {
+    status: Option<String>,
+    search: Option<String>,
 }
 
 pub fn router(state: AppState) -> Router {
@@ -447,7 +485,12 @@ fn auth_layout(title: &str, content: impl Render) -> Markup {
     }
 }
 
-async fn dashboard_page(_auth: AuthUser, State(state): State<AppState>) -> impl IntoResponse {
+async fn dashboard_page(
+    _auth: AuthUser,
+    State(state): State<AppState>,
+    session: Session,
+) -> impl IntoResponse {
+    let flash = take_flash(&session).await;
     let (profiles_result, sources_result, videos_result) = tokio::join!(
         db::list_profiles(&state.pool),
         db::list_sources(&state.pool),
@@ -511,9 +554,10 @@ async fn dashboard_page(_auth: AuthUser, State(state): State<AppState>) -> impl 
 
     let recent = videos.iter().take(8).collect::<Vec<_>>();
 
-    let page = layout(
+    let page = layout_with_flash(
         "Dashboard",
         NavItem::Dashboard,
+        flash,
         html! {
             div class="grid gap-4 md:grid-cols-2 xl:grid-cols-4" {
                 (metric_card("Profiles", profiles.len(), "Active download configurations"))
@@ -549,7 +593,12 @@ async fn dashboard_page(_auth: AuthUser, State(state): State<AppState>) -> impl 
     (StatusCode::OK, page)
 }
 
-async fn profiles_page(auth: AuthUser, State(state): State<AppState>) -> impl IntoResponse {
+async fn profiles_page(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    session: Session,
+) -> impl IntoResponse {
+    let flash = take_flash(&session).await;
     // List profiles for the current user only
     let profiles = match db::list_profiles_for_user(&state.pool, auth.user_id).await {
         Ok(data) => data,
@@ -562,9 +611,10 @@ async fn profiles_page(auth: AuthUser, State(state): State<AppState>) -> impl In
         }
     };
 
-    let page = layout(
+    let page = layout_with_flash(
         "Profiles",
         NavItem::Profiles,
+        flash,
         html! {
             section class="rounded-2xl border border-slate-200 bg-white/80 p-6 shadow-sm" {
                 h2 class="text-lg font-semibold text-slate-900" { "Create Profile" }
@@ -619,6 +669,7 @@ async fn profiles_page(auth: AuthUser, State(state): State<AppState>) -> impl In
 async fn create_profile(
     auth: AuthUser,
     State(state): State<AppState>,
+    session: Session,
     Form(form): Form<ProfileForm>,
 ) -> impl IntoResponse {
     let retention_days = match parse_optional_i32(form.retention_days.as_deref(), "Retention days")
@@ -658,6 +709,12 @@ async fn create_profile(
                 Some(profile.id),
             )
             .await;
+            set_flash(
+                &session,
+                "success",
+                &format!("Profile \"{}\" created", profile.name),
+            )
+            .await;
             Redirect::to("/profiles").into_response()
         }
         Err(error) => {
@@ -674,6 +731,7 @@ async fn create_profile(
 async fn update_profile(
     _auth: AuthUser,
     State(state): State<AppState>,
+    session: Session,
     Path(id): Path<String>,
     Form(form): Form<ProfileForm>,
 ) -> impl IntoResponse {
@@ -710,7 +768,10 @@ async fn update_profile(
     };
 
     match db::update_profile(&state.pool, profile_id, update).await {
-        Ok(_) => Redirect::to("/profiles").into_response(),
+        Ok(_) => {
+            set_flash(&session, "success", "Profile updated").await;
+            Redirect::to("/profiles").into_response()
+        }
         Err(db::DbError::NotFound) => {
             (StatusCode::NOT_FOUND, error_page("Profile not found")).into_response()
         }
@@ -728,6 +789,7 @@ async fn update_profile(
 async fn delete_profile(
     _auth: AuthUser,
     State(state): State<AppState>,
+    session: Session,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     let Ok(profile_id) = Ulid::from_string(id.trim()) else {
@@ -750,6 +812,7 @@ async fn delete_profile(
                 Some(profile_id),
             )
             .await;
+            set_flash(&session, "success", "Profile deleted").await;
             Redirect::to("/profiles").into_response()
         }
         Err(db::DbError::NotFound) => {
@@ -766,7 +829,12 @@ async fn delete_profile(
     }
 }
 
-async fn sources_page(auth: AuthUser, State(state): State<AppState>) -> impl IntoResponse {
+async fn sources_page(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    session: Session,
+) -> impl IntoResponse {
+    let flash = take_flash(&session).await;
     // Get profiles for the current user to populate the dropdown
     let profiles = match db::list_profiles_for_user(&state.pool, auth.user_id).await {
         Ok(data) => data,
@@ -802,9 +870,10 @@ async fn sources_page(auth: AuthUser, State(state): State<AppState>) -> impl Int
         .format("%Y-%m-%d")
         .to_string();
 
-    let page = layout(
+    let page = layout_with_flash(
         "Sources",
         NavItem::Sources,
+        flash,
         html! {
             section class="rounded-2xl border border-slate-200 bg-white/80 p-6 shadow-sm" {
                 h2 class="text-lg font-semibold text-slate-900" { "Create Source" }
@@ -858,6 +927,7 @@ async fn sources_page(auth: AuthUser, State(state): State<AppState>) -> impl Int
 async fn create_source(
     _auth: AuthUser,
     State(state): State<AppState>,
+    session: Session,
     Form(form): Form<SourceForm>,
 ) -> impl IntoResponse {
     let Ok(profile_id) = Ulid::from_string(form.profile_id.trim()) else {
@@ -902,16 +972,18 @@ async fn create_source(
 
     match db::create_source(&state.pool, create).await {
         Ok(source) => {
+            let name = source.display_name();
             db::log_activity(
                 &state.pool,
                 ActivityEventType::SourceCreated,
                 ActivitySeverity::Info,
-                &format!("Added source \"{}\"", source.display_name()),
+                &format!("Added source \"{name}\""),
                 Some(source.id),
                 None,
                 Some(profile_id),
             )
             .await;
+            set_flash(&session, "success", &format!("Source \"{name}\" added")).await;
             Redirect::to("/sources").into_response()
         }
         Err(error) => {
@@ -928,6 +1000,7 @@ async fn create_source(
 async fn update_source(
     _auth: AuthUser,
     State(state): State<AppState>,
+    session: Session,
     Path(id): Path<String>,
     Form(form): Form<SourceForm>,
 ) -> impl IntoResponse {
@@ -971,7 +1044,10 @@ async fn update_source(
     };
 
     match db::update_source(&state.pool, source_id, update).await {
-        Ok(_) => Redirect::to("/sources").into_response(),
+        Ok(_) => {
+            set_flash(&session, "success", "Source updated").await;
+            Redirect::to("/sources").into_response()
+        }
         Err(db::DbError::NotFound) => {
             (StatusCode::NOT_FOUND, error_page("Source not found")).into_response()
         }
@@ -989,6 +1065,7 @@ async fn update_source(
 async fn delete_source(
     _auth: AuthUser,
     State(state): State<AppState>,
+    session: Session,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     let Ok(source_id) = Ulid::from_string(id.trim()) else {
@@ -1011,6 +1088,7 @@ async fn delete_source(
                 None,
             )
             .await;
+            set_flash(&session, "success", "Source deleted").await;
             Redirect::to("/sources").into_response()
         }
         Err(db::DbError::NotFound) => {
@@ -1030,6 +1108,7 @@ async fn delete_source(
 async fn trigger_index(
     _auth: AuthUser,
     State(state): State<AppState>,
+    session: Session,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     let Ok(source_id) = Ulid::from_string(id.trim()) else {
@@ -1041,7 +1120,10 @@ async fn trigger_index(
     };
 
     match state.scheduler.ask(IndexSource { source_id }).await {
-        Ok(()) => Redirect::to("/sources").into_response(),
+        Ok(()) => {
+            set_flash(&session, "info", "Indexing triggered").await;
+            Redirect::to("/sources").into_response()
+        }
         Err(error) => {
             tracing::error!(%error, "failed to trigger source index from web form");
             (
@@ -1053,7 +1135,11 @@ async fn trigger_index(
     }
 }
 
-async fn trigger_cleanup(_auth: AuthUser, State(state): State<AppState>) -> impl IntoResponse {
+async fn trigger_cleanup(
+    _auth: AuthUser,
+    State(state): State<AppState>,
+    session: Session,
+) -> impl IntoResponse {
     match state.cleanup.ask(RunCleanup).await {
         Ok(result) => {
             tracing::info!(
@@ -1062,6 +1148,13 @@ async fn trigger_cleanup(_auth: AuthUser, State(state): State<AppState>) -> impl
                 bytes_freed = result.bytes_freed,
                 "Manual cleanup triggered from web UI"
             );
+            let total = result.retention_cleaned + result.quota_cleaned;
+            set_flash(
+                &session,
+                "success",
+                &format!("Cleanup done: {total} files cleaned"),
+            )
+            .await;
             Redirect::to("/schedule").into_response()
         }
         Err(error) => {
@@ -1078,6 +1171,7 @@ async fn trigger_cleanup(_auth: AuthUser, State(state): State<AppState>) -> impl
 async fn trigger_metadata(
     _auth: AuthUser,
     State(state): State<AppState>,
+    session: Session,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     let Ok(source_id) = Ulid::from_string(id.trim()) else {
@@ -1119,7 +1213,10 @@ async fn trigger_metadata(
         .ask(TriggerSourceMetadata { source_id })
         .await
     {
-        Ok(result) if result.success => Redirect::to("/sources").into_response(),
+        Ok(result) if result.success => {
+            set_flash(&session, "success", "Metadata generation started").await;
+            Redirect::to("/sources").into_response()
+        }
         Ok(result) => {
             let error_msg = result.error.unwrap_or_else(|| "Unknown error".to_string());
             tracing::error!(error = %error_msg, "failed to generate metadata from web form");
@@ -1140,8 +1237,27 @@ async fn trigger_metadata(
     }
 }
 
-async fn downloads_page(_auth: AuthUser, State(state): State<AppState>) -> impl IntoResponse {
-    let videos = match db::list_videos(&state.pool, None).await {
+#[allow(clippy::too_many_lines)]
+async fn downloads_page(
+    _auth: AuthUser,
+    State(state): State<AppState>,
+    session: Session,
+    axum::extract::Query(query): axum::extract::Query<DownloadsQuery>,
+) -> impl IntoResponse {
+    let flash = take_flash(&session).await;
+
+    let status_filter = query.status.as_deref().and_then(|s| match s {
+        "pending" => Some(VideoStatus::Pending),
+        "downloading" => Some(VideoStatus::Downloading),
+        "completed" => Some(VideoStatus::Completed),
+        "failed" => Some(VideoStatus::Failed),
+        "skipped" => Some(VideoStatus::Skipped),
+        "cleaned" => Some(VideoStatus::Cleaned),
+        "permanently_failed" => Some(VideoStatus::PermanentlyFailed),
+        _ => None,
+    });
+
+    let mut videos = match db::list_videos(&state.pool, status_filter).await {
         Ok(data) => data,
         Err(error) => {
             tracing::error!(%error, "failed to load downloads page");
@@ -1152,9 +1268,18 @@ async fn downloads_page(_auth: AuthUser, State(state): State<AppState>) -> impl 
         }
     };
 
-    let page = layout(
+    // In-memory title search
+    if let Some(ref search) = query.search {
+        let q = search.to_lowercase();
+        videos.retain(|v| v.title.to_lowercase().contains(&q));
+    }
+
+    let current_status = query.status.as_deref().unwrap_or("all");
+
+    let page = layout_with_flash(
         "Downloads",
         NavItem::Downloads,
+        flash,
         html! {
             section class="rounded-2xl border border-slate-200 bg-white/80 p-6 shadow-sm" {
                 div class="flex items-center justify-between" {
@@ -1175,10 +1300,50 @@ async fn downloads_page(_auth: AuthUser, State(state): State<AppState>) -> impl 
                 }
             }
 
+            // Filter & search bar
             section class="mt-8 rounded-2xl border border-slate-200 bg-white/80 p-6 shadow-sm" {
-                h2 class="text-lg font-semibold text-slate-900" { "All Downloads" }
+                div class="flex flex-wrap items-center gap-4" {
+                    nav class="flex flex-wrap gap-1" {
+                        (download_status_filter_link("all", "All", current_status, query.search.as_deref()))
+                        (download_status_filter_link("pending", "Pending", current_status, query.search.as_deref()))
+                        (download_status_filter_link("downloading", "Downloading", current_status, query.search.as_deref()))
+                        (download_status_filter_link("completed", "Completed", current_status, query.search.as_deref()))
+                        (download_status_filter_link("failed", "Failed", current_status, query.search.as_deref()))
+                        (download_status_filter_link("cleaned", "Cleaned", current_status, query.search.as_deref()))
+                        (download_status_filter_link("permanently_failed", "Perm. Failed", current_status, query.search.as_deref()))
+                        (download_status_filter_link("skipped", "Skipped", current_status, query.search.as_deref()))
+                    }
+                    form method="get" action="/downloads" class="flex gap-2" {
+                        @if let Some(ref status) = query.status {
+                            input type="hidden" name="status" value=(status);
+                        }
+                        input
+                            type="text"
+                            name="search"
+                            placeholder="Search by title..."
+                            value=(query.search.as_deref().unwrap_or(""))
+                            class="rounded-lg border border-slate-300 px-3 py-1.5 text-sm text-slate-900";
+                        button type="submit"
+                            class="rounded-lg bg-slate-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-slate-700"
+                        { "Search" }
+                        @if query.search.is_some() || query.status.is_some() {
+                            a href="/downloads"
+                                class="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm font-medium text-slate-600 hover:bg-slate-50"
+                            { "Clear" }
+                        }
+                    }
+                }
+            }
+
+            section class="mt-4 rounded-2xl border border-slate-200 bg-white/80 p-6 shadow-sm" {
+                h2 class="text-lg font-semibold text-slate-900" {
+                    "Downloads"
+                    span class="ml-2 text-sm font-normal text-slate-500" {
+                        "(" (videos.len()) " results)"
+                    }
+                }
                 @if videos.is_empty() {
-                    p class="mt-3 text-sm text-slate-500" { "No downloads found yet." }
+                    p class="mt-3 text-sm text-slate-500" { "No downloads match your filters." }
                 } @else {
                     div class="mt-4 overflow-x-auto" {
                         table class="min-w-full divide-y divide-slate-200 text-sm" {
@@ -1212,14 +1377,22 @@ async fn downloads_page(_auth: AuthUser, State(state): State<AppState>) -> impl 
                                                 }
                                                 @if matches!(video.status, VideoStatus::Pending | VideoStatus::Downloading) {
                                                     form method="post" action=(format!("/downloads/{}/cancel", video.id)) {
-                                                        button class="rounded-lg border border-amber-200 bg-amber-50 px-3 py-1.5 text-xs font-medium text-amber-700 hover:bg-amber-100" type="submit" {
+                                                        button
+                                                            class="rounded-lg border border-amber-200 bg-amber-50 px-3 py-1.5 text-xs font-medium text-amber-700 hover:bg-amber-100"
+                                                            type="submit"
+                                                            onclick="return confirm('Cancel this download?')"
+                                                        {
                                                             "Cancel"
                                                         }
                                                     }
                                                 }
                                                 @if video.status == VideoStatus::Completed {
                                                     form method="post" action=(format!("/downloads/{}/delete", video.id)) {
-                                                        button class="rounded-lg border border-rose-200 bg-rose-50 px-3 py-1.5 text-xs font-medium text-rose-700 hover:bg-rose-100" type="submit" {
+                                                        button
+                                                            class="rounded-lg border border-rose-200 bg-rose-50 px-3 py-1.5 text-xs font-medium text-rose-700 hover:bg-rose-100"
+                                                            type="submit"
+                                                            onclick="return confirm('Delete this video? The file will be removed from disk.')"
+                                                        {
                                                             "Delete"
                                                         }
                                                     }
@@ -1243,6 +1416,7 @@ async fn downloads_page(_auth: AuthUser, State(state): State<AppState>) -> impl 
 async fn retry_download(
     _auth: AuthUser,
     State(state): State<AppState>,
+    session: Session,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     let Ok(video_id) = Ulid::from_string(id.trim()) else {
@@ -1353,7 +1527,10 @@ async fn retry_download(
         })
         .await
     {
-        Ok(()) => Redirect::to("/downloads").into_response(),
+        Ok(()) => {
+            set_flash(&session, "info", "Download re-queued").await;
+            Redirect::to("/downloads").into_response()
+        }
         Err(error) => {
             tracing::error!(%error, "failed to enqueue retry download");
             (
@@ -1368,6 +1545,7 @@ async fn retry_download(
 async fn cancel_download(
     _auth: AuthUser,
     State(state): State<AppState>,
+    session: Session,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     let Ok(video_id) = Ulid::from_string(id.trim()) else {
@@ -1407,7 +1585,10 @@ async fn cancel_download(
     let cancel_result = state.supervisor.ask(CancelDownload { video_id }).await;
 
     match cancel_result {
-        Ok(()) => Redirect::to("/downloads").into_response(),
+        Ok(()) => {
+            set_flash(&session, "info", "Download cancelled").await;
+            Redirect::to("/downloads").into_response()
+        }
         Err(error) => {
             tracing::error!(%error, "failed to cancel download");
             (
@@ -1422,6 +1603,7 @@ async fn cancel_download(
 async fn delete_download(
     _auth: AuthUser,
     State(state): State<AppState>,
+    session: Session,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     let Ok(video_id) = Ulid::from_string(id.trim()) else {
@@ -1482,20 +1664,24 @@ async fn delete_download(
 
     #[allow(clippy::cast_precision_loss)]
     let size_mb = video.file_size_bytes.unwrap_or(0) as f64 / 1_048_576.0;
+    let title = &video.title;
     db::log_activity(
         &state.pool,
         ActivityEventType::VideoCleaned,
         ActivitySeverity::Info,
-        &format!(
-            "Manually deleted \"{}\" ({size_mb:.1} MB freed)",
-            video.title
-        ),
+        &format!("Manually deleted \"{title}\" ({size_mb:.1} MB freed)"),
         None,
         Some(video_id),
         None,
     )
     .await;
 
+    set_flash(
+        &session,
+        "success",
+        &format!("\"{title}\" deleted ({size_mb:.1} MB freed)"),
+    )
+    .await;
     Redirect::to("/downloads").into_response()
 }
 
@@ -1631,6 +1817,35 @@ async fn activity_page(
     (StatusCode::OK, page)
 }
 
+fn download_status_filter_link(
+    value: &str,
+    label: &str,
+    current: &str,
+    search: Option<&str>,
+) -> Markup {
+    let active = value == current;
+    let classes = if active {
+        "rounded-full bg-slate-900 px-3 py-1 text-xs font-medium text-white"
+    } else {
+        "rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-600 hover:bg-slate-200"
+    };
+    let mut href = if value == "all" {
+        "/downloads".to_string()
+    } else {
+        format!("/downloads?status={value}")
+    };
+    if let Some(q) = search.filter(|q| !q.is_empty()) {
+        let sep = if href.contains('?') { '&' } else { '?' };
+        href.push(sep);
+        href.push_str("search=");
+        href.push_str(q);
+    }
+
+    html! {
+        a class=(classes) href=(href) { (label) }
+    }
+}
+
 fn severity_filter_link(value: &str, label: &str, current: &str) -> Markup {
     let active = value == current;
     let classes = if active {
@@ -1713,7 +1928,12 @@ struct ScheduleEntry {
     is_overdue: bool,
 }
 
-async fn schedule_page(_auth: AuthUser, State(state): State<AppState>) -> impl IntoResponse {
+async fn schedule_page(
+    _auth: AuthUser,
+    State(state): State<AppState>,
+    session: Session,
+) -> impl IntoResponse {
+    let flash = take_flash(&session).await;
     let (sources_result, profiles_result, recent_activity_result, cleanup_status) = tokio::join!(
         db::list_sources(&state.pool),
         db::list_profiles(&state.pool),
@@ -1780,9 +2000,10 @@ async fn schedule_page(_auth: AuthUser, State(state): State<AppState>) -> impl I
             .then_with(|| a.next_index_at.cmp(&b.next_index_at))
     });
 
-    let page = layout(
+    let page = layout_with_flash(
         "Schedule",
         NavItem::Schedule,
+        flash,
         html! {
             (cleanup_status_section(cleanup_status.ok().as_ref(), now))
 
@@ -1822,7 +2043,11 @@ fn cleanup_status_section(
                     }
                 }
                 form method="post" action="/schedule/cleanup" {
-                    button class="rounded-lg border border-sky-200 bg-sky-50 px-4 py-2 text-sm font-medium text-sky-700 hover:bg-sky-100" type="submit" {
+                    button
+                        class="rounded-lg border border-sky-200 bg-sky-50 px-4 py-2 text-sm font-medium text-sky-700 hover:bg-sky-100"
+                        type="submit"
+                        onclick="return confirm('Run cleanup now? This will delete files past their retention period.')"
+                    {
                         "Run Now"
                     }
                 }
@@ -2080,7 +2305,12 @@ fn profile_editor(profile: &Profile) -> Markup {
                     button class="rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-700" type="submit" {
                         "Save Profile"
                     }
-                    button class="rounded-lg border border-rose-200 bg-rose-50 px-4 py-2 text-sm font-medium text-rose-700 hover:bg-rose-100" type="submit" formaction={(format!("/profiles/{}/delete", profile.id))} {
+                    button
+                        class="rounded-lg border border-rose-200 bg-rose-50 px-4 py-2 text-sm font-medium text-rose-700 hover:bg-rose-100"
+                        type="submit"
+                        formaction={(format!("/profiles/{}/delete", profile.id))}
+                        onclick="return confirm('Delete this profile? This cannot be undone.')"
+                    {
                         "Delete"
                     }
                 }
@@ -2150,7 +2380,12 @@ fn source_editor(source: &Source) -> Markup {
                     button class="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-2 text-sm font-medium text-emerald-700 hover:bg-emerald-100" type="submit" formaction={(format!("/sources/{}/metadata", source.id))} {
                         "Trigger Image Download"
                     }
-                    button class="rounded-lg border border-rose-200 bg-rose-50 px-4 py-2 text-sm font-medium text-rose-700 hover:bg-rose-100" type="submit" formaction={(format!("/sources/{}/delete", source.id))} {
+                    button
+                        class="rounded-lg border border-rose-200 bg-rose-50 px-4 py-2 text-sm font-medium text-rose-700 hover:bg-rose-100"
+                        type="submit"
+                        formaction={(format!("/sources/{}/delete", source.id))}
+                        onclick="return confirm('Delete this source? This cannot be undone.')"
+                    {
                         "Delete"
                     }
                 }
@@ -2454,6 +2689,16 @@ fn error_page(message: &str) -> Markup {
 }
 
 fn layout(title: &str, active: NavItem, content: impl Render) -> Markup {
+    layout_with_flash(title, active, None, content)
+}
+
+#[allow(clippy::needless_pass_by_value)]
+fn layout_with_flash(
+    title: &str,
+    active: NavItem,
+    flash: Option<FlashMessage>,
+    content: impl Render,
+) -> Markup {
     let heading = format!("{title} · Hofvarpnir");
     html! {
         (DOCTYPE)
@@ -2468,6 +2713,20 @@ fn layout(title: &str, active: NavItem, content: impl Render) -> Markup {
                 script src="https://unpkg.com/htmx-ext-sse@2.2.2/sse.js" defer {}
             }
             body class="min-h-full bg-gradient-to-b from-slate-100 via-slate-50 to-white text-slate-900" {
+                // Toast notification
+                @if let Some(ref flash) = flash {
+                    @let flash_classes = match flash.level.as_str() {
+                        "success" => "bg-emerald-100 text-emerald-900 border-emerald-200",
+                        "error" => "bg-rose-100 text-rose-900 border-rose-200",
+                        _ => "bg-sky-100 text-sky-900 border-sky-200",
+                    };
+                    div id="toast"
+                        class=(format!("fixed top-4 right-4 z-50 rounded-lg border px-4 py-3 text-sm font-medium shadow-lg transition-opacity duration-300 {flash_classes}"))
+                    {
+                        (flash.message)
+                    }
+                }
+
                 div class="mx-auto flex min-h-screen w-full max-w-7xl flex-col px-4 py-8 sm:px-6 lg:px-8" {
                     header class="mb-8 rounded-2xl border border-slate-200 bg-white/80 p-5 shadow-sm backdrop-blur" {
                         div class="flex flex-wrap items-center justify-between gap-4" {
@@ -2495,18 +2754,35 @@ fn layout(title: &str, active: NavItem, content: impl Render) -> Markup {
                     }
                     main class="flex-1" { (content) }
                 }
-                (PreEscaped(
-                    r"<script>
-                    document.body.addEventListener('htmx:sseMessage', function (event) {
-                      const feed = document.getElementById('download-progress-feed');
-                      if (!feed) return;
-                      const placeholder = feed.querySelector('p');
-                      if (placeholder) {
-                        placeholder.remove();
+                (PreEscaped(r"<script>
+                    // Auto-dismiss toast
+                    (function() {
+                      var t = document.getElementById('toast');
+                      if (t) {
+                        setTimeout(function() { t.style.opacity = '0'; }, 3500);
+                        setTimeout(function() { t.remove(); }, 4000);
                       }
+                    })();
+
+                    // SSE placeholder removal
+                    document.body.addEventListener('htmx:sseMessage', function (event) {
+                      var feed = document.getElementById('download-progress-feed');
+                      if (!feed) return;
+                      var placeholder = feed.querySelector('p');
+                      if (placeholder) placeholder.remove();
                     });
-                    </script>",
-                ))
+
+                    // Loading state on form submit
+                    document.addEventListener('submit', function(e) {
+                      var form = e.target;
+                      if (form.tagName !== 'FORM') return;
+                      var btn = e.submitter;
+                      if (!btn || btn.disabled) return;
+                      btn.disabled = true;
+                      btn.dataset.originalText = btn.textContent;
+                      btn.textContent = 'Working\u2026';
+                    });
+                    </script>"))
             }
         }
     }
