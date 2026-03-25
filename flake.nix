@@ -217,7 +217,6 @@
             };
           };
         };
-
       };
 
       # to use other shells, run:
@@ -258,6 +257,7 @@
           ffmpeg
           yt-dlp
           claude-code
+          trivy
         ];
         shellHook = ''
           lefthook install

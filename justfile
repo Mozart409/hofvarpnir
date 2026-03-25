@@ -92,3 +92,6 @@ ci: clear
 
 build-oci: clear
     nix build .#container
+
+trivy: clear build-oci
+    trivy image --input result --scanners vuln
