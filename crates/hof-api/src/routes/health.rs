@@ -5,6 +5,7 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::{Json, Router};
+use hof_core::domain::system::{IssueSeverity, SystemIssue};
 use serde::Serialize;
 use utoipa::ToSchema;
 
@@ -19,6 +20,9 @@ pub struct HealthResponse {
     pub database: ComponentHealth,
     /// yt-dlp availability status.
     pub ytdlp: ComponentHealth,
+    /// System issues detected during startup or runtime.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub issues: Vec<SystemIssue>,
 }
 
 /// Overall health status.
@@ -67,20 +71,25 @@ pub fn router() -> Router<AppState> {
 pub async fn health_check(State(state): State<AppState>) -> impl IntoResponse {
     let db_health = check_database(&state).await;
     let ytdlp_health = check_ytdlp().await;
+    let issues: Vec<SystemIssue> = state.startup_issues.to_vec();
 
-    let status = if db_health.healthy && ytdlp_health.healthy {
-        HealthStatus::Healthy
-    } else if db_health.healthy {
-        // Database works, yt-dlp issues are degraded (can still serve API)
+    // Check if any issues are errors (vs warnings)
+    let has_error_issues = issues.iter().any(|i| i.severity == IssueSeverity::Error);
+
+    let status = if !db_health.healthy {
+        HealthStatus::Unhealthy
+    } else if !ytdlp_health.healthy || has_error_issues {
+        // Database works, but yt-dlp issues or startup errors = degraded
         HealthStatus::Degraded
     } else {
-        HealthStatus::Unhealthy
+        HealthStatus::Healthy
     };
 
     let response = HealthResponse {
         status: status.clone(),
         database: db_health,
         ytdlp: ytdlp_health,
+        issues,
     };
 
     let status_code = if status == HealthStatus::Unhealthy {
