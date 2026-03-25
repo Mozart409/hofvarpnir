@@ -28,6 +28,7 @@ use hof_core::{
         activity::{ActivityEventType, ActivitySeverity},
         profile::{Profile, Quality},
         source::{Source, SourceType},
+        system::IssueSeverity,
         video::{DownloadProgress, VideoStatus},
     },
     ytdlp::validate_output_template,
@@ -219,6 +220,7 @@ pub fn router(state: AppState) -> Router {
         .route("/downloads/{id}/cancel", post(cancel_download))
         .route("/downloads/{id}/delete", post(delete_download))
         .route("/web/downloads/progress", get(download_progress_sse))
+        .route("/web/system-banner", get(system_banner))
         .route("/activity", get(activity_page))
         .route("/schedule", get(schedule_page))
         .route("/schedule/cleanup", post(trigger_cleanup))
@@ -1710,6 +1712,56 @@ async fn download_progress_sse(
     )
 }
 
+/// Returns an HTML fragment for the system issues banner.
+/// If there are no issues, returns an empty response.
+async fn system_banner(State(state): State<AppState>) -> impl IntoResponse {
+    let issues = &state.startup_issues;
+
+    if issues.is_empty() {
+        return html! {}.into_response();
+    }
+
+    // Find the most severe issue level
+    let has_errors = issues.iter().any(|i| i.severity == IssueSeverity::Error);
+    let (bg_class, border_class, text_class, icon) = if has_errors {
+        (
+            "bg-rose-50",
+            "border-rose-200",
+            "text-rose-800",
+            "⚠", // Warning sign
+        )
+    } else {
+        (
+            "bg-amber-50",
+            "border-amber-200",
+            "text-amber-800",
+            "⚡", // Lightning for warning
+        )
+    };
+
+    html! {
+        div
+            id="system-banner"
+            class=(format!("mb-4 rounded-xl border {border_class} {bg_class} p-4 shadow-sm"))
+        {
+            div class="flex items-start gap-3" {
+                span class="text-xl" { (icon) }
+                div class="flex-1" {
+                    h3 class=(format!("font-semibold {text_class}")) {
+                        "System Issues Detected"
+                    }
+                    ul class=(format!("mt-1 list-inside list-disc text-sm {text_class}")) {
+                        @for issue in issues.iter() {
+                            li { (issue.message) }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    .into_response()
+}
+
 // ============================================================================
 // Activity Page
 // ============================================================================
@@ -2728,6 +2780,13 @@ fn layout_with_flash(
                 }
 
                 div class="mx-auto flex min-h-screen w-full max-w-7xl flex-col px-4 py-8 sm:px-6 lg:px-8" {
+                    // System issues banner (loaded via htmx on page load)
+                    div
+                        hx-get="/web/system-banner"
+                        hx-trigger="load"
+                        hx-swap="innerHTML"
+                    {}
+
                     header class="mb-8 rounded-2xl border border-slate-200 bg-white/80 p-5 shadow-sm backdrop-blur" {
                         div class="flex flex-wrap items-center justify-between gap-4" {
                             div {

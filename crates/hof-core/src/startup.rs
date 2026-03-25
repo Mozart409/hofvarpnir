@@ -12,7 +12,7 @@ use std::sync::Arc;
 use color_eyre::eyre::{Result, WrapErr};
 use sqlx::PgPool;
 use tokio::sync::mpsc;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::actors::cleanup::{CleanupActor, CleanupActorArgs, CleanupPartFiles};
 use crate::actors::download_supervisor::{
@@ -22,6 +22,7 @@ use crate::actors::jellyfin_metadata::{JellyfinMetadataActor, JellyfinMetadataAc
 use crate::actors::scheduler::{SchedulerActor, SchedulerArgs};
 use crate::config::Config;
 use crate::db;
+use crate::domain::system::SystemIssue;
 use crate::domain::video::DownloadProgress;
 use crate::ytdlp::YtdlpClient;
 
@@ -39,6 +40,8 @@ pub struct ActorSystem {
     pub jellyfin_metadata: ActorRef<JellyfinMetadataActor>,
     /// Channel receiver for download progress updates.
     pub progress_rx: mpsc::Receiver<DownloadProgress>,
+    /// Issues detected during startup (non-fatal warnings/errors).
+    pub startup_issues: Vec<SystemIssue>,
 }
 
 /// Initialize the actor system and perform crash recovery.
@@ -56,6 +59,8 @@ pub struct ActorSystem {
 pub async fn initialize(pool: PgPool, config: &Config) -> Result<ActorSystem> {
     info!("Initializing actor system");
 
+    let mut startup_issues = Vec::new();
+
     // Phase 0: Ensure output directory exists
     tokio::fs::create_dir_all(&config.storage.default_output_dir)
         .await
@@ -65,10 +70,11 @@ pub async fn initialize(pool: PgPool, config: &Config) -> Result<ActorSystem> {
                 config.storage.default_output_dir.display()
             )
         })?;
-    info!(
-        output_dir = %config.storage.default_output_dir.display(),
-        "Output directory ready"
-    );
+
+    // Check write permissions
+    if let Some(issue) = verify_output_dir_writable(&config.storage.default_output_dir).await {
+        startup_issues.push(issue);
+    }
 
     // Phase 0.5: Ensure TMPDIR is valid (nix-shell sets TMPDIR to a session-specific
     // directory that may not exist after a restart). The yt-dlp crate uses tempfile
@@ -125,7 +131,14 @@ pub async fn initialize(pool: PgPool, config: &Config) -> Result<ActorSystem> {
         .await
         .wrap_err("Failed to clean up part files")?;
 
-    info!("Actor system initialized successfully");
+    if startup_issues.is_empty() {
+        info!("Actor system initialized successfully");
+    } else {
+        warn!(
+            issue_count = startup_issues.len(),
+            "Actor system initialized with issues"
+        );
+    }
 
     Ok(ActorSystem {
         supervisor,
@@ -133,6 +146,7 @@ pub async fn initialize(pool: PgPool, config: &Config) -> Result<ActorSystem> {
         cleanup,
         jellyfin_metadata,
         progress_rx,
+        startup_issues,
     })
 }
 
@@ -265,6 +279,40 @@ fn start_jellyfin_metadata(pool: PgPool) -> ActorRef<JellyfinMetadataActor> {
 
     info!("Jellyfin metadata actor started");
     jellyfin_metadata
+}
+
+/// Verify that the output directory is writable.
+///
+/// Attempts to create and delete a temporary file in the directory.
+/// Returns a `SystemIssue` if the directory is not writable.
+async fn verify_output_dir_writable(dir: &Path) -> Option<SystemIssue> {
+    use ulid::Ulid;
+
+    let test_file = dir.join(format!(".write_test_{}", Ulid::new()));
+
+    match tokio::fs::write(&test_file, b"test").await {
+        Ok(()) => {
+            // Clean up test file
+            if let Err(e) = tokio::fs::remove_file(&test_file).await {
+                warn!(
+                    path = %test_file.display(),
+                    error = %e,
+                    "Failed to remove write test file"
+                );
+            }
+            info!(dir = %dir.display(), "Output directory ready");
+            None
+        }
+        Err(e) => {
+            let message = format!(
+                "Output directory '{}' is not writable: {}. Downloads will fail until this is resolved.",
+                dir.display(),
+                e
+            );
+            error!(dir = %dir.display(), error = %e, "Output directory is not writable");
+            Some(SystemIssue::error("output_dir_not_writable", message))
+        }
+    }
 }
 
 /// Verify that the yt-dlp binary exists and is executable.

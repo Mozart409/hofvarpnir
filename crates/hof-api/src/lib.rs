@@ -12,10 +12,13 @@
 pub mod routes;
 
 use axum::{Json, Router, routing::get};
+use std::sync::Arc;
+
 use hof_core::actors::cleanup::CleanupActor;
 use hof_core::actors::download_supervisor::DownloadSupervisor;
 use hof_core::actors::jellyfin_metadata::JellyfinMetadataActor;
 use hof_core::actors::scheduler::SchedulerActor;
+use hof_core::domain::system::SystemIssue;
 use hof_core::domain::video::DownloadProgress;
 use kameo::actor::ActorRef;
 use sqlx::PgPool;
@@ -40,18 +43,21 @@ pub struct AppState {
     pub cleanup: ActorRef<CleanupActor>,
     /// Broadcast channel for download progress updates (for SSE).
     pub progress_tx: broadcast::Sender<DownloadProgress>,
+    /// Issues detected during startup (non-fatal warnings/errors).
+    pub startup_issues: Arc<[SystemIssue]>,
 }
 
 impl AppState {
     /// Create a new `AppState`.
     #[must_use]
-    pub const fn new(
+    pub fn new(
         pool: PgPool,
         supervisor: ActorRef<DownloadSupervisor>,
         scheduler: ActorRef<SchedulerActor>,
         jellyfin_metadata: ActorRef<JellyfinMetadataActor>,
         cleanup: ActorRef<CleanupActor>,
         progress_tx: broadcast::Sender<DownloadProgress>,
+        startup_issues: Vec<SystemIssue>,
     ) -> Self {
         Self {
             pool,
@@ -60,6 +66,7 @@ impl AppState {
             jellyfin_metadata,
             cleanup,
             progress_tx,
+            startup_issues: startup_issues.into(),
         }
     }
 }
@@ -131,6 +138,8 @@ impl AppState {
         hof_core::domain::video::VideoStatus,
         hof_core::domain::activity::ActivityEventType,
         hof_core::domain::activity::ActivitySeverity,
+        hof_core::domain::system::SystemIssue,
+        hof_core::domain::system::IssueSeverity,
     )),
     tags(
         (name = "health", description = "Health check endpoints"),

@@ -53,6 +53,7 @@ async fn main() {
         actor_system.jellyfin_metadata.clone(),
         actor_system.cleanup.clone(),
         progress_tx,
+        std::mem::take(&mut actor_system.startup_issues),
     );
 
     // Create session layer
