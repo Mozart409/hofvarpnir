@@ -356,40 +356,40 @@ fn login_form(error: Option<&str>) -> Markup {
     html! {
         form method="post" action="/login" class="space-y-6" {
             @if let Some(err) = error {
-                div class="rounded-lg bg-red-50 border border-red-200 p-4 text-sm text-red-700" {
+                div class="rounded-lg bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-800 p-4 text-sm text-red-700 dark:text-red-300" {
                     (err)
                 }
             }
             div {
-                label for="email" class="block text-sm font-medium text-slate-700 mb-1" { "Email" }
+                label for="email" class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1" { "Email" }
                 input
                     type="email"
                     id="email"
                     name="email"
                     required
-                    class="w-full rounded-lg border border-slate-300 px-4 py-2.5 text-slate-900 placeholder-slate-400 focus:border-slate-500 focus:ring-1 focus:ring-slate-500"
+                    class="w-full rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 px-4 py-2.5 text-slate-900 dark:text-slate-100 placeholder-slate-400 dark:placeholder-slate-500 focus:border-slate-500 dark:focus:border-slate-400 focus:ring-1 focus:ring-slate-500 dark:focus:ring-slate-400"
                     placeholder="you@example.com";
             }
             div {
-                label for="password" class="block text-sm font-medium text-slate-700 mb-1" { "Password" }
+                label for="password" class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1" { "Password" }
                 input
                     type="password"
                     id="password"
                     name="password"
                     required
-                    class="w-full rounded-lg border border-slate-300 px-4 py-2.5 text-slate-900 placeholder-slate-400 focus:border-slate-500 focus:ring-1 focus:ring-slate-500"
+                    class="w-full rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 px-4 py-2.5 text-slate-900 dark:text-slate-100 placeholder-slate-400 dark:placeholder-slate-500 focus:border-slate-500 dark:focus:border-slate-400 focus:ring-1 focus:ring-slate-500 dark:focus:ring-slate-400"
                     placeholder="••••••••";
             }
             button
                 type="submit"
-                class="w-full rounded-lg bg-slate-900 px-4 py-2.5 text-sm font-medium text-white hover:bg-slate-800 transition"
+                class="w-full rounded-lg bg-slate-900 dark:bg-slate-100 px-4 py-2.5 text-sm font-medium text-white dark:text-slate-900 hover:bg-slate-800 dark:hover:bg-slate-200 transition"
             {
                 "Sign In"
             }
         }
-        p class="mt-6 text-center text-sm text-slate-600" {
+        p class="mt-6 text-center text-sm text-slate-600 dark:text-slate-400" {
             "Don't have an account? "
-            a href="/register" class="font-medium text-slate-900 hover:underline" { "Register" }
+            a href="/register" class="font-medium text-slate-900 dark:text-slate-100 hover:underline" { "Register" }
         }
     }
 }
@@ -398,62 +398,62 @@ fn register_form(error: Option<&str>) -> Markup {
     html! {
         form method="post" action="/register" class="space-y-6" {
             @if let Some(err) = error {
-                div class="rounded-lg bg-red-50 border border-red-200 p-4 text-sm text-red-700" {
+                div class="rounded-lg bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-800 p-4 text-sm text-red-700 dark:text-red-300" {
                     (err)
                 }
             }
             div {
-                label for="name" class="block text-sm font-medium text-slate-700 mb-1" { "Name" }
+                label for="name" class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1" { "Name" }
                 input
                     type="text"
                     id="name"
                     name="name"
                     required
-                    class="w-full rounded-lg border border-slate-300 px-4 py-2.5 text-slate-900 placeholder-slate-400 focus:border-slate-500 focus:ring-1 focus:ring-slate-500"
+                    class="w-full rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 px-4 py-2.5 text-slate-900 dark:text-slate-100 placeholder-slate-400 dark:placeholder-slate-500 focus:border-slate-500 dark:focus:border-slate-400 focus:ring-1 focus:ring-slate-500 dark:focus:ring-slate-400"
                     placeholder="Your name";
             }
             div {
-                label for="email" class="block text-sm font-medium text-slate-700 mb-1" { "Email" }
+                label for="email" class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1" { "Email" }
                 input
                     type="email"
                     id="email"
                     name="email"
                     required
-                    class="w-full rounded-lg border border-slate-300 px-4 py-2.5 text-slate-900 placeholder-slate-400 focus:border-slate-500 focus:ring-1 focus:ring-slate-500"
+                    class="w-full rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 px-4 py-2.5 text-slate-900 dark:text-slate-100 placeholder-slate-400 dark:placeholder-slate-500 focus:border-slate-500 dark:focus:border-slate-400 focus:ring-1 focus:ring-slate-500 dark:focus:ring-slate-400"
                     placeholder="you@example.com";
             }
             div {
-                label for="password" class="block text-sm font-medium text-slate-700 mb-1" { "Password" }
+                label for="password" class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1" { "Password" }
                 input
                     type="password"
                     id="password"
                     name="password"
                     required
                     minlength="8"
-                    class="w-full rounded-lg border border-slate-300 px-4 py-2.5 text-slate-900 placeholder-slate-400 focus:border-slate-500 focus:ring-1 focus:ring-slate-500"
+                    class="w-full rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 px-4 py-2.5 text-slate-900 dark:text-slate-100 placeholder-slate-400 dark:placeholder-slate-500 focus:border-slate-500 dark:focus:border-slate-400 focus:ring-1 focus:ring-slate-500 dark:focus:ring-slate-400"
                     placeholder="••••••••";
             }
             div {
-                label for="password_confirm" class="block text-sm font-medium text-slate-700 mb-1" { "Confirm Password" }
+                label for="password_confirm" class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1" { "Confirm Password" }
                 input
                     type="password"
                     id="password_confirm"
                     name="password_confirm"
                     required
                     minlength="8"
-                    class="w-full rounded-lg border border-slate-300 px-4 py-2.5 text-slate-900 placeholder-slate-400 focus:border-slate-500 focus:ring-1 focus:ring-slate-500"
+                    class="w-full rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 px-4 py-2.5 text-slate-900 dark:text-slate-100 placeholder-slate-400 dark:placeholder-slate-500 focus:border-slate-500 dark:focus:border-slate-400 focus:ring-1 focus:ring-slate-500 dark:focus:ring-slate-400"
                     placeholder="••••••••";
             }
             button
                 type="submit"
-                class="w-full rounded-lg bg-slate-900 px-4 py-2.5 text-sm font-medium text-white hover:bg-slate-800 transition"
+                class="w-full rounded-lg bg-slate-900 dark:bg-slate-100 px-4 py-2.5 text-sm font-medium text-white dark:text-slate-900 hover:bg-slate-800 dark:hover:bg-slate-200 transition"
             {
                 "Create Account"
             }
         }
-        p class="mt-6 text-center text-sm text-slate-600" {
+        p class="mt-6 text-center text-sm text-slate-600 dark:text-slate-400" {
             "Already have an account? "
-            a href="/login" class="font-medium text-slate-900 hover:underline" { "Sign In" }
+            a href="/login" class="font-medium text-slate-900 dark:text-slate-100 hover:underline" { "Sign In" }
         }
     }
 }
@@ -469,15 +469,33 @@ fn auth_layout(title: &str, content: impl Render) -> Markup {
                 title { (heading) }
                 link rel="icon" href="https://fav.farm/🔥";
                 link rel="stylesheet" href="/assets/app.css";
+                // Dark mode initialization (runs before body renders to prevent flash)
+                (PreEscaped(r"<script>
+                    (function() {
+                        var stored = localStorage.getItem('darkMode');
+                        if (stored === 'true' || (stored === null && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+                            document.documentElement.classList.add('dark');
+                        }
+                    })();
+                </script>"))
             }
-            body class="min-h-full bg-gradient-to-b from-slate-100 via-slate-50 to-white text-slate-900" {
+            body class="min-h-full bg-gradient-to-b from-slate-100 via-slate-50 to-white dark:from-slate-900 dark:via-slate-900 dark:to-slate-950 text-slate-900 dark:text-slate-100" {
                 div class="flex min-h-screen items-center justify-center px-4 py-12" {
                     div class="w-full max-w-md" {
                         div class="mb-8 text-center" {
-                            p class="text-xs uppercase tracking-[0.2em] text-slate-500" { "Hofvarpnir" }
-                            h1 class="text-2xl font-semibold text-slate-900" { (title) }
+                            // Dark mode toggle for auth pages
+                            button
+                                type="button"
+                                class="absolute top-4 right-4 inline-flex items-center rounded-full bg-slate-100 dark:bg-slate-700 px-3 py-1.5 text-sm font-medium text-slate-600 dark:text-slate-300 transition hover:bg-slate-200 dark:hover:bg-slate-600"
+                                onclick="(function(){ var h=document.documentElement; var d=h.classList.toggle('dark'); localStorage.setItem('darkMode',d); })()"
+                            {
+                                span class="dark:hidden" { "🌙" }
+                                span class="hidden dark:inline" { "☀️" }
+                            }
+                            p class="text-xs uppercase tracking-[0.2em] text-slate-500 dark:text-slate-400" { "Hofvarpnir" }
+                            h1 class="text-2xl font-semibold text-slate-900 dark:text-slate-100" { (title) }
                         }
-                        div class="rounded-2xl border border-slate-200 bg-white/80 p-8 shadow-sm backdrop-blur" {
+                        div class="rounded-2xl border border-slate-200 dark:border-slate-700 bg-white/80 dark:bg-slate-800/80 p-8 shadow-sm backdrop-blur" {
                             (content)
                         }
                     }
@@ -571,17 +589,17 @@ async fn dashboard_page(
                 (metric_card("Completed", completed, "Successfully archived videos"))
                 (metric_card("Failed", failed, "Need retry or manual check"))
             }
-            section class="mt-8 rounded-2xl border border-slate-200 bg-white/80 p-6 shadow-sm" {
-                h2 class="text-lg font-semibold text-slate-900" { "Recent Downloads" }
+            section class="mt-8 rounded-2xl border border-slate-200 dark:border-slate-700 bg-white/80 dark:bg-slate-800/80 p-6 shadow-sm" {
+                h2 class="text-lg font-semibold text-slate-900 dark:text-slate-100" { "Recent Downloads" }
                 @if recent.is_empty() {
-                    p class="mt-3 text-sm text-slate-500" { "No downloads found yet." }
+                    p class="mt-3 text-sm text-slate-500 dark:text-slate-400" { "No downloads found yet." }
                 } @else {
                     ul class="mt-4 space-y-3" {
                         @for video in recent {
-                            li class="flex items-center justify-between gap-3 rounded-xl border border-slate-100 bg-slate-50/80 px-3 py-2" {
+                            li class="flex items-center justify-between gap-3 rounded-xl border border-slate-100 dark:border-slate-700 bg-slate-50/80 dark:bg-slate-800/80 px-3 py-2" {
                                 div class="min-w-0" {
-                                    p class="truncate text-sm font-medium text-slate-900" { (video.title) }
-                                    p class="text-xs text-slate-500" { (video.platform) " / " (video.platform_video_id) }
+                                    p class="truncate text-sm font-medium text-slate-900 dark:text-slate-100" { (video.title) }
+                                    p class="text-xs text-slate-500 dark:text-slate-400" { (video.platform) " / " (video.platform_video_id) }
                                 }
                                 (status_badge(&video.status))
                             }
@@ -618,12 +636,12 @@ async fn profiles_page(
         NavItem::Profiles,
         flash,
         html! {
-            section class="rounded-2xl border border-slate-200 bg-white/80 p-6 shadow-sm" {
-                h2 class="text-lg font-semibold text-slate-900" { "Create Profile" }
+            section class="rounded-2xl border border-slate-200 dark:border-slate-700 bg-white/80 dark:bg-slate-800/80 p-6 shadow-sm" {
+                h2 class="text-lg font-semibold text-slate-900 dark:text-slate-100" { "Create Profile" }
                 form class="mt-4 grid gap-4 md:grid-cols-2" method="post" action="/profiles" {
                     div {
-                        label class="block text-sm font-medium text-slate-700" for="quality" { "Quality" }
-                        select class="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-900 shadow-sm" name="quality" id="quality" required {
+                        label class="block text-sm font-medium text-slate-700 dark:text-slate-300" for="quality" { "Quality" }
+                        select class="mt-1 w-full rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 px-3 py-2 text-sm text-slate-900 dark:text-slate-100 shadow-sm" name="quality" id="quality" required {
                             @for quality in quality_options() {
                                 option value=(quality.value) { (quality.label) }
                             }
@@ -635,25 +653,25 @@ async fn profiles_page(
                     (input_number("Storage Quota (GB)", "storage_quota_gb", "100", true, "100"))
                     (input_number("Retention Days", "retention_days", "Optional", false, ""))
                     div class="flex items-center gap-4" {
-                        label class="inline-flex items-center gap-2 text-sm text-slate-700" {
+                        label class="inline-flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300" {
                             input type="checkbox" name="include_livestreams";
                             "Include Livestream VODs"
                         }
-                        label class="inline-flex items-center gap-2 text-sm text-slate-700" {
+                        label class="inline-flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300" {
                             input type="checkbox" name="include_shorts";
                             "Include Shorts"
                         }
                     }
                     div class="md:col-span-2" {
-                        button class="inline-flex items-center rounded-lg bg-sky-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-sky-700" type="submit" { "Create Profile" }
+                        button class="inline-flex items-center rounded-lg bg-sky-600 dark:bg-sky-500 px-4 py-2 text-sm font-medium text-white transition hover:bg-sky-700 dark:hover:bg-sky-600" type="submit" { "Create Profile" }
                     }
                 }
             }
 
-            section class="mt-8 rounded-2xl border border-slate-200 bg-white/80 p-6 shadow-sm" {
-                h2 class="text-lg font-semibold text-slate-900" { "Existing Profiles" }
+            section class="mt-8 rounded-2xl border border-slate-200 dark:border-slate-700 bg-white/80 dark:bg-slate-800/80 p-6 shadow-sm" {
+                h2 class="text-lg font-semibold text-slate-900 dark:text-slate-100" { "Existing Profiles" }
                 @if profiles.is_empty() {
-                    p class="mt-3 text-sm text-slate-500" { "No profiles yet." }
+                    p class="mt-3 text-sm text-slate-500 dark:text-slate-400" { "No profiles yet." }
                 } @else {
                     div class="mt-4 space-y-4" {
                         @for profile in &profiles {
@@ -877,12 +895,12 @@ async fn sources_page(
         NavItem::Sources,
         flash,
         html! {
-            section class="rounded-2xl border border-slate-200 bg-white/80 p-6 shadow-sm" {
-                h2 class="text-lg font-semibold text-slate-900" { "Create Source" }
+            section class="rounded-2xl border border-slate-200 dark:border-slate-700 bg-white/80 dark:bg-slate-800/80 p-6 shadow-sm" {
+                h2 class="text-lg font-semibold text-slate-900 dark:text-slate-100" { "Create Source" }
                 form class="mt-4 grid gap-4 md:grid-cols-2" method="post" action="/sources" {
                     div {
-                        label class="block text-sm font-medium text-slate-700" for="profile_id" { "Profile" }
-                        select class="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-900 shadow-sm" name="profile_id" id="profile_id" required {
+                        label class="block text-sm font-medium text-slate-700 dark:text-slate-300" for="profile_id" { "Profile" }
+                        select class="mt-1 w-full rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 px-3 py-2 text-sm text-slate-900 dark:text-slate-100 shadow-sm" name="profile_id" id="profile_id" required {
                             @for profile in &profiles {
                                 option value=(profile.id.to_string()) {
                                     (profile.name) " (" (profile.id.to_string()) ")"
@@ -891,8 +909,8 @@ async fn sources_page(
                         }
                     }
                     div {
-                        label class="block text-sm font-medium text-slate-700" for="source_type" { "Source Type" }
-                        select class="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-900 shadow-sm" name="source_type" id="source_type" required {
+                        label class="block text-sm font-medium text-slate-700 dark:text-slate-300" for="source_type" { "Source Type" }
+                        select class="mt-1 w-full rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 px-3 py-2 text-sm text-slate-900 dark:text-slate-100 shadow-sm" name="source_type" id="source_type" required {
                             option value="channel" { "Channel" }
                             option value="playlist" { "Playlist" }
                         }
@@ -903,15 +921,15 @@ async fn sources_page(
                     (input_cutoff_date("Cutoff Date", "cutoff_date", &default_cutoff_date))
                     (input_number("Retention Days", "retention_days", "Optional", false, ""))
                     div class="md:col-span-2" {
-                        button class="inline-flex items-center rounded-lg bg-sky-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-sky-700" type="submit" { "Create Source" }
+                        button class="inline-flex items-center rounded-lg bg-sky-600 dark:bg-sky-500 px-4 py-2 text-sm font-medium text-white transition hover:bg-sky-700 dark:hover:bg-sky-600" type="submit" { "Create Source" }
                     }
                 }
             }
 
-            section class="mt-8 rounded-2xl border border-slate-200 bg-white/80 p-6 shadow-sm" {
-                h2 class="text-lg font-semibold text-slate-900" { "Existing Sources" }
+            section class="mt-8 rounded-2xl border border-slate-200 dark:border-slate-700 bg-white/80 dark:bg-slate-800/80 p-6 shadow-sm" {
+                h2 class="text-lg font-semibold text-slate-900 dark:text-slate-100" { "Existing Sources" }
                 @if sources.is_empty() {
-                    p class="mt-3 text-sm text-slate-500" { "No sources yet." }
+                    p class="mt-3 text-sm text-slate-500 dark:text-slate-400" { "No sources yet." }
                 } @else {
                     div class="mt-4 space-y-4" {
                         @for source in &sources {
@@ -1283,10 +1301,10 @@ async fn downloads_page(
         NavItem::Downloads,
         flash,
         html! {
-            section class="rounded-2xl border border-slate-200 bg-white/80 p-6 shadow-sm" {
+            section class="rounded-2xl border border-slate-200 dark:border-slate-700 bg-white/80 dark:bg-slate-800/80 p-6 shadow-sm" {
                 div class="flex items-center justify-between" {
-                    h2 class="text-lg font-semibold text-slate-900" { "Live Progress" }
-                    p class="text-xs text-slate-500" { "Streaming from /web/downloads/progress" }
+                    h2 class="text-lg font-semibold text-slate-900 dark:text-slate-100" { "Live Progress" }
+                    p class="text-xs text-slate-500 dark:text-slate-400" { "Streaming from /web/downloads/progress" }
                 }
                 div
                     class="mt-4 space-y-2"
@@ -1296,14 +1314,14 @@ async fn downloads_page(
                     sse-swap="message"
                     hx-swap="afterbegin"
                 {
-                    p class="rounded-lg border border-dashed border-slate-300 bg-slate-50 px-3 py-2 text-sm text-slate-500" {
+                    p class="rounded-lg border border-dashed border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-800 px-3 py-2 text-sm text-slate-500 dark:text-slate-400" {
                         "Waiting for progress events..."
                     }
                 }
             }
 
             // Filter & search bar
-            section class="mt-8 rounded-2xl border border-slate-200 bg-white/80 p-6 shadow-sm" {
+            section class="mt-8 rounded-2xl border border-slate-200 dark:border-slate-700 bg-white/80 dark:bg-slate-800/80 p-6 shadow-sm" {
                 div class="flex flex-wrap items-center gap-4" {
                     nav class="flex flex-wrap gap-1" {
                         (download_status_filter_link("all", "All", current_status, query.search.as_deref()))
@@ -1324,55 +1342,55 @@ async fn downloads_page(
                             name="search"
                             placeholder="Search by title..."
                             value=(query.search.as_deref().unwrap_or(""))
-                            class="rounded-lg border border-slate-300 px-3 py-1.5 text-sm text-slate-900";
+                            class="rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 px-3 py-1.5 text-sm text-slate-900 dark:text-slate-100";
                         button type="submit"
                             class="rounded-lg bg-slate-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-slate-700"
                         { "Search" }
                         @if query.search.is_some() || query.status.is_some() {
                             a href="/downloads"
-                                class="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm font-medium text-slate-600 hover:bg-slate-50"
+                                class="rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 px-3 py-1.5 text-sm font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-600"
                             { "Clear" }
                         }
                     }
                 }
             }
 
-            section class="mt-4 rounded-2xl border border-slate-200 bg-white/80 p-6 shadow-sm" {
-                h2 class="text-lg font-semibold text-slate-900" {
+            section class="mt-4 rounded-2xl border border-slate-200 dark:border-slate-700 bg-white/80 dark:bg-slate-800/80 p-6 shadow-sm" {
+                h2 class="text-lg font-semibold text-slate-900 dark:text-slate-100" {
                     "Downloads"
-                    span class="ml-2 text-sm font-normal text-slate-500" {
+                    span class="ml-2 text-sm font-normal text-slate-500 dark:text-slate-400" {
                         "(" (videos.len()) " results)"
                     }
                 }
                 @if videos.is_empty() {
-                    p class="mt-3 text-sm text-slate-500" { "No downloads match your filters." }
+                    p class="mt-3 text-sm text-slate-500 dark:text-slate-400" { "No downloads match your filters." }
                 } @else {
                     div class="mt-4 overflow-x-auto" {
                         table class="min-w-full divide-y divide-slate-200 text-sm" {
-                            thead class="bg-slate-50" {
+                            thead class="bg-slate-50 dark:bg-slate-800" {
                                 tr {
-                                    th class="px-3 py-2 text-left font-semibold text-slate-700" { "Title" }
-                                    th class="px-3 py-2 text-left font-semibold text-slate-700" { "Platform" }
-                                    th class="px-3 py-2 text-left font-semibold text-slate-700" { "Status" }
-                                    th class="px-3 py-2 text-left font-semibold text-slate-700" { "Attempts" }
-                                    th class="px-3 py-2 text-left font-semibold text-slate-700" { "Actions" }
+                                    th class="px-3 py-2 text-left font-semibold text-slate-700 dark:text-slate-300" { "Title" }
+                                    th class="px-3 py-2 text-left font-semibold text-slate-700 dark:text-slate-300" { "Platform" }
+                                    th class="px-3 py-2 text-left font-semibold text-slate-700 dark:text-slate-300" { "Status" }
+                                    th class="px-3 py-2 text-left font-semibold text-slate-700 dark:text-slate-300" { "Attempts" }
+                                    th class="px-3 py-2 text-left font-semibold text-slate-700 dark:text-slate-300" { "Actions" }
                                 }
                             }
-                            tbody class="divide-y divide-slate-100 bg-white" {
+                            tbody class="divide-y divide-slate-100 dark:divide-slate-700 bg-white dark:bg-slate-900" {
                                 @for video in &videos {
                                     tr {
-                                        td class="max-w-lg px-3 py-2 text-slate-900" {
+                                        td class="max-w-lg px-3 py-2 text-slate-900 dark:text-slate-100" {
                                             p class="truncate font-medium" { (video.title) }
-                                            p class="truncate text-xs text-slate-500" { (video.id.to_string()) }
+                                            p class="truncate text-xs text-slate-500 dark:text-slate-400" { (video.id.to_string()) }
                                         }
-                                        td class="px-3 py-2 text-slate-600" { (video.platform) }
+                                        td class="px-3 py-2 text-slate-600 dark:text-slate-400" { (video.platform) }
                                         td class="px-3 py-2" { (status_badge(&video.status)) }
-                                        td class="px-3 py-2 text-slate-600" { (video.attempts) }
+                                        td class="px-3 py-2 text-slate-600 dark:text-slate-400" { (video.attempts) }
                                         td class="px-3 py-2" {
                                             div class="flex gap-2" {
                                                 @if matches!(video.status, VideoStatus::Failed | VideoStatus::PermanentlyFailed | VideoStatus::Cleaned) {
                                                     form method="post" action=(format!("/downloads/{}/retry", video.id)) {
-                                                        button class="rounded-lg border border-sky-200 bg-sky-50 px-3 py-1.5 text-xs font-medium text-sky-700 hover:bg-sky-100" type="submit" {
+                                                        button class="rounded-lg border border-sky-200 dark:border-sky-800 bg-sky-50 dark:bg-sky-900/50 px-3 py-1.5 text-xs font-medium text-sky-700 dark:text-sky-300 hover:bg-sky-100 dark:hover:bg-sky-900" type="submit" {
                                                             "Retry"
                                                         }
                                                     }
@@ -1380,7 +1398,7 @@ async fn downloads_page(
                                                 @if matches!(video.status, VideoStatus::Pending | VideoStatus::Downloading) {
                                                     form method="post" action=(format!("/downloads/{}/cancel", video.id)) {
                                                         button
-                                                            class="rounded-lg border border-amber-200 bg-amber-50 px-3 py-1.5 text-xs font-medium text-amber-700 hover:bg-amber-100"
+                                                            class="rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/50 px-3 py-1.5 text-xs font-medium text-amber-700 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-900"
                                                             type="submit"
                                                             onclick="return confirm('Cancel this download?')"
                                                         {
@@ -1391,7 +1409,7 @@ async fn downloads_page(
                                                 @if video.status == VideoStatus::Completed {
                                                     form method="post" action=(format!("/downloads/{}/delete", video.id)) {
                                                         button
-                                                            class="rounded-lg border border-rose-200 bg-rose-50 px-3 py-1.5 text-xs font-medium text-rose-700 hover:bg-rose-100"
+                                                            class="rounded-lg border border-rose-200 dark:border-rose-800 bg-rose-50 dark:bg-rose-900/50 px-3 py-1.5 text-xs font-medium text-rose-700 dark:text-rose-300 hover:bg-rose-100 dark:hover:bg-rose-900"
                                                             type="submit"
                                                             onclick="return confirm('Delete this video? The file will be removed from disk.')"
                                                         {
@@ -1814,9 +1832,9 @@ async fn activity_page(
         "Activity",
         NavItem::Activity,
         html! {
-            section class="rounded-2xl border border-slate-200 bg-white/80 p-6 shadow-sm" {
+            section class="rounded-2xl border border-slate-200 dark:border-slate-700 bg-white/80 dark:bg-slate-800/80 p-6 shadow-sm" {
                 div class="flex flex-wrap items-center justify-between gap-3" {
-                    h2 class="text-lg font-semibold text-slate-900" { "Activity Log" }
+                    h2 class="text-lg font-semibold text-slate-900 dark:text-slate-100" { "Activity Log" }
                     nav class="flex gap-1" {
                         (severity_filter_link("all", "All", current_severity))
                         (severity_filter_link("info", "Info", current_severity))
@@ -1827,7 +1845,7 @@ async fn activity_page(
                 }
 
                 @if events.is_empty() {
-                    p class="mt-4 rounded-lg border border-dashed border-slate-300 bg-slate-50 px-4 py-8 text-center text-sm text-slate-500" {
+                    p class="mt-4 rounded-lg border border-dashed border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-800 px-4 py-8 text-center text-sm text-slate-500 dark:text-slate-400" {
                         "No activity events recorded yet."
                     }
                 } @else {
@@ -1842,18 +1860,18 @@ async fn activity_page(
                         nav class="mt-6 flex items-center justify-center gap-2" {
                             @if page_num > 1 {
                                 a
-                                    class="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-50"
+                                    class="rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 px-3 py-1.5 text-sm text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-600"
                                     href=(format!("/activity?severity={}&page={}", current_severity, page_num - 1))
                                 {
                                     "Previous"
                                 }
                             }
-                            span class="text-sm text-slate-500" {
+                            span class="text-sm text-slate-500 dark:text-slate-400" {
                                 (format!("Page {} of {}", page_num, total_pages))
                             }
                             @if page_num < total_pages {
                                 a
-                                    class="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-50"
+                                    class="rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 px-3 py-1.5 text-sm text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-600"
                                     href=(format!("/activity?severity={}&page={}", current_severity, page_num + 1))
                                 {
                                     "Next"
@@ -1877,9 +1895,9 @@ fn download_status_filter_link(
 ) -> Markup {
     let active = value == current;
     let classes = if active {
-        "rounded-full bg-slate-900 px-3 py-1 text-xs font-medium text-white"
+        "rounded-full bg-slate-900 dark:bg-slate-100 px-3 py-1 text-xs font-medium text-white dark:text-slate-900"
     } else {
-        "rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-600 hover:bg-slate-200"
+        "rounded-full bg-slate-100 dark:bg-slate-700 px-3 py-1 text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-600"
     };
     let mut href = if value == "all" {
         "/downloads".to_string()
@@ -1901,9 +1919,9 @@ fn download_status_filter_link(
 fn severity_filter_link(value: &str, label: &str, current: &str) -> Markup {
     let active = value == current;
     let classes = if active {
-        "rounded-full bg-slate-900 px-3 py-1 text-xs font-medium text-white"
+        "rounded-full bg-slate-900 dark:bg-slate-100 px-3 py-1 text-xs font-medium text-white dark:text-slate-900"
     } else {
-        "rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-600 hover:bg-slate-200"
+        "rounded-full bg-slate-100 dark:bg-slate-700 px-3 py-1 text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-600"
     };
     let href = if value == "all" {
         "/activity".to_string()
@@ -1925,10 +1943,22 @@ fn activity_event_row(event: &hof_core::domain::activity::ActivityEvent) -> Mark
     };
 
     let severity_badge = match event.severity {
-        ActivitySeverity::Info => ("Info", "bg-sky-100 text-sky-800"),
-        ActivitySeverity::Success => ("Success", "bg-emerald-100 text-emerald-800"),
-        ActivitySeverity::Warning => ("Warning", "bg-amber-100 text-amber-800"),
-        ActivitySeverity::Error => ("Error", "bg-rose-100 text-rose-800"),
+        ActivitySeverity::Info => (
+            "Info",
+            "bg-sky-100 dark:bg-sky-900/50 text-sky-800 dark:text-sky-200",
+        ),
+        ActivitySeverity::Success => (
+            "Success",
+            "bg-emerald-100 dark:bg-emerald-900/50 text-emerald-800 dark:text-emerald-200",
+        ),
+        ActivitySeverity::Warning => (
+            "Warning",
+            "bg-amber-100 dark:bg-amber-900/50 text-amber-800 dark:text-amber-200",
+        ),
+        ActivitySeverity::Error => (
+            "Error",
+            "bg-rose-100 dark:bg-rose-900/50 text-rose-800 dark:text-rose-200",
+        ),
     };
 
     let event_label = match event.event_type {
@@ -1950,8 +1980,8 @@ fn activity_event_row(event: &hof_core::domain::activity::ActivityEvent) -> Mark
     let time_ago = format_time_ago(event.created_at);
 
     html! {
-        div class=(format!("flex items-start gap-3 rounded-lg border border-slate-200 border-l-4 {} bg-white p-3", border_color)) {
-            span class="mt-0.5 flex h-6 w-6 items-center justify-center rounded-full bg-slate-100 text-xs font-bold text-slate-600" {
+        div class=(format!("flex items-start gap-3 rounded-lg border border-slate-200 dark:border-slate-700 border-l-4 {} bg-white dark:bg-slate-800 p-3", border_color)) {
+            span class="mt-0.5 flex h-6 w-6 items-center justify-center rounded-full bg-slate-100 dark:bg-slate-700 text-xs font-bold text-slate-600 dark:text-slate-300" {
                 (icon)
             }
             div class="min-w-0 flex-1" {
@@ -1959,10 +1989,10 @@ fn activity_event_row(event: &hof_core::domain::activity::ActivityEvent) -> Mark
                     span class=(format!("inline-flex rounded-full px-2 py-0.5 text-xs font-medium {}", severity_badge.1)) {
                         (severity_badge.0)
                     }
-                    span class="text-xs font-medium text-slate-500" { (event_label) }
-                    span class="text-xs text-slate-400" title=(event.created_at.to_rfc3339()) { (time_ago) }
+                    span class="text-xs font-medium text-slate-500 dark:text-slate-400" { (event_label) }
+                    span class="text-xs text-slate-400 dark:text-slate-500" title=(event.created_at.to_rfc3339()) { (time_ago) }
                 }
-                p class="mt-1 text-sm text-slate-700" { (event.message) }
+                p class="mt-1 text-sm text-slate-700 dark:text-slate-300" { (event.message) }
             }
         }
     }
@@ -2059,10 +2089,10 @@ async fn schedule_page(
         html! {
             (cleanup_status_section(cleanup_status.ok().as_ref(), now))
 
-            section class="mt-8 rounded-2xl border border-slate-200 bg-white/80 p-6 shadow-sm" {
-                h2 class="text-lg font-semibold text-slate-900" { "Upcoming Indexing" }
+            section class="mt-8 rounded-2xl border border-slate-200 dark:border-slate-700 bg-white/80 dark:bg-slate-800/80 p-6 shadow-sm" {
+                h2 class="text-lg font-semibold text-slate-900 dark:text-slate-100" { "Upcoming Indexing" }
                 @if entries.is_empty() {
-                    p class="mt-4 rounded-lg border border-dashed border-slate-300 bg-slate-50 px-4 py-8 text-center text-sm text-slate-500" {
+                    p class="mt-4 rounded-lg border border-dashed border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-800 px-4 py-8 text-center text-sm text-slate-500 dark:text-slate-400" {
                         "No sources configured yet. Add sources to start scheduling."
                     }
                 } @else {
@@ -2086,17 +2116,17 @@ fn cleanup_status_section(
     now: chrono::DateTime<Utc>,
 ) -> Markup {
     html! {
-        section class="rounded-2xl border border-slate-200 bg-white/80 p-6 shadow-sm" {
+        section class="rounded-2xl border border-slate-200 dark:border-slate-700 bg-white/80 dark:bg-slate-800/80 p-6 shadow-sm" {
             div class="flex flex-wrap items-center justify-between gap-4" {
                 div {
-                    h2 class="text-lg font-semibold text-slate-900" { "Cleanup" }
-                    p class="mt-1 text-sm text-slate-500" {
+                    h2 class="text-lg font-semibold text-slate-900 dark:text-slate-100" { "Cleanup" }
+                    p class="mt-1 text-sm text-slate-500 dark:text-slate-400" {
                         "Enforces retention policies and storage quotas by removing old files."
                     }
                 }
                 form method="post" action="/schedule/cleanup" {
                     button
-                        class="rounded-lg border border-sky-200 bg-sky-50 px-4 py-2 text-sm font-medium text-sky-700 hover:bg-sky-100"
+                        class="rounded-lg border border-sky-200 dark:border-sky-800 bg-sky-50 dark:bg-sky-900/50 px-4 py-2 text-sm font-medium text-sky-700 dark:text-sky-300 hover:bg-sky-100 dark:hover:bg-sky-900"
                         type="submit"
                         onclick="return confirm('Run cleanup now? This will delete files past their retention period.')"
                     {
@@ -2107,24 +2137,24 @@ fn cleanup_status_section(
             @if let Some(status) = status {
                 div class="mt-4 grid gap-4 sm:grid-cols-3" {
                     // Status
-                    div class="rounded-lg border border-slate-200 bg-slate-50 p-3" {
-                        p class="text-xs font-medium uppercase tracking-wide text-slate-500" { "Status" }
-                        p class="mt-1 text-sm font-semibold text-slate-900" {
+                    div class="rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 p-3" {
+                        p class="text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400" { "Status" }
+                        p class="mt-1 text-sm font-semibold text-slate-900 dark:text-slate-100" {
                             @if status.running { "Running" } @else { "Stopped" }
                         }
                     }
                     // Interval
                     @let interval_secs = i64::try_from(status.cleanup_interval_secs).unwrap_or(i64::MAX);
-                    div class="rounded-lg border border-slate-200 bg-slate-50 p-3" {
-                        p class="text-xs font-medium uppercase tracking-wide text-slate-500" { "Interval" }
-                        p class="mt-1 text-sm font-semibold text-slate-900" {
+                    div class="rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 p-3" {
+                        p class="text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400" { "Interval" }
+                        p class="mt-1 text-sm font-semibold text-slate-900 dark:text-slate-100" {
                             "every " (format_duration_human(interval_secs))
                         }
                     }
                     // Next run
-                    div class="rounded-lg border border-slate-200 bg-slate-50 p-3" {
-                        p class="text-xs font-medium uppercase tracking-wide text-slate-500" { "Next Run" }
-                        p class="mt-1 text-sm font-semibold text-slate-900" {
+                    div class="rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 p-3" {
+                        p class="text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400" { "Next Run" }
+                        p class="mt-1 text-sm font-semibold text-slate-900 dark:text-slate-100" {
                             @if let Some(last) = status.last_run_at {
                                 @let next = last + chrono::Duration::seconds(interval_secs);
                                 @if next > now {
@@ -2139,12 +2169,12 @@ fn cleanup_status_section(
                     }
                 }
                 @if let Some(days) = status.global_retention_days {
-                    p class="mt-3 text-xs text-slate-500" {
+                    p class="mt-3 text-xs text-slate-500 dark:text-slate-400" {
                         "Global retention: " (days) " days"
                     }
                 }
             } @else {
-                p class="mt-4 text-sm text-slate-500" { "Unable to retrieve cleanup status." }
+                p class="mt-4 text-sm text-slate-500 dark:text-slate-400" { "Unable to retrieve cleanup status." }
             }
         }
     }
@@ -2152,40 +2182,40 @@ fn cleanup_status_section(
 
 fn recent_runs_section(recent_runs: &[&hof_core::domain::activity::ActivityEvent]) -> Markup {
     html! {
-        section class="mt-8 rounded-2xl border border-slate-200 bg-white/80 p-6 shadow-sm" {
-            h2 class="text-lg font-semibold text-slate-900" { "Recent Indexing Runs" }
+        section class="mt-8 rounded-2xl border border-slate-200 dark:border-slate-700 bg-white/80 dark:bg-slate-800/80 p-6 shadow-sm" {
+            h2 class="text-lg font-semibold text-slate-900 dark:text-slate-100" { "Recent Indexing Runs" }
             @if recent_runs.is_empty() {
-                p class="mt-4 rounded-lg border border-dashed border-slate-300 bg-slate-50 px-4 py-8 text-center text-sm text-slate-500" {
+                p class="mt-4 rounded-lg border border-dashed border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-800 px-4 py-8 text-center text-sm text-slate-500 dark:text-slate-400" {
                     "No indexing runs recorded yet."
                 }
             } @else {
                 div class="mt-4 overflow-x-auto" {
                     table class="min-w-full divide-y divide-slate-200 text-sm" {
-                        thead class="bg-slate-50" {
+                        thead class="bg-slate-50 dark:bg-slate-800" {
                             tr {
-                                th class="px-3 py-2 text-left font-semibold text-slate-700" { "Time" }
-                                th class="px-3 py-2 text-left font-semibold text-slate-700" { "Result" }
-                                th class="px-3 py-2 text-left font-semibold text-slate-700" { "Details" }
+                                th class="px-3 py-2 text-left font-semibold text-slate-700 dark:text-slate-300" { "Time" }
+                                th class="px-3 py-2 text-left font-semibold text-slate-700 dark:text-slate-300" { "Result" }
+                                th class="px-3 py-2 text-left font-semibold text-slate-700 dark:text-slate-300" { "Details" }
                             }
                         }
-                        tbody class="divide-y divide-slate-100 bg-white" {
+                        tbody class="divide-y divide-slate-100 dark:divide-slate-700 bg-white dark:bg-slate-900" {
                             @for run in recent_runs {
                                 tr {
-                                    td class="whitespace-nowrap px-3 py-2 text-slate-600" title=(run.created_at.to_rfc3339()) {
+                                    td class="whitespace-nowrap px-3 py-2 text-slate-600 dark:text-slate-400" title=(run.created_at.to_rfc3339()) {
                                         (format_time_ago(run.created_at))
                                     }
                                     td class="px-3 py-2" {
                                         @if run.event_type == ActivityEventType::SourceIndexed {
-                                            span class="inline-flex rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-medium text-emerald-900" {
+                                            span class="inline-flex rounded-full bg-emerald-100 dark:bg-emerald-900/50 px-2.5 py-1 text-xs font-medium text-emerald-900 dark:text-emerald-100" {
                                                 "OK"
                                             }
                                         } @else {
-                                            span class="inline-flex rounded-full bg-rose-100 px-2.5 py-1 text-xs font-medium text-rose-900" {
+                                            span class="inline-flex rounded-full bg-rose-100 dark:bg-rose-900/50 px-2.5 py-1 text-xs font-medium text-rose-900 dark:text-rose-100" {
                                                 "Error"
                                             }
                                         }
                                     }
-                                    td class="px-3 py-2 text-slate-700" {
+                                    td class="px-3 py-2 text-slate-700 dark:text-slate-300" {
                                         (run.message)
                                     }
                                 }
@@ -2208,19 +2238,25 @@ fn schedule_entry_row(entry: &ScheduleEntry, now: chrono::DateTime<Utc>) -> Mark
         );
         (
             format!("overdue by {overdue_duration}"),
-            "text-rose-600 font-medium",
+            "text-rose-600 dark:text-rose-400 font-medium",
         )
     } else if let Some(next) = entry.next_index_at {
         if next > now {
             (
                 format!("in {}", format_time_delta(next - now)),
-                "text-slate-600",
+                "text-slate-600 dark:text-slate-400",
             )
         } else {
-            ("due now".to_string(), "text-amber-600 font-medium")
+            (
+                "due now".to_string(),
+                "text-amber-600 dark:text-amber-400 font-medium",
+            )
         }
     } else {
-        ("not yet indexed".to_string(), "text-slate-500 italic")
+        (
+            "not yet indexed".to_string(),
+            "text-slate-500 dark:text-slate-400 italic",
+        )
     };
 
     let border = if entry.is_overdue {
@@ -2232,16 +2268,16 @@ fn schedule_entry_row(entry: &ScheduleEntry, now: chrono::DateTime<Utc>) -> Mark
     };
 
     html! {
-        div class=(format!("flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-200 {} bg-white p-4", border)) {
+        div class=(format!("flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-200 dark:border-slate-700 {} bg-white dark:bg-slate-800 p-4", border)) {
             div class="min-w-0 flex-1" {
                 div class="flex flex-wrap items-center gap-2" {
-                    p class="text-sm font-semibold text-slate-900" { (entry.source.display_name()) }
-                    span class="rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-500" {
+                    p class="text-sm font-semibold text-slate-900 dark:text-slate-100" { (entry.source.display_name()) }
+                    span class="rounded-full bg-slate-100 dark:bg-slate-700 px-2 py-0.5 text-xs text-slate-500 dark:text-slate-400" {
                         (entry.profile_name)
                     }
                 }
                 @if let Some(ref error) = entry.source.last_error {
-                    p class="mt-1 truncate text-xs text-rose-600" title=(error) {
+                    p class="mt-1 truncate text-xs text-rose-600 dark:text-rose-400" title=(error) {
                         "Error: " (error)
                     }
                 }
@@ -2249,10 +2285,10 @@ fn schedule_entry_row(entry: &ScheduleEntry, now: chrono::DateTime<Utc>) -> Mark
             div class="flex items-center gap-4 text-right" {
                 div {
                     p class=(format!("text-sm {}", status_classes)) { (status_text) }
-                    p class="text-xs text-slate-400" { "every " (frequency) }
+                    p class="text-xs text-slate-400 dark:text-slate-500" { "every " (frequency) }
                 }
                 form method="post" action=(format!("/sources/{}/index", entry.source.id)) {
-                    button class="rounded-lg border border-sky-200 bg-sky-50 px-3 py-1.5 text-xs font-medium text-sky-700 hover:bg-sky-100" type="submit" {
+                    button class="rounded-lg border border-sky-200 dark:border-sky-800 bg-sky-50 dark:bg-sky-900/50 px-3 py-1.5 text-xs font-medium text-sky-700 dark:text-sky-300 hover:bg-sky-100 dark:hover:bg-sky-900" type="submit" {
                         "Index Now"
                     }
                 }
@@ -2308,22 +2344,22 @@ fn format_duration_human(secs: i64) -> String {
 
 fn metric_card(title: &str, value: impl std::fmt::Display, description: &str) -> Markup {
     html! {
-        article class="rounded-2xl border border-slate-200 bg-white/80 p-5 shadow-sm" {
-            p class="text-xs uppercase tracking-wide text-slate-500" { (title) }
-            p class="mt-2 text-3xl font-semibold text-slate-900" { (value) }
-            p class="mt-2 text-sm text-slate-600" { (description) }
+        article class="rounded-2xl border border-slate-200 dark:border-slate-700 bg-white/80 dark:bg-slate-800/80 p-5 shadow-sm" {
+            p class="text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400" { (title) }
+            p class="mt-2 text-3xl font-semibold text-slate-900 dark:text-slate-100" { (value) }
+            p class="mt-2 text-sm text-slate-600 dark:text-slate-400" { (description) }
         }
     }
 }
 
 fn profile_editor(profile: &Profile) -> Markup {
     html! {
-        details class="group rounded-xl border border-slate-200 bg-slate-50/60 p-4 open:bg-white" {
+        details class="group rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50/60 dark:bg-slate-800/60 p-4 open:bg-white dark:open:bg-slate-800" {
             summary class="cursor-pointer list-none" {
                 div class="flex flex-wrap items-center justify-between gap-3" {
                     div {
-                        p class="text-sm font-semibold text-slate-900" { (&profile.name) }
-                        p class="text-xs text-slate-500" { (profile.id.to_string()) }
+                        p class="text-sm font-semibold text-slate-900 dark:text-slate-100" { (&profile.name) }
+                        p class="text-xs text-slate-500 dark:text-slate-400" { (profile.id.to_string()) }
                     }
                     (status_chip(quality_label(&profile.quality), "sky"))
                 }
@@ -2331,8 +2367,8 @@ fn profile_editor(profile: &Profile) -> Markup {
             form class="mt-4 grid gap-4 md:grid-cols-2" method="post" action={(format!("/profiles/{}", profile.id))} {
                 (input_text("User ID", "user_id", "", true, &profile.user_id.to_string()))
                 div {
-                    label class="block text-sm font-medium text-slate-700" { "Quality" }
-                    select class="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-900 shadow-sm" name="quality" required {
+                    label class="block text-sm font-medium text-slate-700 dark:text-slate-300" { "Quality" }
+                    select class="mt-1 w-full rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 px-3 py-2 text-sm text-slate-900 dark:text-slate-100 shadow-sm" name="quality" required {
                         @for quality in quality_options() {
                             option value=(quality.value) selected[(quality.value == quality_value(&profile.quality))] { (quality.label) }
                         }
@@ -2344,21 +2380,21 @@ fn profile_editor(profile: &Profile) -> Markup {
                 (input_number("Storage Quota (GB)", "storage_quota_gb", "", true, &(profile.storage_quota_bytes / 1_000_000_000).to_string()))
                 (input_number("Retention Days", "retention_days", "Optional", false, &profile.retention_days.map_or_else(String::new, |days| days.to_string())))
                 div class="flex items-center gap-4" {
-                    label class="inline-flex items-center gap-2 text-sm text-slate-700" {
+                    label class="inline-flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300" {
                         input type="checkbox" name="include_livestreams" checked[profile.include_livestreams];
                         "Include Livestream VODs"
                     }
-                    label class="inline-flex items-center gap-2 text-sm text-slate-700" {
+                    label class="inline-flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300" {
                         input type="checkbox" name="include_shorts" checked[profile.include_shorts];
                         "Include Shorts"
                     }
                 }
                 div class="md:col-span-2 flex flex-wrap gap-2" {
-                    button class="rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-700" type="submit" {
+                    button class="rounded-lg bg-slate-900 dark:bg-slate-100 px-4 py-2 text-sm font-medium text-white dark:text-slate-900 hover:bg-slate-700 dark:hover:bg-slate-200" type="submit" {
                         "Save Profile"
                     }
                     button
-                        class="rounded-lg border border-rose-200 bg-rose-50 px-4 py-2 text-sm font-medium text-rose-700 hover:bg-rose-100"
+                        class="rounded-lg border border-rose-200 dark:border-rose-800 bg-rose-50 dark:bg-rose-900/50 px-4 py-2 text-sm font-medium text-rose-700 dark:text-rose-300 hover:bg-rose-100 dark:hover:bg-rose-900"
                         type="submit"
                         formaction={(format!("/profiles/{}/delete", profile.id))}
                         onclick="return confirm('Delete this profile? This cannot be undone.')"
@@ -2374,20 +2410,20 @@ fn profile_editor(profile: &Profile) -> Markup {
 fn source_editor(source: &Source) -> Markup {
     // Determine border color based on error state
     let border_class = if source.last_error.is_some() {
-        "border-rose-300 bg-rose-50/60"
+        "border-rose-300 dark:border-rose-700 bg-rose-50/60 dark:bg-rose-900/30"
     } else {
-        "border-slate-200 bg-slate-50/60"
+        "border-slate-200 dark:border-slate-700 bg-slate-50/60 dark:bg-slate-800/60"
     };
 
     html! {
-        details class=(format!("group rounded-xl border {} p-4 open:bg-white", border_class)) {
+        details class=(format!("group rounded-xl border {} p-4 open:bg-white dark:open:bg-slate-800", border_class)) {
             summary class="cursor-pointer list-none" {
                 div class="flex flex-wrap items-center justify-between gap-3" {
                     div class="min-w-0" {
-                        p class="truncate text-sm font-semibold text-slate-900" {
+                        p class="truncate text-sm font-semibold text-slate-900 dark:text-slate-100" {
                             (source.custom_name.as_deref().unwrap_or(&source.url))
                         }
-                        p class="truncate text-xs text-slate-500" { (source.id.to_string()) }
+                        p class="truncate text-xs text-slate-500 dark:text-slate-400" { (source.id.to_string()) }
                     }
                     div class="flex items-center gap-2" {
                         @if source.last_error.is_some() {
@@ -2400,10 +2436,10 @@ fn source_editor(source: &Source) -> Markup {
 
             // Show error message if present
             @if let Some(ref error) = source.last_error {
-                div class="mt-3 rounded-lg border border-rose-200 bg-rose-50 p-3" {
-                    p class="text-sm font-medium text-rose-800" { "Last Indexing Error:" }
-                    p class="mt-1 text-sm text-rose-700 font-mono whitespace-pre-wrap break-all" { (error) }
-                    p class="mt-2 text-xs text-rose-600" {
+                div class="mt-3 rounded-lg border border-rose-200 dark:border-rose-800 bg-rose-50 dark:bg-rose-900/30 p-3" {
+                    p class="text-sm font-medium text-rose-800 dark:text-rose-200" { "Last Indexing Error:" }
+                    p class="mt-1 text-sm text-rose-700 dark:text-rose-300 font-mono whitespace-pre-wrap break-all" { (error) }
+                    p class="mt-2 text-xs text-rose-600 dark:text-rose-400" {
                         "Consecutive errors: " (source.index_error_count)
                     }
                 }
@@ -2411,8 +2447,8 @@ fn source_editor(source: &Source) -> Markup {
             form class="mt-4 grid gap-4 md:grid-cols-2" method="post" action={(format!("/sources/{}", source.id))} {
                 (input_text("Profile ID", "profile_id", "", true, &source.profile_id.to_string()))
                 div {
-                    label class="block text-sm font-medium text-slate-700" { "Source Type" }
-                    select class="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-900 shadow-sm" name="source_type" required {
+                    label class="block text-sm font-medium text-slate-700 dark:text-slate-300" { "Source Type" }
+                    select class="mt-1 w-full rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 px-3 py-2 text-sm text-slate-900 dark:text-slate-100 shadow-sm" name="source_type" required {
                         option value="channel" selected[matches!(source.source_type, SourceType::Channel)] { "Channel" }
                         option value="playlist" selected[matches!(source.source_type, SourceType::Playlist)] { "Playlist" }
                     }
@@ -2423,17 +2459,17 @@ fn source_editor(source: &Source) -> Markup {
                 (input_cutoff_date("Cutoff Date", "cutoff_date", &source.cutoff_date.to_string()))
                 (input_number("Retention Days", "retention_days", "Optional", false, &source.retention_days.map_or_else(String::new, |days| days.to_string())))
                 div class="md:col-span-2 flex flex-wrap gap-2" {
-                    button class="rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-700" type="submit" {
+                    button class="rounded-lg bg-slate-900 dark:bg-slate-100 px-4 py-2 text-sm font-medium text-white dark:text-slate-900 hover:bg-slate-700 dark:hover:bg-slate-200" type="submit" {
                         "Save Source"
                     }
-                    button class="rounded-lg border border-amber-200 bg-amber-50 px-4 py-2 text-sm font-medium text-amber-700 hover:bg-amber-100" type="submit" formaction={(format!("/sources/{}/index", source.id))} {
+                    button class="rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/50 px-4 py-2 text-sm font-medium text-amber-700 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-900" type="submit" formaction={(format!("/sources/{}/index", source.id))} {
                         "Trigger Index"
                     }
-                    button class="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-2 text-sm font-medium text-emerald-700 hover:bg-emerald-100" type="submit" formaction={(format!("/sources/{}/metadata", source.id))} {
+                    button class="rounded-lg border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-900/50 px-4 py-2 text-sm font-medium text-emerald-700 dark:text-emerald-300 hover:bg-emerald-100 dark:hover:bg-emerald-900" type="submit" formaction={(format!("/sources/{}/metadata", source.id))} {
                         "Trigger Image Download"
                     }
                     button
-                        class="rounded-lg border border-rose-200 bg-rose-50 px-4 py-2 text-sm font-medium text-rose-700 hover:bg-rose-100"
+                        class="rounded-lg border border-rose-200 dark:border-rose-800 bg-rose-50 dark:bg-rose-900/50 px-4 py-2 text-sm font-medium text-rose-700 dark:text-rose-300 hover:bg-rose-100 dark:hover:bg-rose-900"
                         type="submit"
                         formaction={(format!("/sources/{}/delete", source.id))}
                         onclick="return confirm('Delete this source? This cannot be undone.')"
@@ -2453,7 +2489,7 @@ fn progress_fragment(progress: &DownloadProgress) -> Markup {
     let now = Utc::now().format("%H:%M:%S").to_string();
 
     html! {
-        article class="rounded-xl border border-sky-200 bg-sky-50 px-3 py-2 text-sm text-sky-900" {
+        article class="rounded-xl border border-sky-200 dark:border-sky-800 bg-sky-50 dark:bg-sky-900/50 px-3 py-2 text-sm text-sky-900 dark:text-sky-100" {
             div class="flex flex-wrap items-center justify-between gap-2" {
                 p class="font-medium" {
                     (progress.platform_video_id.clone()) " · " (percentage) "%"
@@ -2544,13 +2580,34 @@ const fn source_type_label(source_type: &SourceType) -> &'static str {
 
 fn status_badge(status: &VideoStatus) -> Markup {
     let (label, color) = match status {
-        VideoStatus::Pending => ("Pending", "bg-amber-100 text-amber-900"),
-        VideoStatus::Downloading => ("Downloading", "bg-sky-100 text-sky-900"),
-        VideoStatus::Completed => ("Completed", "bg-emerald-100 text-emerald-900"),
-        VideoStatus::Failed => ("Failed", "bg-rose-100 text-rose-900"),
-        VideoStatus::Skipped => ("Skipped", "bg-slate-100 text-slate-700"),
-        VideoStatus::Cleaned => ("Cleaned", "bg-violet-100 text-violet-900"),
-        VideoStatus::PermanentlyFailed => ("Permanently Failed", "bg-red-100 text-red-900"),
+        VideoStatus::Pending => (
+            "Pending",
+            "bg-amber-100 dark:bg-amber-900/50 text-amber-900 dark:text-amber-100",
+        ),
+        VideoStatus::Downloading => (
+            "Downloading",
+            "bg-sky-100 dark:bg-sky-900/50 text-sky-900 dark:text-sky-100",
+        ),
+        VideoStatus::Completed => (
+            "Completed",
+            "bg-emerald-100 dark:bg-emerald-900/50 text-emerald-900 dark:text-emerald-100",
+        ),
+        VideoStatus::Failed => (
+            "Failed",
+            "bg-rose-100 dark:bg-rose-900/50 text-rose-900 dark:text-rose-100",
+        ),
+        VideoStatus::Skipped => (
+            "Skipped",
+            "bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-300",
+        ),
+        VideoStatus::Cleaned => (
+            "Cleaned",
+            "bg-violet-100 dark:bg-violet-900/50 text-violet-900 dark:text-violet-100",
+        ),
+        VideoStatus::PermanentlyFailed => (
+            "Permanently Failed",
+            "bg-red-100 dark:bg-red-900/50 text-red-900 dark:text-red-100",
+        ),
     };
 
     html! {
@@ -2562,9 +2619,10 @@ fn status_badge(status: &VideoStatus) -> Markup {
 
 fn status_chip(label: &str, tone: &str) -> Markup {
     let class_name = match tone {
-        "sky" => "bg-sky-100 text-sky-900",
-        "slate" => "bg-slate-200 text-slate-900",
-        _ => "bg-slate-100 text-slate-700",
+        "sky" => "bg-sky-100 dark:bg-sky-900/50 text-sky-900 dark:text-sky-100",
+        "slate" => "bg-slate-200 dark:bg-slate-700 text-slate-900 dark:text-slate-100",
+        "rose" => "bg-rose-100 dark:bg-rose-900/50 text-rose-900 dark:text-rose-100",
+        _ => "bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-300",
     };
 
     html! {
@@ -2577,9 +2635,9 @@ fn status_chip(label: &str, tone: &str) -> Markup {
 fn input_text(label: &str, name: &str, placeholder: &str, required: bool, value: &str) -> Markup {
     html! {
         div {
-            label class="block text-sm font-medium text-slate-700" for=(name) { (label) }
+            label class="block text-sm font-medium text-slate-700 dark:text-slate-300" for=(name) { (label) }
             input
-                class="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-900 shadow-sm"
+                class="mt-1 w-full rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 px-3 py-2 text-sm text-slate-900 dark:text-slate-100 shadow-sm"
                 type="text"
                 id=(name)
                 name=(name)
@@ -2593,9 +2651,9 @@ fn input_text(label: &str, name: &str, placeholder: &str, required: bool, value:
 fn input_number(label: &str, name: &str, placeholder: &str, required: bool, value: &str) -> Markup {
     html! {
         div {
-            label class="block text-sm font-medium text-slate-700" for=(name) { (label) }
+            label class="block text-sm font-medium text-slate-700 dark:text-slate-300" for=(name) { (label) }
             input
-                class="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-900 shadow-sm"
+                class="mt-1 w-full rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 px-3 py-2 text-sm text-slate-900 dark:text-slate-100 shadow-sm"
                 type="number"
                 id=(name)
                 name=(name)
@@ -2651,9 +2709,9 @@ fn index_frequency_options() -> Vec<IndexFrequencyOption> {
 fn input_index_frequency(label: &str, name: &str, selected_value: i64) -> Markup {
     html! {
         div {
-            label class="block text-sm font-medium text-slate-700" for=(name) { (label) }
+            label class="block text-sm font-medium text-slate-700 dark:text-slate-300" for=(name) { (label) }
             select
-                class="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-900 shadow-sm"
+                class="mt-1 w-full rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 px-3 py-2 text-sm text-slate-900 dark:text-slate-100 shadow-sm"
                 name=(name)
                 id=(name)
                 required {
@@ -2668,9 +2726,9 @@ fn input_index_frequency(label: &str, name: &str, selected_value: i64) -> Markup
 fn input_cutoff_date(label: &str, name: &str, value: &str) -> Markup {
     html! {
         div {
-            label class="block text-sm font-medium text-slate-700" for=(name) { (label) }
+            label class="block text-sm font-medium text-slate-700 dark:text-slate-300" for=(name) { (label) }
             input
-                class="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-900 shadow-sm"
+                class="mt-1 w-full rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 px-3 py-2 text-sm text-slate-900 dark:text-slate-100 shadow-sm"
                 type="date"
                 id=(name)
                 name=(name)
@@ -2678,31 +2736,31 @@ fn input_cutoff_date(label: &str, name: &str, value: &str) -> Markup {
                 value=(value);
             div class="mt-2 flex flex-wrap gap-2" {
                 button
-                    class="rounded bg-slate-100 px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-200"
+                    class="rounded bg-slate-100 dark:bg-slate-700 px-2 py-1 text-xs font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-600"
                     type="button"
                     onclick={"document.getElementById('" (name) "').value = new Date(Date.now() - 7*24*60*60*1000).toISOString().split('T')[0]"} {
                     "7 days"
                 }
                 button
-                    class="rounded bg-slate-100 px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-200"
+                    class="rounded bg-slate-100 dark:bg-slate-700 px-2 py-1 text-xs font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-600"
                     type="button"
                     onclick={"document.getElementById('" (name) "').value = new Date(Date.now() - 14*24*60*60*1000).toISOString().split('T')[0]"} {
                     "14 days"
                 }
                 button
-                    class="rounded bg-slate-100 px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-200"
+                    class="rounded bg-slate-100 dark:bg-slate-700 px-2 py-1 text-xs font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-600"
                     type="button"
                     onclick={"document.getElementById('" (name) "').value = new Date(Date.now() - 30*24*60*60*1000).toISOString().split('T')[0]"} {
                     "30 days"
                 }
                 button
-                    class="rounded bg-slate-100 px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-200"
+                    class="rounded bg-slate-100 dark:bg-slate-700 px-2 py-1 text-xs font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-600"
                     type="button"
                     onclick={"document.getElementById('" (name) "').value = new Date(Date.now() - 90*24*60*60*1000).toISOString().split('T')[0]"} {
                     "90 days"
                 }
                 button
-                    class="rounded bg-slate-100 px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-200"
+                    class="rounded bg-slate-100 dark:bg-slate-700 px-2 py-1 text-xs font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-600"
                     type="button"
                     onclick={"document.getElementById('" (name) "').value = new Date(Date.now() - 180*24*60*60*1000).toISOString().split('T')[0]"} {
                     "180 days"
@@ -2727,11 +2785,11 @@ fn error_page(message: &str) -> Markup {
         "Error",
         NavItem::Dashboard,
         html! {
-            section class="rounded-2xl border border-rose-200 bg-rose-50 p-6 shadow-sm" {
-                h2 class="text-lg font-semibold text-rose-900" { "Something went wrong" }
-                p class="mt-2 text-sm text-rose-800" { (message) }
+            section class="rounded-2xl border border-rose-200 dark:border-rose-800 bg-rose-50 dark:bg-rose-900/30 p-6 shadow-sm" {
+                h2 class="text-lg font-semibold text-rose-900 dark:text-rose-100" { "Something went wrong" }
+                p class="mt-2 text-sm text-rose-800 dark:text-rose-200" { (message) }
                 div class="mt-4" {
-                    a class="inline-flex rounded-lg bg-rose-700 px-4 py-2 text-sm font-medium text-white hover:bg-rose-800" href="/dashboard" {
+                    a class="inline-flex rounded-lg bg-rose-700 dark:bg-rose-600 px-4 py-2 text-sm font-medium text-white hover:bg-rose-800 dark:hover:bg-rose-700" href="/dashboard" {
                         "Back to dashboard"
                     }
                 }
@@ -2744,7 +2802,7 @@ fn layout(title: &str, active: NavItem, content: impl Render) -> Markup {
     layout_with_flash(title, active, None, content)
 }
 
-#[allow(clippy::needless_pass_by_value)]
+#[allow(clippy::needless_pass_by_value, clippy::too_many_lines)]
 fn layout_with_flash(
     title: &str,
     active: NavItem,
@@ -2763,14 +2821,23 @@ fn layout_with_flash(
                 link rel="stylesheet" href="/assets/app.css";
                 script src="https://unpkg.com/htmx.org@2.0.4" defer {}
                 script src="https://unpkg.com/htmx-ext-sse@2.2.2/sse.js" defer {}
+                // Dark mode initialization (runs before body renders to prevent flash)
+                (PreEscaped(r"<script>
+                    (function() {
+                        var stored = localStorage.getItem('darkMode');
+                        if (stored === 'true' || (stored === null && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+                            document.documentElement.classList.add('dark');
+                        }
+                    })();
+                </script>"))
             }
-            body class="min-h-full bg-gradient-to-b from-slate-100 via-slate-50 to-white text-slate-900" {
+            body class="min-h-full bg-gradient-to-b from-slate-100 via-slate-50 to-white dark:from-slate-900 dark:via-slate-900 dark:to-slate-950 text-slate-900 dark:text-slate-100" {
                 // Toast notification
                 @if let Some(ref flash) = flash {
                     @let flash_classes = match flash.level.as_str() {
-                        "success" => "bg-emerald-100 text-emerald-900 border-emerald-200",
-                        "error" => "bg-rose-100 text-rose-900 border-rose-200",
-                        _ => "bg-sky-100 text-sky-900 border-sky-200",
+                        "success" => "bg-emerald-100 dark:bg-emerald-900/50 text-emerald-900 dark:text-emerald-100 border-emerald-200 dark:border-emerald-700",
+                        "error" => "bg-rose-100 dark:bg-rose-900/50 text-rose-900 dark:text-rose-100 border-rose-200 dark:border-rose-700",
+                        _ => "bg-sky-100 dark:bg-sky-900/50 text-sky-900 dark:text-sky-100 border-sky-200 dark:border-sky-700",
                     };
                     div id="toast"
                         class=(format!("fixed top-4 right-4 z-50 rounded-lg border px-4 py-3 text-sm font-medium shadow-lg transition-opacity duration-300 {flash_classes}"))
@@ -2787,11 +2854,11 @@ fn layout_with_flash(
                         hx-swap="innerHTML"
                     {}
 
-                    header class="mb-8 rounded-2xl border border-slate-200 bg-white/80 p-5 shadow-sm backdrop-blur" {
+                    header class="mb-8 rounded-2xl border border-slate-200 dark:border-slate-700 bg-white/80 dark:bg-slate-800/80 p-5 shadow-sm backdrop-blur" {
                         div class="flex flex-wrap items-center justify-between gap-4" {
                             div {
-                                p class="text-xs uppercase tracking-[0.2em] text-slate-500" { "Hofvarpnir" }
-                                h1 class="text-2xl font-semibold text-slate-900" { (title) }
+                                p class="text-xs uppercase tracking-[0.2em] text-slate-500 dark:text-slate-400" { "Hofvarpnir" }
+                                h1 class="text-2xl font-semibold text-slate-900 dark:text-slate-100" { (title) }
                             }
                             nav class="flex flex-wrap items-center gap-2" {
                                 (nav_link("/dashboard", "Dashboard", active == NavItem::Dashboard))
@@ -2800,10 +2867,20 @@ fn layout_with_flash(
                                 (nav_link("/downloads", "Downloads", active == NavItem::Downloads))
                                 (nav_link("/activity", "Activity", active == NavItem::Activity))
                                 (nav_link("/schedule", "Schedule", active == NavItem::Schedule))
+                                // Dark mode toggle
+                                button
+                                    type="button"
+                                    id="dark-toggle"
+                                    class="inline-flex items-center rounded-full bg-slate-100 dark:bg-slate-700 px-3 py-1.5 text-sm font-medium text-slate-600 dark:text-slate-300 transition hover:bg-slate-200 dark:hover:bg-slate-600"
+                                    onclick="toggleDarkMode()"
+                                {
+                                    span class="dark:hidden" { "🌙" }
+                                    span class="hidden dark:inline" { "☀️" }
+                                }
                                 form method="post" action="/logout" class="ml-2" {
                                     button
                                         type="submit"
-                                        class="inline-flex items-center rounded-full bg-slate-100 px-3 py-1.5 text-sm font-medium text-slate-500 transition hover:bg-red-100 hover:text-red-700"
+                                        class="inline-flex items-center rounded-full bg-slate-100 dark:bg-slate-700 px-3 py-1.5 text-sm font-medium text-slate-500 dark:text-slate-300 transition hover:bg-red-100 hover:text-red-700 dark:hover:bg-red-900/50 dark:hover:text-red-400"
                                     {
                                         "Logout"
                                     }
@@ -2814,6 +2891,13 @@ fn layout_with_flash(
                     main class="flex-1" { (content) }
                 }
                 (PreEscaped(r"<script>
+                    // Dark mode toggle
+                    function toggleDarkMode() {
+                      var html = document.documentElement;
+                      var isDark = html.classList.toggle('dark');
+                      localStorage.setItem('darkMode', isDark);
+                    }
+
                     // Auto-dismiss toast
                     (function() {
                       var t = document.getElementById('toast');
@@ -2849,9 +2933,9 @@ fn layout_with_flash(
 
 fn nav_link(href: &str, label: &str, selected: bool) -> Markup {
     let classes = if selected {
-        "inline-flex items-center rounded-full bg-slate-900 px-3 py-1.5 text-sm font-medium text-white"
+        "inline-flex items-center rounded-full bg-slate-900 dark:bg-slate-100 px-3 py-1.5 text-sm font-medium text-white dark:text-slate-900"
     } else {
-        "inline-flex items-center rounded-full bg-slate-100 px-3 py-1.5 text-sm font-medium text-slate-700 transition hover:bg-slate-200"
+        "inline-flex items-center rounded-full bg-slate-100 dark:bg-slate-700 px-3 py-1.5 text-sm font-medium text-slate-700 dark:text-slate-200 transition hover:bg-slate-200 dark:hover:bg-slate-600"
     };
 
     html! {
