@@ -4,6 +4,8 @@ on:
     branches: [main]
   push:
     branches: [main]
+    tags-ignore:
+      - 'v*.*.*'
 jobs:
   check:
     runs-on: ubuntu-latest
