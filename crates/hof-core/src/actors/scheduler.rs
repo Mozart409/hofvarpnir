@@ -269,6 +269,11 @@ impl Message<IndexSource> for SchedulerActor {
             return Err("Source is already being indexed".to_string());
         }
 
+        // Reset error count for manual indexing (gives fresh retry attempts)
+        db::reset_source_indexing_errors(&self.pool, msg.source_id)
+            .await
+            .map_err(|e| e.to_string())?;
+
         // Get the source
         let source = db::get_source(&self.pool, msg.source_id)
             .await
