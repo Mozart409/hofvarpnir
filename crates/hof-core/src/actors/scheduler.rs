@@ -390,32 +390,39 @@ impl SchedulerActor {
             "Spawning source indexer"
         );
 
+        // Create oneshot channel to receive the indexing result
+        let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+
         let args = SourceIndexerArgs {
             pool: self.pool.clone(),
             ytdlp: self.ytdlp.clone(),
             source: source.clone(),
             profile,
             supervisor: self.supervisor.clone(),
+            result_tx,
         };
 
         let indexer_ref = SourceIndexerActor::spawn(args);
 
         // Track the active indexer
-        self.active_indexers.insert(source.id, indexer_ref.clone());
+        self.active_indexers.insert(source.id, indexer_ref);
 
-        // Spawn a task to wait for completion and notify
+        // Spawn a task to wait for the result and notify the scheduler
         let source_id = source.id;
         tokio::spawn(async move {
-            indexer_ref.wait_for_shutdown().await;
-
-            // Notify scheduler that indexing is done
-            // Note: In a real implementation, we'd capture the result from the actor
-            let result = IndexingResult {
-                source_id,
-                new_videos: 0,
-                existing_videos: 0,
-                filtered_out: 0,
-                errors: Vec::new(),
+            // Wait for the indexing result from the oneshot channel
+            let result = if let Ok(result) = result_rx.await {
+                result
+            } else {
+                // Channel was dropped without sending - actor probably panicked
+                warn!(source_id = %source_id, "Indexer result channel closed unexpectedly");
+                IndexingResult {
+                    source_id,
+                    new_videos: 0,
+                    existing_videos: 0,
+                    filtered_out: 0,
+                    errors: vec!["Indexer terminated unexpectedly".to_string()],
+                }
             };
 
             let _ = scheduler_ref

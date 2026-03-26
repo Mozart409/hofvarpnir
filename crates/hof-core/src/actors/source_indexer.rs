@@ -54,6 +54,8 @@ pub struct SourceIndexerActor {
     profile: Profile,
     /// Reference to the download supervisor for enqueueing downloads.
     supervisor: ActorRef<DownloadSupervisor>,
+    /// Channel to send the indexing result back to the spawner.
+    result_tx: Option<tokio::sync::oneshot::Sender<IndexingResult>>,
 }
 
 impl std::fmt::Debug for SourceIndexerActor {
@@ -72,6 +74,8 @@ pub struct SourceIndexerArgs {
     pub source: Source,
     pub profile: Profile,
     pub supervisor: ActorRef<DownloadSupervisor>,
+    /// Channel to send the indexing result back to the spawner.
+    pub result_tx: tokio::sync::oneshot::Sender<IndexingResult>,
 }
 
 impl Actor for SourceIndexerActor {
@@ -92,6 +96,7 @@ impl Actor for SourceIndexerActor {
             source: args.source,
             profile: args.profile,
             supervisor: args.supervisor,
+            result_tx: Some(args.result_tx),
         };
 
         // Immediately start indexing.
@@ -131,6 +136,13 @@ impl Message<StartIndexing> for SourceIndexerActor {
         ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
         let result = self.execute_indexing().await;
+
+        // Send result back to the scheduler via oneshot channel
+        if let Some(tx) = self.result_tx.take()
+            && tx.send(result.clone()).is_err()
+        {
+            warn!(source_id = %self.source.id, "Failed to send indexing result - receiver dropped");
+        }
 
         // Stop the actor after indexing completes
         ctx.actor_ref().stop_gracefully().await.ok();
@@ -296,6 +308,7 @@ impl SourceIndexerActor {
                 source: updated_source,
                 profile: self.profile.clone(),
                 supervisor: self.supervisor.clone(),
+                result_tx: None, // Not needed for metadata generation
             };
             indexer_with_updated_source
                 .generate_jellyfin_metadata_if_needed()
