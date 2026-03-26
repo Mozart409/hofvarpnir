@@ -868,7 +868,7 @@ async fn sources_page(
     };
 
     // Get sources for the user's profiles
-    let sources = match db::list_sources(&state.pool).await {
+    let mut sources = match db::list_sources(&state.pool).await {
         Ok(data) => {
             // Filter to only show sources belonging to user's profiles
             let profile_ids: std::collections::HashSet<_> = profiles.iter().map(|p| p.id).collect();
@@ -884,6 +884,9 @@ async fn sources_page(
             );
         }
     };
+
+    // Sort sources alphabetically by display name
+    sources.sort_by_key(|s| s.display_name().to_lowercase());
 
     // Calculate default cutoff date (7 days ago)
     let default_cutoff_date = (Utc::now() - chrono::Duration::days(7))
