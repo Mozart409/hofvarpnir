@@ -5,6 +5,10 @@ use sqlx::postgres::{PgPool, PgPoolOptions};
 use std::time::Duration;
 use ulid::Ulid;
 
+/// Maximum number of consecutive indexing errors before automatic retries stop.
+/// Sources exceeding this limit can still be manually indexed via "Force index".
+pub const MAX_INDEX_RETRIES: i32 = 3;
+
 use crate::domain::{
     activity::{ActivityEvent, ActivityEventRow, ActivityEventType, ActivitySeverity},
     profile::{Profile, ProfileRow, Quality},
@@ -565,6 +569,9 @@ pub async fn list_sources(pool: &PgPool) -> Result<Vec<Source>, DbError> {
 /// - `last_indexed_at` is NULL, OR
 /// - `last_indexed_at + index_frequency_secs` < NOW
 ///
+/// Sources with `index_error_count >= MAX_INDEX_RETRIES` are excluded from
+/// automatic indexing. They can still be manually indexed via "Force index".
+///
 /// # Errors
 ///
 /// Returns an error if the database operation fails.
@@ -573,12 +580,14 @@ pub async fn list_sources_due_for_indexing(pool: &PgPool) -> Result<Vec<Source>,
         r"
         SELECT {SOURCE_COLUMNS}
         FROM sources
-        WHERE last_indexed_at IS NULL
-           OR last_indexed_at + make_interval(secs => index_frequency_secs) < NOW()
+        WHERE index_error_count < $1
+          AND (last_indexed_at IS NULL
+               OR last_indexed_at + make_interval(secs => index_frequency_secs) < NOW())
         ORDER BY last_indexed_at NULLS FIRST
         "
     );
     let rows = sqlx::query_as::<_, SourceRow>(&query)
+        .bind(MAX_INDEX_RETRIES)
         .fetch_all(pool)
         .await?;
 
@@ -681,6 +690,34 @@ pub async fn record_source_indexing_error(
     )
     .bind(id.to_string())
     .bind(error)
+    .execute(pool)
+    .await?;
+
+    if result.rows_affected() == 0 {
+        return Err(DbError::NotFound);
+    }
+
+    Ok(())
+}
+
+/// Reset the indexing error count for a source.
+///
+/// Called when a user manually triggers "Force index" to give the source
+/// fresh retry attempts.
+///
+/// # Errors
+///
+/// Returns `DbError::NotFound` if the source doesn't exist.
+pub async fn reset_source_indexing_errors(pool: &PgPool, id: Ulid) -> Result<(), DbError> {
+    let result = sqlx::query(
+        r"
+        UPDATE sources
+        SET last_error = NULL,
+            index_error_count = 0
+        WHERE id = $1
+        ",
+    )
+    .bind(id.to_string())
     .execute(pool)
     .await?;
 

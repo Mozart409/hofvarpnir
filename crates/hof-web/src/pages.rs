@@ -868,7 +868,7 @@ async fn sources_page(
     };
 
     // Get sources for the user's profiles
-    let sources = match db::list_sources(&state.pool).await {
+    let mut sources = match db::list_sources(&state.pool).await {
         Ok(data) => {
             // Filter to only show sources belonging to user's profiles
             let profile_ids: std::collections::HashSet<_> = profiles.iter().map(|p| p.id).collect();
@@ -884,6 +884,9 @@ async fn sources_page(
             );
         }
     };
+
+    // Sort sources alphabetically by display name
+    sources.sort_by_key(|s| s.display_name().to_lowercase());
 
     // Calculate default cutoff date (7 days ago)
     let default_cutoff_date = (Utc::now() - chrono::Duration::days(7))
@@ -2048,6 +2051,12 @@ async fn schedule_page(
         })
         .collect();
 
+    // Build source name lookup for recent runs
+    let source_names: std::collections::HashMap<Ulid, String> = sources
+        .iter()
+        .map(|s| (s.id, s.display_name().to_string()))
+        .collect();
+
     let now = Utc::now();
 
     // Build schedule entries
@@ -2104,7 +2113,7 @@ async fn schedule_page(
                 }
             }
 
-            (recent_runs_section(&recent_runs))
+            (recent_runs_section(&recent_runs, &source_names))
         },
     );
 
@@ -2180,7 +2189,10 @@ fn cleanup_status_section(
     }
 }
 
-fn recent_runs_section(recent_runs: &[&hof_core::domain::activity::ActivityEvent]) -> Markup {
+fn recent_runs_section(
+    recent_runs: &[&hof_core::domain::activity::ActivityEvent],
+    source_names: &std::collections::HashMap<Ulid, String>,
+) -> Markup {
     html! {
         section class="mt-8 rounded-2xl border border-slate-200 dark:border-slate-700 bg-white/80 dark:bg-slate-800/80 p-6 shadow-sm" {
             h2 class="text-lg font-semibold text-slate-900 dark:text-slate-100" { "Recent Indexing Runs" }
@@ -2194,6 +2206,7 @@ fn recent_runs_section(recent_runs: &[&hof_core::domain::activity::ActivityEvent
                         thead class="bg-slate-50 dark:bg-slate-800" {
                             tr {
                                 th class="px-3 py-2 text-left font-semibold text-slate-700 dark:text-slate-300" { "Time" }
+                                th class="px-3 py-2 text-left font-semibold text-slate-700 dark:text-slate-300" { "Source" }
                                 th class="px-3 py-2 text-left font-semibold text-slate-700 dark:text-slate-300" { "Result" }
                                 th class="px-3 py-2 text-left font-semibold text-slate-700 dark:text-slate-300" { "Details" }
                             }
@@ -2203,6 +2216,17 @@ fn recent_runs_section(recent_runs: &[&hof_core::domain::activity::ActivityEvent
                                 tr {
                                     td class="whitespace-nowrap px-3 py-2 text-slate-600 dark:text-slate-400" title=(run.created_at.to_rfc3339()) {
                                         (format_time_ago(run.created_at))
+                                    }
+                                    td class="px-3 py-2 text-slate-700 dark:text-slate-300" {
+                                        @if let Some(source_id) = run.source_id {
+                                            @if let Some(name) = source_names.get(&source_id) {
+                                                (name)
+                                            } @else {
+                                                span class="text-slate-400 dark:text-slate-500 italic" { "deleted" }
+                                            }
+                                        } @else {
+                                            span class="text-slate-400 dark:text-slate-500" { "—" }
+                                        }
                                     }
                                     td class="px-3 py-2" {
                                         @if run.event_type == ActivityEventType::SourceIndexed {
