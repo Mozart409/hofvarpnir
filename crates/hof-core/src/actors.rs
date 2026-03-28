@@ -16,6 +16,9 @@ pub mod jellyfin_metadata;
 pub mod scheduler;
 pub mod source_indexer;
 
+#[cfg(test)]
+mod tests;
+
 // Re-export commonly used types
 pub use cleanup::{CleanupActor, CleanupActorArgs, CleanupResult, CleanupStatus};
 pub use download_supervisor::{
