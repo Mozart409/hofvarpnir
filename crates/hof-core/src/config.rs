@@ -33,6 +33,14 @@ pub struct ServerConfig {
     pub port: u16,
 }
 
+impl ServerConfig {
+    /// Returns the socket address to bind the server to.
+    #[must_use]
+    pub const fn bind_addr(&self) -> std::net::SocketAddr {
+        std::net::SocketAddr::new(self.host, self.port)
+    }
+}
+
 /// Download behavior configuration.
 #[derive(Debug, Clone)]
 pub struct DownloadConfig {
