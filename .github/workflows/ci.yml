@@ -7,9 +7,28 @@ on:
     tags-ignore:
       - 'v*.*.*'
 jobs:
-  check:
+  lint:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v6
+      - name: Setup Nix
+        uses: DeterminateSystems/nix-installer-action@main
+      - name: Setup Nix cache
+        uses: DeterminateSystems/flakehub-cache-action@main
+      - name: Check formatting
+        run: nix develop .#default --command cargo fmt --all -- --check
+      - name: Run clippy
+        run: nix develop .#default --command cargo clippy --all-targets --all-features -- -D warnings
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
     env:
       DATABASE_URL: postgres://postgres:postgres@localhost:5432/hofvarpnir_test
     services:
@@ -32,16 +51,11 @@ jobs:
         uses: DeterminateSystems/nix-installer-action@main
       - name: Setup Nix cache
         uses: DeterminateSystems/flakehub-cache-action@main
-      - name: Check formatting
-        run: nix develop .#default --command cargo fmt --all -- --check
-      - name: Run clippy
-        run: nix develop .#default --command cargo clippy --all-targets --all-features -- -D warnings
       - name: Run migrations
         run: nix develop .#default --command sh -c "cd crates/hof-core && sqlx migrate run"
       - name: Run tests
         run: nix develop .#default --command cargo test --all-features -- --include-ignored
   container:
-    needs: check
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     timeout-minutes: 30
     strategy:
@@ -55,6 +69,7 @@ jobs:
     permissions:
       contents: read
       actions: write
+      id-token: write
     steps:
       - uses: actions/checkout@v6
       - name: Setup Nix
@@ -70,7 +85,7 @@ jobs:
           path: result
           retention-days: 1
   container-manifest:
-    needs: container
+    needs: [lint, test, container]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 30
