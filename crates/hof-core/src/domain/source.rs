@@ -19,6 +19,8 @@ pub struct Source {
     pub url: String,
     pub source_type: SourceType,
     pub custom_name: Option<String>,
+    /// Whether this source is enabled for indexing and downloading.
+    pub enabled: bool,
     /// How often to check for new videos, stored as seconds.
     pub index_frequency_secs: i64,
     /// Ignore videos published before this date.
@@ -54,6 +56,7 @@ pub struct SourceRow {
     pub url: String,
     pub source_type: SourceType,
     pub custom_name: Option<String>,
+    pub enabled: bool,
     pub index_frequency_secs: i64,
     pub cutoff_date: NaiveDate,
     pub retention_days: Option<i32>,
@@ -80,6 +83,7 @@ impl TryFrom<SourceRow> for Source {
             url: row.url,
             source_type: row.source_type,
             custom_name: row.custom_name,
+            enabled: row.enabled,
             index_frequency_secs: row.index_frequency_secs,
             cutoff_date: row.cutoff_date,
             retention_days: row.retention_days,

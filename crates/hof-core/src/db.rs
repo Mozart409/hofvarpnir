@@ -454,7 +454,7 @@ pub struct UpdateSource<'a> {
 
 // SQL fragment for selecting all source columns
 const SOURCE_COLUMNS: &str = r"
-    id, profile_id, url, source_type, custom_name,
+    id, profile_id, url, source_type, custom_name, enabled,
     index_frequency_secs, cutoff_date, retention_days,
     last_indexed_at, last_error, index_error_count, created_at, updated_at,
     channel_id, channel_title, channel_description, channel_thumbnail_url, jellyfin_metadata_at
@@ -566,6 +566,7 @@ pub async fn list_sources(pool: &PgPool) -> Result<Vec<Source>, DbError> {
 /// Find sources that are due for indexing.
 ///
 /// A source is due for indexing if:
+/// - `enabled` is true, AND
 /// - `last_indexed_at` is NULL, OR
 /// - `last_indexed_at + index_frequency_secs` < NOW
 ///
@@ -580,7 +581,8 @@ pub async fn list_sources_due_for_indexing(pool: &PgPool) -> Result<Vec<Source>,
         r"
         SELECT {SOURCE_COLUMNS}
         FROM sources
-        WHERE index_error_count < $1
+        WHERE enabled = true
+          AND index_error_count < $1
           AND (last_indexed_at IS NULL
                OR last_indexed_at + make_interval(secs => index_frequency_secs) < NOW())
         ORDER BY last_indexed_at NULLS FIRST
@@ -635,6 +637,31 @@ pub async fn update_source(
         .ok_or(DbError::NotFound)?;
 
     Ok(Source::try_from(row)?)
+}
+
+/// Set the enabled state for a source.
+///
+/// # Errors
+///
+/// Returns `DbError::NotFound` if the source doesn't exist.
+pub async fn set_source_enabled(pool: &PgPool, id: Ulid, enabled: bool) -> Result<(), DbError> {
+    let result = sqlx::query(
+        r"
+        UPDATE sources
+        SET enabled = $2
+        WHERE id = $1
+        ",
+    )
+    .bind(id.to_string())
+    .bind(enabled)
+    .execute(pool)
+    .await?;
+
+    if result.rows_affected() == 0 {
+        return Err(DbError::NotFound);
+    }
+
+    Ok(())
 }
 
 /// Update the last indexed timestamp for a source and clear any error state.
