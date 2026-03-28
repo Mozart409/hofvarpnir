@@ -54,6 +54,8 @@ pub struct SourceResponse {
     pub url: String,
     pub source_type: SourceType,
     pub custom_name: Option<String>,
+    /// Whether this source is enabled for indexing and downloading.
+    pub enabled: bool,
     /// How often to check for new videos (seconds).
     pub index_frequency_secs: i64,
     /// Ignore videos published before this date (YYYY-MM-DD).
@@ -73,6 +75,7 @@ impl From<Source> for SourceResponse {
             url: s.url,
             source_type: s.source_type,
             custom_name: s.custom_name,
+            enabled: s.enabled,
             index_frequency_secs: s.index_frequency_secs,
             cutoff_date: s.cutoff_date.to_string(),
             retention_days: s.retention_days,

@@ -27,6 +27,7 @@ pub enum ActivityEventType {
     ProfileUpdated,
     ProfileDeleted,
     SourceCreated,
+    SourceUpdated,
     SourceDeleted,
 }
 
