@@ -648,7 +648,7 @@ async fn profiles_page(
                         }
                     }
                     (input_text("Name", "name", "Daily Archive", true, ""))
-                    (input_text("Naming Template", "naming_template", "{{source_custom_name/or default}}/{{title}}.{{ext}}", true, "{{source_custom_name/or default}}/{{title}}.{{ext}}"))
+                    (input_text("Naming Template", "naming_template", "{{source_custom_name/or default}}/{{year}}/{{title}}.{{ext}}", true, "{{source_custom_name/or default}}/{{year}}/{{title}}.{{ext}}"))
                     (input_text("Output Directory", "output_dir", "/data/videos", true, ""))
                     (input_number("Storage Quota (GB)", "storage_quota_gb", "100", true, "100"))
                     (input_number("Retention Days", "retention_days", "Optional", false, ""))
