@@ -1311,6 +1311,7 @@ dependencies = [
  "kameo",
  "serde",
  "serde_json",
+ "serde_qs",
  "sqlx",
  "thiserror 2.0.18",
  "tokio",
@@ -1372,6 +1373,7 @@ version = "0.1.7"
 dependencies = [
  "axum",
  "chrono",
+ "color-eyre",
  "futures",
  "hof-api",
  "hof-core",
@@ -3245,6 +3247,17 @@ dependencies = [
  "itoa",
  "serde",
  "serde_core",
+]
+
+[[package]]
+name = "serde_qs"
+version = "0.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cd34f36fe4c5ba9654417139a9b3a20d2e1de6012ee678ad14d240c22c78d8d6"
+dependencies = [
+ "percent-encoding",
+ "serde",
+ "thiserror 1.0.69",
 ]
 
 [[package]]

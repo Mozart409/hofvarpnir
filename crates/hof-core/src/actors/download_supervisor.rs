@@ -195,14 +195,18 @@ impl Message<EnqueueDownload> for DownloadSupervisor {
             if let Some(last_start) = last_download_start {
                 let elapsed = last_start.elapsed();
                 if elapsed < rate_limit_delay {
-                    let wait_time = rate_limit_delay.checked_sub(elapsed).unwrap();
+                    let wait_time = rate_limit_delay.saturating_sub(elapsed);
                     debug!(wait_ms = wait_time.as_millis(), "Rate limit delay");
                     tokio::time::sleep(wait_time).await;
                 }
             }
 
             // Acquire semaphore permit
-            let _permit = semaphore.acquire().await.expect("Semaphore closed");
+            let Ok(_permit) = semaphore.acquire().await else {
+                // Semaphore closed during shutdown
+                debug!(video_id = %video_id, "Semaphore closed, aborting download");
+                return;
+            };
 
             debug!(video_id = %video_id, "Acquired download permit");
 

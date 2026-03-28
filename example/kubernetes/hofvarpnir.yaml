@@ -1,0 +1,114 @@
+# Hofvarpnir Application Deployment
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: hofvarpnir-downloads
+  namespace: hofvarpnir
+  labels:
+    app.kubernetes.io/name: hofvarpnir
+    app.kubernetes.io/component: storage
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 100Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: hofvarpnir
+  namespace: hofvarpnir
+  labels:
+    app.kubernetes.io/name: hofvarpnir
+    app.kubernetes.io/component: app
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8080
+      targetPort: 8080
+      name: http
+  selector:
+    app.kubernetes.io/name: hofvarpnir
+    app.kubernetes.io/component: app
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hofvarpnir
+  namespace: hofvarpnir
+  labels:
+    app.kubernetes.io/name: hofvarpnir
+    app.kubernetes.io/component: app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: hofvarpnir
+      app.kubernetes.io/component: app
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: hofvarpnir
+        app.kubernetes.io/component: app
+    spec:
+      # Run as UID:GID 1000:1000 for media server compatibility (Jellyfin, Plex)
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      initContainers:
+        # Wait for PostgreSQL to be ready
+        - name: wait-for-postgres
+          image: postgres:17
+          command:
+            - sh
+            - -c
+            - |
+              until pg_isready -h postgres -p 5432 -U postgres; do
+                echo "Waiting for PostgreSQL..."
+                sleep 2
+              done
+              echo "PostgreSQL is ready!"
+      containers:
+        - name: hofvarpnir
+          image: ghcr.io/mozart409/hofvarpnir:latest
+          ports:
+            - containerPort: 8080
+              name: http
+          envFrom:
+            - configMapRef:
+                name: hofvarpnir-config
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: hofvarpnir-secrets
+                  key: DATABASE_URL
+          volumeMounts:
+            - name: downloads
+              mountPath: /data/downloads
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "1000m"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 20
+      volumes:
+        - name: downloads
+          persistentVolumeClaim:
+            claimName: hofvarpnir-downloads

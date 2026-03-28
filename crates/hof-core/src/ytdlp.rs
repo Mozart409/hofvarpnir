@@ -527,6 +527,7 @@ fn render_output_relative_path(
     let safe_title = sanitize_filename_component(title);
     let safe_id = sanitize_filename_component(platform_video_id);
     let safe_source = sanitize_filename_component(&template_data.source_name);
+    let year = template_data.episode_date.format("%Y").to_string();
     let season_episode = format!(
         "S{}E{}-{:03}",
         template_data.season_year,
@@ -544,6 +545,8 @@ fn render_output_relative_path(
         .replace("{{title}}", &safe_title)
         .replace("{{ id }}", &safe_id)
         .replace("{{id}}", &safe_id)
+        .replace("{{ year }}", &year)
+        .replace("{{year}}", &year)
         .replace("{{ source_custom_name/or default }}", &safe_source)
         .replace("{{source_custom_name/or default}}", &safe_source)
         .replace("{{ source_custom_name_or_default }}", &safe_source)
@@ -558,6 +561,7 @@ fn render_output_relative_path(
         )
         .replace("{title}", &safe_title)
         .replace("{id}", &safe_id)
+        .replace("{year}", &year)
         .replace("{ext}", "mkv")
         .replace("%(ext)s", "mkv");
 
@@ -578,9 +582,10 @@ fn render_output_relative_path(
         segments.push(format!("{safe_title}-{safe_id}.mkv"));
     }
 
-    let last_segment = segments
-        .last_mut()
-        .expect("segments is guaranteed to contain at least one segment");
+    // SAFETY: segments is guaranteed non-empty - we push a fallback above if it was empty
+    let Some(last_segment) = segments.last_mut() else {
+        unreachable!("segments is guaranteed to contain at least one segment")
+    };
 
     let is_mkv_extension = Path::new(last_segment)
         .extension()
@@ -621,13 +626,13 @@ pub fn validate_output_template(template: &str) -> Result<(), String> {
 
     if let Some(raw) = find_unknown_double_brace_placeholder(template) {
         return Err(format!(
-            "Unsupported template placeholder '{{{{ {raw} }}}}'. Allowed placeholders: title, id, ext, source_custom_name/or default, season_by_year__episode_by_date_and_index"
+            "Unsupported template placeholder '{{{{ {raw} }}}}'. Allowed placeholders: title, id, ext, year, source_custom_name/or default, season_by_year__episode_by_date_and_index"
         ));
     }
 
     if let Some(raw) = find_unknown_single_brace_placeholder(template) {
         return Err(format!(
-            "Unsupported template placeholder '{{{raw}}}'. Allowed placeholders: title, id, ext"
+            "Unsupported template placeholder '{{{raw}}}'. Allowed placeholders: title, id, ext, year"
         ));
     }
 
@@ -649,6 +654,7 @@ fn find_unknown_double_brace_placeholder(template: &str) -> Option<String> {
         "title",
         "id",
         "ext",
+        "year",
         "source_custom_name/or default",
         "source_custom_name_or_default",
         "season_by_year__episode_by_date_and_index",
@@ -671,7 +677,7 @@ fn find_unknown_double_brace_placeholder(template: &str) -> Option<String> {
 }
 
 fn find_unknown_single_brace_placeholder(template: &str) -> Option<String> {
-    const ALLOWED: &[&str] = &["title", "id", "ext"];
+    const ALLOWED: &[&str] = &["title", "id", "ext", "year"];
 
     let mut rest = template;
     while let Some(start) = rest.find('{') {
@@ -924,6 +930,27 @@ mod tests {
     fn test_validate_output_template_accepts_advanced_folders() {
         let template = "{{ source_custom_name/or default }}/{{ season_by_year__episode_by_date_and_index }} - {{ title }}.{{ ext }}";
         assert!(validate_output_template(template).is_ok());
+    }
+
+    #[test]
+    fn test_validate_output_template_accepts_year_placeholder() {
+        let template = "{{source_custom_name/or default}}/{{year}}/{{title}}.{{ext}}";
+        assert!(validate_output_template(template).is_ok());
+    }
+
+    #[test]
+    fn test_render_output_filename_with_year_folder() {
+        let output = render_output_relative_path(
+            "{{source_custom_name/or default}}/{{year}}/{{title}}.{{ext}}",
+            "Monaco GP Highlights",
+            "abc123",
+            &template_data(),
+        );
+
+        assert_eq!(
+            output,
+            PathBuf::from("F1 Channel/2026/Monaco GP Highlights.mkv")
+        );
     }
 
     #[test]

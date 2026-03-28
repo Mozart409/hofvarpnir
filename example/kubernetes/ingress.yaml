@@ -1,0 +1,41 @@
+# Hofvarpnir Ingress (Optional)
+# Uncomment and configure for your ingress controller
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: hofvarpnir
+  namespace: hofvarpnir
+  labels:
+    app.kubernetes.io/name: hofvarpnir
+    app.kubernetes.io/component: ingress
+  annotations:
+    # Nginx Ingress Controller
+    # nginx.ingress.kubernetes.io/proxy-body-size: "0"
+    # nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    #
+    # Traefik Ingress Controller
+    # traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    # traefik.ingress.kubernetes.io/router.tls: "true"
+    #
+    # cert-manager (for automatic TLS)
+    # cert-manager.io/cluster-issuer: letsencrypt-prod
+    {}
+spec:
+  # ingressClassName: nginx  # or traefik, etc.
+  rules:
+    - host: hofvarpnir.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: hofvarpnir
+                port:
+                  number: 8080
+  # Uncomment for TLS
+  # tls:
+  #   - hosts:
+  #       - hofvarpnir.example.com
+  #     secretName: hofvarpnir-tls
