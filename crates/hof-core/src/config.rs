@@ -97,11 +97,13 @@ impl DatabaseConfig {
 }
 
 impl ServerConfig {
+    const DEFAULT_HOST: IpAddr = IpAddr::V4(std::net::Ipv4Addr::LOCALHOST);
+
     fn from_env() -> Self {
         Self {
             host: optional_env("HOST")
                 .and_then(|s| s.parse().ok())
-                .unwrap_or_else(|| "127.0.0.1".parse().unwrap()),
+                .unwrap_or(Self::DEFAULT_HOST),
             port: optional_env("PORT")
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(8080),

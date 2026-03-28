@@ -582,9 +582,10 @@ fn render_output_relative_path(
         segments.push(format!("{safe_title}-{safe_id}.mkv"));
     }
 
-    let last_segment = segments
-        .last_mut()
-        .expect("segments is guaranteed to contain at least one segment");
+    // SAFETY: segments is guaranteed non-empty - we push a fallback above if it was empty
+    let Some(last_segment) = segments.last_mut() else {
+        unreachable!("segments is guaranteed to contain at least one segment")
+    };
 
     let is_mkv_extension = Path::new(last_segment)
         .extension()
