@@ -67,7 +67,7 @@ fix: clear
     cargo clippy --fix --allow-dirty --allow-staged --all-targets --all-features
 
 lint: clear
-    cargo clippy --all-targets --all-features -- -D warnings
+    cargo clippy --all-targets --all-features -- -D warnings -W clippy::pedantic
 
 # Development
 dev: clear
