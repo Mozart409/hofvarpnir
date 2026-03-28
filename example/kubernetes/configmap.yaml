@@ -1,0 +1,18 @@
+# Hofvarpnir Configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: hofvarpnir-config
+  namespace: hofvarpnir
+  labels:
+    app.kubernetes.io/name: hofvarpnir
+    app.kubernetes.io/component: config
+data:
+  HOST: "0.0.0.0"
+  PORT: "8080"
+  MAX_CONCURRENT_DOWNLOADS: "3"
+  DOWNLOAD_TIMEOUT_HOURS: "4"
+  MAX_DOWNLOAD_ATTEMPTS: "5"
+  RATE_LIMIT_DELAY_SECS: "60"
+  DEFAULT_OUTPUT_DIR: "/data/downloads"
+  RUST_LOG: "info,hofvarpnir=debug,sqlx=warn"

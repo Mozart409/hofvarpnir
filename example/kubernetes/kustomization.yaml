@@ -1,0 +1,25 @@
+# Kustomization for Hofvarpnir
+# Usage: kubectl apply -k example/kubernetes/
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: hofvarpnir
+
+resources:
+  - namespace.yaml
+  - configmap.yaml
+  - secret.yaml
+  - postgres.yaml
+  - hofvarpnir.yaml
+  # Uncomment to enable ingress
+  # - ingress.yaml
+
+# Common labels applied to all resources
+commonLabels:
+  app.kubernetes.io/managed-by: kustomize
+  app.kubernetes.io/version: "latest"
+
+# Image customization (override with kustomize edit set image)
+images:
+  - name: ghcr.io/mozart409/hofvarpnir
+    newTag: latest

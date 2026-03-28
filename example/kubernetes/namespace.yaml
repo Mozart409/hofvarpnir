@@ -1,0 +1,8 @@
+# Hofvarpnir Kubernetes Namespace
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: hofvarpnir
+  labels:
+    app.kubernetes.io/name: hofvarpnir
+    app.kubernetes.io/part-of: hofvarpnir
