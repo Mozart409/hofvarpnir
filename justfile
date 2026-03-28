@@ -74,11 +74,13 @@ dev: clear
     cargo run --bin hofvarpnir
 
 # Tailwind CSS
+[working-directory: 'crates/hof-web/assets']
 css-watch:
-    tailwindcss -i crates/hof-web/assets/input.css -o crates/hof-web/assets/app.css --watch --minify
+    tailwindcss -i input.css -o app.css --watch --minify
 
+[working-directory: 'crates/hof-web/assets']
 css-build:
-    tailwindcss -i crates/hof-web/assets/input.css -o crates/hof-web/assets/app.css --minify
+    tailwindcss -i input.css -o app.css --minify
 
 # Testing
 test: clear mig-run
