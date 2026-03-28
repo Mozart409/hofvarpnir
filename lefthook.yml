@@ -70,6 +70,7 @@ pre-push:
 
         docker run -d --name hof-smoke-app --network hof-smoke -p 13000:3000 \
           -e DATABASE_URL=postgresql://postgres:postgres@hof-smoke-db:5432/hofvarpnir_dev \
+          -e HOST=0.0.0.0 \
           -e PORT=3000 \
           -e DEFAULT_OUTPUT_DIR=/data/downloads \
           -e YTDLP_PATH=/bin/yt-dlp \
