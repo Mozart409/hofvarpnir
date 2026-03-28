@@ -27,5 +27,8 @@ tokio-stream.workspace = true
 kameo.workspace = true
 sqlx.workspace = true
 
+[dev-dependencies]
+serde_qs = "0.13"
+
 [lints]
 workspace = true

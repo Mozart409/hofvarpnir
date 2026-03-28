@@ -4,3 +4,6 @@ pub mod health;
 pub mod profiles;
 pub mod sources;
 pub mod system;
+
+#[cfg(test)]
+mod tests;
