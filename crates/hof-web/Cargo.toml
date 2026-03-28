@@ -13,6 +13,7 @@ path = "src/main.rs"
 [dependencies]
 hof-core = { path = "../hof-core" }
 hof-api = { path = "../hof-api" }
+color-eyre.workspace = true
 tokio.workspace = true
 axum.workspace = true
 tower-http.workspace = true

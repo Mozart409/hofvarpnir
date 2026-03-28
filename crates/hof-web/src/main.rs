@@ -1,31 +1,28 @@
+use color_eyre::Result;
 use tokio::sync::broadcast;
 use tracing_subscriber::EnvFilter;
 
 use hof_core::{Config, db, initialize, shutdown};
 
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<()> {
+    color_eyre::install()?;
+
     // Initialize tracing
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::from_default_env())
         .init();
 
     // Load configuration
-    let config = Config::load().expect("Failed to load configuration");
+    let config = Config::load()?;
 
     // Initialize database
-    let pool = db::create_pool()
-        .await
-        .expect("Failed to create database pool");
+    let pool = db::create_pool().await?;
 
-    db::run_migrations(&pool)
-        .await
-        .expect("Failed to run migrations");
+    db::run_migrations(&pool).await?;
 
     // Initialize actor system
-    let mut actor_system = initialize(pool.clone(), &config)
-        .await
-        .expect("Failed to initialize actor system");
+    let mut actor_system = initialize(pool.clone(), &config).await?;
 
     // Create broadcast channel for SSE progress updates
     // The actor system uses mpsc, so we bridge it to broadcast
@@ -57,7 +54,7 @@ async fn main() {
     );
 
     // Create session layer
-    let session_layer = hof_web::session_layer(pool).await;
+    let session_layer = hof_web::session_layer(pool).await?;
 
     // Build the application router
     let app = axum::Router::new()
@@ -66,11 +63,9 @@ async fn main() {
         .merge(hof_web::router(api_state))
         .layer(session_layer);
 
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000")
-        .await
-        .expect("failed to bind to port 3000");
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await?;
 
-    tracing::info!("listening on {}", listener.local_addr().unwrap());
+    tracing::info!("listening on {}", listener.local_addr()?);
 
     // Start the server
     let server = axum::serve(listener, app);
@@ -93,4 +88,6 @@ async fn main() {
     }
 
     tracing::info!("Server shutdown complete");
+
+    Ok(())
 }

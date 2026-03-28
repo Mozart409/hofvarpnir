@@ -2,6 +2,8 @@ pub mod auth;
 pub mod pages;
 
 use axum::Router;
+use color_eyre::Result;
+use color_eyre::eyre::eyre;
 use hof_api::AppState;
 use sqlx::PgPool;
 use tower_sessions::SessionManagerLayer;
@@ -18,24 +20,21 @@ pub fn router(state: AppState) -> Router {
 ///
 /// Uses `PostgreSQL` as the session store.
 ///
-/// # Panics
+/// # Errors
 ///
-/// Panics if the session store cannot be configured or migrated.
-pub async fn session_layer(pool: PgPool) -> SessionManagerLayer<PostgresStore> {
+/// Returns an error if the session store cannot be configured or migrated.
+pub async fn session_layer(pool: PgPool) -> Result<SessionManagerLayer<PostgresStore>> {
     let session_store = PostgresStore::new(pool)
         .with_schema_name("public")
-        .expect("Invalid schema name")
+        .map_err(|e| eyre!("invalid schema name: {e}"))?
         .with_table_name("sessions")
-        .expect("Invalid table name");
+        .map_err(|e| eyre!("invalid table name: {e}"))?;
 
     // Run session store migrations (creates table if not exists)
-    session_store
-        .migrate()
-        .await
-        .expect("Failed to migrate session store");
+    session_store.migrate().await?;
 
-    SessionManagerLayer::new(session_store)
+    Ok(SessionManagerLayer::new(session_store)
         .with_secure(false) // Set to true in production with HTTPS
         .with_http_only(true)
-        .with_same_site(tower_sessions::cookie::SameSite::Lax)
+        .with_same_site(tower_sessions::cookie::SameSite::Lax))
 }

@@ -1372,6 +1372,7 @@ version = "0.1.7"
 dependencies = [
  "axum",
  "chrono",
+ "color-eyre",
  "futures",
  "hof-api",
  "hof-core",
