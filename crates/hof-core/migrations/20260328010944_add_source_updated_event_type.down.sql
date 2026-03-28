@@ -1,0 +1,3 @@
+-- Note: PostgreSQL does not support removing enum values
+-- This migration is intentionally empty for the down direction
+-- The enum value will remain but unused if rolled back
