@@ -41,8 +41,8 @@ pub enum DbError {
 /// - `max_connections: 20` - Sufficient for concurrent downloads + API requests
 /// - `min_connections: 2` - Keep warm connections for quick queries
 /// - `acquire_timeout: 5s` - Generous timeout (downloads aren't time-critical)
-/// - `idle_timeout: 600s` - Close idle connections after 10 minutes
-/// - `max_lifetime: 1800s` - Recycle connections every 30 minutes
+/// - `idle_timeout: 300s` - Close idle connections after 5 minutes
+/// - `max_lifetime: 600` - Recycle connections every 10 minutes
 ///
 /// # Errors
 ///
