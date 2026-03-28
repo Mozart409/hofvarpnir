@@ -310,6 +310,11 @@ All PRs must pass:
 3. `cargo test --all-features`
 4. `cargo build --all-features --release`
 
+**Important:** Always run clippy with pedantic lints before submitting changes:
+```bash
+cargo clippy --workspace --all-targets -- -W clippy::pedantic
+```
+
 ## Environment Variables
 
 Required for development:
