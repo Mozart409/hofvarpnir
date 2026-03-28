@@ -166,6 +166,7 @@ pub enum DomainError {
 
 // Use color-eyre for application-level error handling
 use color_eyre::Result;
+use color_eyre::eyre::eyre;
 
 // Prefer ? operator
 let video = db::get_video(&pool, id).await?;
@@ -176,6 +177,33 @@ error!(error = %e, video_id = %id, "Failed to download video");
 // Add context for errors
 return Err(YtdlpError::InitializationError(msg.to_string()));
 ```
+
+#### Banned: `unwrap()` and `expect()`
+
+**Never use `.unwrap()` or `.expect()` in production code.** These methods panic on failure, which is unrecoverable and inappropriate for application code.
+
+```rust
+// BAD: Will panic on None/Err
+let value = some_option.unwrap();
+let result = fallible_call().expect("should work");
+
+// GOOD: Use ? operator with color_eyre
+let value = some_option.ok_or_else(|| eyre!("missing value"))?;
+let result = fallible_call()?;
+
+// GOOD: Use if-let or match for optional handling
+if let Some(value) = some_option {
+    // handle value
+}
+
+// GOOD: Provide default values when appropriate
+let value = some_option.unwrap_or_default();
+let value = some_option.unwrap_or(fallback);
+```
+
+**Exceptions:** `.unwrap()` is acceptable only in:
+- Tests (where panics are expected failure modes)
+- Cases where the invariant is statically provable (document with a comment)
 
 ### Documentation
 
