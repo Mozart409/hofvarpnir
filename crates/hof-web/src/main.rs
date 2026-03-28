@@ -63,7 +63,8 @@ async fn main() -> Result<()> {
         .merge(hof_web::router(api_state))
         .layer(session_layer);
 
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await?;
+    let bind_addr = config.server.bind_addr();
+    let listener = tokio::net::TcpListener::bind(bind_addr).await?;
 
     tracing::info!("listening on {}", listener.local_addr()?);
 
