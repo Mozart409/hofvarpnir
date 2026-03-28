@@ -211,8 +211,9 @@ pub fn router(state: AppState) -> Router {
         .route("/profiles/{id}", post(update_profile))
         .route("/profiles/{id}/delete", post(delete_profile))
         .route("/sources", get(sources_page).post(create_source))
-        .route("/sources/{id}", post(update_source))
+        .route("/sources/{id}", get(source_detail_page).post(update_source))
         .route("/sources/{id}/delete", post(delete_source))
+        .route("/sources/{id}/toggle", post(toggle_source_enabled))
         .route("/sources/{id}/index", post(trigger_index))
         .route("/sources/{id}/metadata", post(trigger_metadata))
         .route("/downloads", get(downloads_page))
@@ -1128,6 +1129,68 @@ async fn delete_source(
     }
 }
 
+async fn toggle_source_enabled(
+    _auth: AuthUser,
+    State(state): State<AppState>,
+    session: Session,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let Ok(source_id) = Ulid::from_string(id.trim()) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            error_page("Invalid source ID provided"),
+        )
+            .into_response();
+    };
+
+    // First get the current state
+    let source = match db::get_source(&state.pool, source_id).await {
+        Ok(s) => s,
+        Err(db::DbError::NotFound) => {
+            return (StatusCode::NOT_FOUND, error_page("Source not found")).into_response();
+        }
+        Err(error) => {
+            tracing::error!(%error, "failed to get source for toggle");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                error_page("Failed to toggle source"),
+            )
+                .into_response();
+        }
+    };
+
+    let new_enabled = !source.enabled;
+    match db::set_source_enabled(&state.pool, source_id, new_enabled).await {
+        Ok(()) => {
+            let status = if new_enabled { "enabled" } else { "disabled" };
+            let name = source.display_name();
+            db::log_activity(
+                &state.pool,
+                ActivityEventType::SourceUpdated,
+                ActivitySeverity::Info,
+                &format!("Source \"{name}\" {status}"),
+                Some(source_id),
+                None,
+                Some(source.profile_id),
+            )
+            .await;
+            set_flash(&session, "success", &format!("Source {status}")).await;
+            Redirect::to("/sources").into_response()
+        }
+        Err(db::DbError::NotFound) => {
+            (StatusCode::NOT_FOUND, error_page("Source not found")).into_response()
+        }
+        Err(error) => {
+            tracing::error!(%error, "failed to toggle source enabled state");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                error_page("Failed to toggle source"),
+            )
+                .into_response()
+        }
+    }
+}
+
 async fn trigger_index(
     _auth: AuthUser,
     State(state): State<AppState>,
@@ -1258,6 +1321,60 @@ async fn trigger_metadata(
                 .into_response()
         }
     }
+}
+
+async fn source_detail_page(
+    _auth: AuthUser,
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let Ok(source_id) = Ulid::from_string(id.trim()) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            error_page("Invalid source ID provided"),
+        );
+    };
+
+    let source = match db::get_source(&state.pool, source_id).await {
+        Ok(s) => s,
+        Err(db::DbError::NotFound) => {
+            return (StatusCode::NOT_FOUND, error_page("Source not found"));
+        }
+        Err(error) => {
+            tracing::error!(%error, "failed to load source");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                error_page("Failed to load source"),
+            );
+        }
+    };
+
+    let videos = match db::list_videos_for_source(&state.pool, source_id).await {
+        Ok(v) => v,
+        Err(error) => {
+            tracing::error!(%error, "failed to load videos for source");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                error_page("Failed to load videos"),
+            );
+        }
+    };
+
+    let page = layout(
+        &format!("Source: {}", source.display_name()),
+        NavItem::Sources,
+        html! {
+            div class="mb-4" {
+                a href="/sources" class="text-sm text-sky-600 dark:text-sky-400 hover:underline" {
+                    "← Back to Sources"
+                }
+            }
+            (source_detail_header(&source, videos.len()))
+            (source_videos_table(&videos))
+        },
+    );
+
+    (StatusCode::OK, page)
 }
 
 #[allow(clippy::too_many_lines)]
@@ -1977,6 +2094,7 @@ fn activity_event_row(event: &hof_core::domain::activity::ActivityEvent) -> Mark
         ActivityEventType::ProfileUpdated => "Profile Updated",
         ActivityEventType::ProfileDeleted => "Profile Deleted",
         ActivityEventType::SourceCreated => "Source Created",
+        ActivityEventType::SourceUpdated => "Source Updated",
         ActivityEventType::SourceDeleted => "Source Deleted",
     };
 
@@ -2432,15 +2550,17 @@ fn profile_editor(profile: &Profile) -> Markup {
 }
 
 fn source_editor(source: &Source) -> Markup {
-    // Determine border color based on error state
-    let border_class = if source.last_error.is_some() {
+    // Determine border color based on enabled and error state
+    let border_class = if !source.enabled {
+        "border-slate-300 dark:border-slate-600 bg-slate-100/60 dark:bg-slate-900/60 opacity-60"
+    } else if source.last_error.is_some() {
         "border-rose-300 dark:border-rose-700 bg-rose-50/60 dark:bg-rose-900/30"
     } else {
         "border-slate-200 dark:border-slate-700 bg-slate-50/60 dark:bg-slate-800/60"
     };
 
     html! {
-        details class=(format!("group rounded-xl border {} p-4 open:bg-white dark:open:bg-slate-800", border_class)) {
+        details class=(format!("group rounded-xl border {} p-4 open:bg-white dark:open:bg-slate-800 open:opacity-100", border_class)) {
             summary class="cursor-pointer list-none" {
                 div class="flex flex-wrap items-center justify-between gap-3" {
                     div class="min-w-0" {
@@ -2450,6 +2570,14 @@ fn source_editor(source: &Source) -> Markup {
                         p class="truncate text-xs text-slate-500 dark:text-slate-400" { (source.id.to_string()) }
                     }
                     div class="flex items-center gap-2" {
+                        a href=(format!("/sources/{}", source.id))
+                            class="rounded-lg border border-sky-200 dark:border-sky-800 bg-sky-50 dark:bg-sky-900/50 px-3 py-1.5 text-xs font-medium text-sky-700 dark:text-sky-300 hover:bg-sky-100 dark:hover:bg-sky-900"
+                        {
+                            "View Videos"
+                        }
+                        @if !source.enabled {
+                            (status_chip("Disabled", "amber"))
+                        }
                         @if source.last_error.is_some() {
                             (status_chip(&format!("Error ({})", source.index_error_count), "rose"))
                         }
@@ -2486,10 +2614,19 @@ fn source_editor(source: &Source) -> Markup {
                     button class="rounded-lg bg-slate-900 dark:bg-slate-100 px-4 py-2 text-sm font-medium text-white dark:text-slate-900 hover:bg-slate-700 dark:hover:bg-slate-200" type="submit" {
                         "Save Source"
                     }
-                    button class="rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/50 px-4 py-2 text-sm font-medium text-amber-700 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-900" type="submit" formaction={(format!("/sources/{}/index", source.id))} {
+                    @if source.enabled {
+                        button class="rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/50 px-4 py-2 text-sm font-medium text-amber-700 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-900" type="submit" formaction={(format!("/sources/{}/toggle", source.id))} {
+                            "Disable"
+                        }
+                    } @else {
+                        button class="rounded-lg border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-900/50 px-4 py-2 text-sm font-medium text-emerald-700 dark:text-emerald-300 hover:bg-emerald-100 dark:hover:bg-emerald-900" type="submit" formaction={(format!("/sources/{}/toggle", source.id))} {
+                            "Enable"
+                        }
+                    }
+                    button class="rounded-lg border border-sky-200 dark:border-sky-800 bg-sky-50 dark:bg-sky-900/50 px-4 py-2 text-sm font-medium text-sky-700 dark:text-sky-300 hover:bg-sky-100 dark:hover:bg-sky-900" type="submit" formaction={(format!("/sources/{}/index", source.id))} {
                         "Trigger Index"
                     }
-                    button class="rounded-lg border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-900/50 px-4 py-2 text-sm font-medium text-emerald-700 dark:text-emerald-300 hover:bg-emerald-100 dark:hover:bg-emerald-900" type="submit" formaction={(format!("/sources/{}/metadata", source.id))} {
+                    button class="rounded-lg border border-violet-200 dark:border-violet-800 bg-violet-50 dark:bg-violet-900/50 px-4 py-2 text-sm font-medium text-violet-700 dark:text-violet-300 hover:bg-violet-100 dark:hover:bg-violet-900" type="submit" formaction={(format!("/sources/{}/metadata", source.id))} {
                         "Trigger Image Download"
                     }
                     button
@@ -2502,6 +2639,106 @@ fn source_editor(source: &Source) -> Markup {
                     }
                 }
             }
+        }
+    }
+}
+
+fn source_detail_header(source: &Source, video_count: usize) -> Markup {
+    html! {
+        section class="rounded-2xl border border-slate-200 dark:border-slate-700 bg-white/80 dark:bg-slate-800/80 p-6 shadow-sm" {
+            div class="flex items-start gap-4" {
+                @if let Some(ref thumb) = source.channel_thumbnail_url {
+                    img src=(thumb) alt="Channel thumbnail" class="h-16 w-16 rounded-full object-cover";
+                }
+                div {
+                    h2 class="text-xl font-semibold text-slate-900 dark:text-slate-100" {
+                        (source.display_name())
+                    }
+                    p class="mt-1 text-sm text-slate-500 dark:text-slate-400" {
+                        a href=(source.url) target="_blank" class="hover:underline" { (source.url) }
+                    }
+                    div class="mt-2 flex flex-wrap gap-2 text-xs text-slate-600 dark:text-slate-400" {
+                        span class="rounded bg-slate-100 dark:bg-slate-700 px-2 py-1" {
+                            (format!("{:?}", source.source_type))
+                        }
+                        span class="rounded bg-slate-100 dark:bg-slate-700 px-2 py-1" {
+                            (format!("{video_count} videos"))
+                        }
+                        @if let Some(indexed_at) = source.last_indexed_at {
+                            span class="rounded bg-slate-100 dark:bg-slate-700 px-2 py-1" {
+                                "Last indexed: " (format_time_ago(indexed_at))
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn source_videos_table(videos: &[hof_core::domain::video::Video]) -> Markup {
+    html! {
+        section class="mt-6 rounded-2xl border border-slate-200 dark:border-slate-700 bg-white/80 dark:bg-slate-800/80 p-6 shadow-sm" {
+            h3 class="text-lg font-semibold text-slate-900 dark:text-slate-100" { "Videos" }
+            @if videos.is_empty() {
+                p class="mt-3 text-sm text-slate-500 dark:text-slate-400" {
+                    "No videos indexed yet. Try triggering an index from the Sources page."
+                }
+            } @else {
+                div class="mt-4 overflow-x-auto" {
+                    table class="min-w-full divide-y divide-slate-200 dark:divide-slate-700 text-sm" {
+                        thead class="bg-slate-50 dark:bg-slate-800" {
+                            tr {
+                                th class="px-3 py-2 text-left font-semibold text-slate-700 dark:text-slate-300" { "Thumbnail" }
+                                th class="px-3 py-2 text-left font-semibold text-slate-700 dark:text-slate-300" { "Title" }
+                                th class="px-3 py-2 text-left font-semibold text-slate-700 dark:text-slate-300" { "Duration" }
+                                th class="px-3 py-2 text-left font-semibold text-slate-700 dark:text-slate-300" { "Published" }
+                                th class="px-3 py-2 text-left font-semibold text-slate-700 dark:text-slate-300" { "Status" }
+                            }
+                        }
+                        tbody class="divide-y divide-slate-100 dark:divide-slate-700 bg-white dark:bg-slate-900" {
+                            @for video in videos {
+                                (video_table_row(video))
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn video_table_row(video: &hof_core::domain::video::Video) -> Markup {
+    html! {
+        tr {
+            td class="px-3 py-2" {
+                @if let Some(ref thumb) = video.thumbnail_url {
+                    img src=(thumb) alt="" class="h-12 w-20 rounded object-cover";
+                } @else {
+                    div class="h-12 w-20 rounded bg-slate-200 dark:bg-slate-700" {}
+                }
+            }
+            td class="max-w-md px-3 py-2 text-slate-900 dark:text-slate-100" {
+                p class="truncate font-medium" { (video.title) }
+                p class="truncate text-xs text-slate-500 dark:text-slate-400" {
+                    (video.platform_video_id)
+                }
+            }
+            td class="px-3 py-2 text-slate-600 dark:text-slate-400" {
+                @if let Some(secs) = video.duration_secs {
+                    (format_duration_human(secs))
+                } @else {
+                    "—"
+                }
+            }
+            td class="px-3 py-2 text-slate-600 dark:text-slate-400" {
+                @if let Some(published) = video.published_at {
+                    (published.format("%Y-%m-%d"))
+                } @else {
+                    "—"
+                }
+            }
+            td class="px-3 py-2" { (status_badge(&video.status)) }
         }
     }
 }
