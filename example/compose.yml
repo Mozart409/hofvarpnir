@@ -1,0 +1,63 @@
+# Hofvarpnir Example Docker Compose
+# Quick start: docker compose up -d
+#
+# This minimal setup gets you running with:
+# - Hofvarpnir video archival service
+# - PostgreSQL 17 database
+#
+# For production, consider:
+# - Setting up proper backup for postgres_data volume
+# - Configuring a reverse proxy (Caddy, Traefik, nginx)
+services:
+  hofvarpnir:
+    container_name: hofvarpnir
+    image: ghcr.io/mozart409/hofvarpnir:latest
+    environment:
+      # Database
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/hofvarpnir
+      # Server
+      HOST: "0.0.0.0"
+      PORT: "8080"
+      # Downloads
+      MAX_CONCURRENT_DOWNLOADS: "3"
+      DOWNLOAD_TIMEOUT_HOURS: "4"
+      MAX_DOWNLOAD_ATTEMPTS: "5"
+      RATE_LIMIT_DELAY_SECS: "60"
+      DEFAULT_OUTPUT_DIR: /data/downloads
+      # Logging
+      RUST_LOG: info,hofvarpnir=debug,sqlx=warn
+      # Optional: override if yt-dlp is in a different location
+      # YTDLP_PATH: /bin/yt-dlp
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./hofvarpnir:/data/downloads
+    networks:
+      - hofvarpnir
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # Run as UID:GID 1000:1000 for media server compatibility (Jellyfin, Plex)
+    user: "1000:1000"
+    restart: unless-stopped
+  postgres:
+    container_name: postgres
+    image: postgres:17
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: hofvarpnir
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - hofvarpnir
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+volumes:
+  postgres_data:
+networks:
+  hofvarpnir:
