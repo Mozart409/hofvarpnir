@@ -28,7 +28,7 @@ kameo.workspace = true
 sqlx.workspace = true
 
 [dev-dependencies]
-serde_qs = "0.13"
+serde_qs = "1.1"
 
 [lints]
 workspace = true
