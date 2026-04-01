@@ -9,6 +9,7 @@
 //! - `OpenAPI` documentation via utoipa + Scalar
 #![allow(clippy::needless_for_each)]
 
+pub mod auth;
 pub mod routes;
 
 use axum::{Json, Router, routing::get};
@@ -24,10 +25,33 @@ use hof_core::domain::video::DownloadProgress;
 use kameo::actor::ActorRef;
 use sqlx::PgPool;
 use tokio::sync::broadcast;
-use utoipa::OpenApi;
+use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
+use utoipa::{Modify, OpenApi};
 use utoipa_scalar::{Scalar, Servable};
 
 use routes::{activity, downloads, health, profiles, sources, system};
+
+/// Security scheme modifier for `OpenAPI` documentation.
+struct SecurityAddon;
+
+impl Modify for SecurityAddon {
+    fn modify(&self, openapi: &mut utoipa::openapi::OpenApi) {
+        if let Some(components) = openapi.components.as_mut() {
+            components.add_security_scheme(
+                "api_key",
+                SecurityScheme::Http(
+                    HttpBuilder::new()
+                        .scheme(HttpAuthScheme::Bearer)
+                        .bearer_format("API Key")
+                        .description(Some(
+                            "API key authentication. Use format: Bearer hof_sk_...",
+                        ))
+                        .build(),
+                ),
+            );
+        }
+    }
+}
 
 /// Shared application state for API handlers.
 #[derive(Clone)]
@@ -155,7 +179,8 @@ impl AppState {
         (name = "downloads", description = "Download management endpoints"),
         (name = "activity", description = "Activity log endpoints"),
         (name = "system", description = "System status and control endpoints")
-    )
+    ),
+    modifiers(&SecurityAddon)
 )]
 pub struct ApiDoc;
 
