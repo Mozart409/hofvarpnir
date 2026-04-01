@@ -6,7 +6,7 @@ Add API key authentication with independent scopes (`read`, `write`, `delete`) t
 
 ---
 
-## Phase 1: Database Schema
+## Phase 1: Database Schema — DONE
 
 ### Migration: `api_keys` table
 
@@ -76,7 +76,7 @@ DROP TYPE IF EXISTS api_key_scope;
 
 ---
 
-## Phase 2: Domain Types (`hof-core`)
+## Phase 2: Domain Types (`hof-core`) — DONE
 
 ### File: `crates/hof-core/src/domain/api_key.rs`
 
@@ -112,7 +112,7 @@ Register module in `crates/hof-core/src/domain/mod.rs`.
 
 ---
 
-## Phase 3: Key Generation & Hashing (`hof-core`)
+## Phase 3: Key Generation & Hashing (`hof-core`) — DONE
 
 ### File: `crates/hof-core/src/auth.rs` (extend existing)
 
@@ -133,7 +133,7 @@ Note: No constant-time comparison needed. The lookup is done via SQL `WHERE key_
 
 ---
 
-## Phase 4: Database Operations (`hof-core`)
+## Phase 4: Database Operations (`hof-core`) — DONE
 
 ### File: `crates/hof-core/src/db/api_key.rs`
 
@@ -153,7 +153,7 @@ Register module in `crates/hof-core/src/db/mod.rs`.
 
 ---
 
-## Phase 5: Unified Auth Extractor (`hof-api`)
+## Phase 5: Unified Auth Extractor (`hof-api`) — DONE
 
 ### File: `crates/hof-api/src/auth.rs` (new)
 
@@ -272,7 +272,7 @@ All auth errors return JSON with consistent structure:
 
 ---
 
-## Phase 6: Web UI — API Keys Page (`hof-web`)
+## Phase 6: Web UI — API Keys Page (`hof-web`) — DONE
 
 ### NavItem
 
@@ -316,7 +316,7 @@ Follow existing patterns in `pages.rs` — use the `layout()` / `shell()` helper
 
 ---
 
-## Phase 7: Scalar / Docs (no auth)
+## Phase 7: Scalar / Docs (no auth) — DONE
 
 The `/docs` routes serve the Scalar OpenAPI UI and its static assets (JS, CSS). These do **not** require authentication — they are a documentation browser, not an API.
 
