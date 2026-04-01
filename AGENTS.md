@@ -312,6 +312,16 @@ In development you can use this connection string to connect to the database. DA
 
 You can use flake.nix psql client.
 
+### Dependency Policy
+
+**Before running `cargo add`, always:**
+
+1. Verify the crate is open-source and its license is acceptable.
+2. Check `deny.toml` `[licenses]` allow list to confirm the license is permitted.
+3. If the license is not listed, ask the user before proceeding — new open-source licenses can be added to `deny.toml`.
+
+Current allowed licenses (see `deny.toml`): MIT, Apache-2.0, Apache-2.0 WITH LLVM-exception, Unicode-3.0, CDLA-Permissive-2.0, ISC, Zlib, BSD-3-Clause, GPL-3.0-only, GPL-3.0-or-later.
+
 ## Project Structure
 
 ```
