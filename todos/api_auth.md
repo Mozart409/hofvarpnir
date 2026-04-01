@@ -19,17 +19,18 @@ CREATE TABLE IF NOT EXISTS api_keys (
     user_id     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     name        TEXT NOT NULL,                  -- user-chosen label ("CI bot", "backup script")
     prefix      TEXT NOT NULL,                  -- first 12 chars of token (for display: hof_sk_Ab3xY…)
-    key_hash    TEXT NOT NULL,                  -- SHA-256 hash of the full token
+    key_hash    TEXT NOT NULL UNIQUE,           -- SHA-256 hash of the full token (unique prevents duplicates)
     scopes      api_key_scope[] NOT NULL,       -- e.g. {read, write}
     expires_at  TIMESTAMPTZ,                    -- NULL = never expires
     last_used_at TIMESTAMPTZ,                   -- updated on each authenticated request
+    last_used_ip TEXT,                          -- IP of last successful use (anomaly detection)
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE INDEX IF NOT EXISTS idx_api_keys_user_id ON api_keys (user_id);
 CREATE INDEX IF NOT EXISTS idx_api_keys_prefix  ON api_keys (prefix);
-CREATE INDEX IF NOT EXISTS idx_api_keys_key_hash ON api_keys (key_hash);  -- hot path for auth lookups
+-- idx_api_keys_key_hash removed — UNIQUE constraint provides an index automatically
 CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_user_id_name ON api_keys (user_id, name);  -- enforce unique names per user
 
 CREATE TRIGGER trg_api_keys_updated_at
@@ -55,6 +56,14 @@ CREATE TABLE IF NOT EXISTS api_key_events (
 CREATE INDEX IF NOT EXISTS idx_api_key_events_api_key_id ON api_key_events (api_key_id);
 CREATE INDEX IF NOT EXISTS idx_api_key_events_user_id    ON api_key_events (user_id);
 ```
+
+### Cleanup strategy for orphaned events
+
+Events reference deleted keys by `api_key_id` (no FK). To prevent unbounded growth:
+
+- **No periodic job in v1** — events are small and infrequent.
+- **On key deletion**, delete all associated events in the same transaction as the key delete (`DELETE FROM api_key_events WHERE api_key_id = $1`). This keeps the table bounded to active keys only.
+- **Future**: Add a `DELETE CASCADE`-style periodic cleanup if events accumulate (e.g., delete events older than 180 days whose key no longer exists).
 
 ### Down migration
 
@@ -116,9 +125,23 @@ Add functions:
   - Hash: `sha2::Sha256` hex digest of the full token. (SHA-256 is fine for high-entropy random tokens; no need for Argon2.)
 - **`hash_api_key(token: &str) -> String`** — SHA-256 hex digest. Used for lookup on incoming requests.
 
-### New dependency
+### Timing-safe comparison
 
-Add `sha2` to `hof-core/Cargo.toml` (already has `rand` via argon2).
+Use `hmac::Mac::verify_slice` or `subtle::ConstantTimeEq` when comparing the incoming token hash against the stored hash to prevent timing side-channel attacks. Since we hash the token first and compare hex digests, add a constant-time equality check:
+
+```rust
+use subtle::ConstantTimeEq;
+
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    a.ct_eq(b).into()
+}
+```
+
+Apply this when comparing the computed hash against the database value before accepting a key.
+
+### New dependencies
+
+Add `sha2` and `subtle` to `hof-core/Cargo.toml` (already has `rand` via argon2).
 
 ---
 
@@ -132,57 +155,80 @@ Functions:
 |---|---|
 | `create_api_key(pool, user_id, name, prefix, key_hash, scopes, expires_at) -> ApiKey` | Insert key + log `created` event |
 | `list_api_keys(pool, user_id) -> Vec<ApiKey>` | All keys for a user (never returns hash) |
-| `get_api_key_by_hash(pool, key_hash) -> Option<ApiKey>` | Lookup for auth middleware |
-| `touch_api_key_last_used(pool, key_id)` | Update `last_used_at` (fire-and-forget, don't block request) |
+| `get_api_key_by_hash(pool, key_hash) -> Option<ApiKey>` | Lookup for auth middleware (use constant-time comparison) |
+| `touch_api_key_last_used(pool, key_id, ip)` | Update `last_used_at` + `last_used_ip` (best-effort spawn) |
 | `roll_api_key(pool, key_id, new_prefix, new_key_hash, new_expires_at) -> ApiKey` | Replace hash + prefix, log `rolled` event |
-| `delete_api_key(pool, key_id, user_id)` | Delete key, log `deleted` event |
+| `delete_api_key(pool, key_id, user_id)` | Delete key + associated events in same transaction, log `deleted` event |
 | `list_api_key_events(pool, api_key_id) -> Vec<ApiKeyEvent>` | Lifecycle events for a key |
 
 Register module in `crates/hof-core/src/db/mod.rs`.
 
 ---
 
-## Phase 5: API Auth Middleware (`hof-api`)
+## Phase 5: Unified Auth Extractor (`hof-api`)
 
 ### File: `crates/hof-api/src/auth.rs` (new)
 
-#### Extractor: `ApiAuth`
+#### Unified `Auth` enum extractor
 
 ```rust
-pub struct ApiAuth {
-    pub user_id: Ulid,
-    pub scopes: Vec<ApiKeyScope>,
+pub enum Auth {
+    /// Session-based authentication (web UI users)
+    Session { user_id: Ulid },
+    /// API key authentication
+    ApiKey { user_id: Ulid, scopes: Vec<ApiKeyScope> },
+}
+
+impl Auth {
+    /// Returns the authenticated user ID regardless of auth method.
+    pub fn user_id(&self) -> Ulid {
+        match self {
+            Auth::Session { user_id } | Auth::ApiKey { user_id, .. } => *user_id,
+        }
+    }
+
+    /// Returns scopes if authenticated via API key, None for session auth.
+    /// Session-authenticated users have full access (no scope restrictions).
+    pub fn scopes(&self) -> Option<&[ApiKeyScope]> {
+        match self {
+            Auth::ApiKey { scopes, .. } => Some(scopes),
+            Auth::Session { .. } => None,
+        }
+    }
+
+    /// Require a specific scope. Returns `Ok(())` for session auth or
+    /// if the API key has the required scope.
+    pub fn require_scope(&self, scope: ApiKeyScope) -> Result<(), ApiError> {
+        match self.scopes() {
+            None => Ok(()), // session auth: full access
+            Some(scopes) if scopes.contains(&scope) => Ok(()),
+            Some(_) => Err(ApiError::InsufficientScope(scope)),
+        }
+    }
 }
 ```
 
 Implements `FromRequestParts<AppState>`:
 
-1. Check `Authorization: Bearer hof_sk_...` header.
-2. SHA-256 hash the token, look up via `get_api_key_by_hash`.
-3. Check expiration (`expires_at` is `NULL` or in the future).
-4. Spawn background task to `touch_api_key_last_used`.
-5. Return `ApiAuth { user_id, scopes }` or `401 Unauthorized`.
+1. **Try session auth first** — attempt to extract `AuthUser` from cookies/session store.
+2. **If session valid** → return `Auth::Session { user_id }`.
+3. **If no session** → check `Authorization: Bearer hof_sk_...` header.
+4. **If Bearer token present** → SHA-256 hash, look up via `get_api_key_by_hash` (constant-time comparison), check expiration.
+5. **If key valid** → spawn best-effort background task to `touch_api_key_last_used` (logs errors, doesn't block request).
+6. **If neither session nor valid key** → return `401 Unauthorized`.
 
-#### Scope guard helper
+This eliminates double-auth overhead: session check is a fast cookie lookup; API key lookup only runs when no session exists.
 
-```rust
-impl ApiAuth {
-    pub fn require_scope(&self, scope: ApiKeyScope) -> Result<(), ApiError> { ... }
-}
-```
+### Rate limiting middleware
 
-Returns `403 Forbidden` with a message like `"API key missing required scope: write"`.
+Add a simple rate limiter on auth failures to prevent brute-force:
 
-### Middleware layer for `/api` and `/docs`
+- Track failed API key lookups by IP using `tower_governor` or `governor` crate.
+- Limit: 10 failed attempts per minute per IP.
+- Return `429 Too Many Requests` when exceeded.
+- Apply only to the auth extraction path, not general API routes.
 
-In `crates/hof-api/src/lib.rs`:
-
-- Create an Axum middleware (or use `from_fn`) that runs before route handlers.
-- **Skip check** if the request already has a valid session (web UI bypass). Do this by attempting session extraction first — if `AuthUser` succeeds, pass through without requiring an API key.
-- **Exempt** `/api/health/*` endpoints from auth (needed for monitoring/probes).
-- For all other `/api/*` and `/docs/*` routes, require a valid API key.
-
-### Integrate into route handlers
+### Scope guard in handlers
 
 Each handler calls `auth.require_scope(ApiKeyScope::Read)` (or Write/Delete) at the top. Mapping:
 
@@ -191,6 +237,14 @@ Each handler calls `auth.require_scope(ApiKeyScope::Read)` (or Write/Delete) at 
 | GET (list, get, SSE) | `Read` |
 | POST (create), PUT/PATCH (update), triggers (index, metadata, cleanup, retry) | `Write` |
 | DELETE | `Delete` |
+
+### Middleware layer for `/api`
+
+In `crates/hof-api/src/lib.rs`:
+
+- The `Auth` extractor handles authentication per-request — no separate middleware layer needed.
+- **Exempt** `/api/health/*` endpoints from auth by not using the `Auth` extractor in those handlers.
+- All other `/api/*` handlers take `Auth` as an extractor parameter.
 
 ### OpenAPI security scheme
 
@@ -218,8 +272,14 @@ All auth errors return JSON with consistent structure:
 // 401 Unauthorized - token expired
 {"error": "api_key_expired", "message": "API key has expired"}
 
+// 401 Unauthorized - no auth provided
+{"error": "unauthorized", "message": "Authentication required"}
+
 // 403 Forbidden - missing scope
 {"error": "insufficient_scope", "message": "API key missing required scope: write"}
+
+// 429 Too Many Requests - rate limited
+{"error": "rate_limited", "message": "Too many failed authentication attempts"}
 ```
 
 ---
@@ -268,17 +328,36 @@ Follow existing patterns in `pages.rs` — use the `layout()` / `shell()` helper
 
 ---
 
-## Phase 7: Scalar / Docs Auth
+## Phase 7: Scalar / Docs (no auth)
 
-In `main.rs`, the `/docs` nest currently uses `hof_api::scalar_router()` which has no state or middleware.
+The `/docs` routes serve the Scalar OpenAPI UI and its static assets (JS, CSS). These do **not** require authentication — they are a documentation browser, not an API.
 
-**Change:** Wrap the `/docs` routes with the same API auth middleware from Phase 5. Since the middleware passes through session-authenticated requests, logged-in web users can still browse docs without a key.
-
-Update `scalar_router()` to accept `AppState` so the middleware can access the DB pool for key lookups.
+**No changes needed** to `scalar_router()` — it remains a stateless router serving static content. The auth is enforced on `/api/*` endpoints via the `Auth` extractor (Phase 5). Users browsing docs can see the API spec; actual API calls require authentication via the Bearer token input in Scalar.
 
 ---
 
-## Phase 8: SQLx Offline Data
+## Phase 8: Per-Endpoint OpenAPI Scope Documentation
+
+Update each `#[utoipa::path(...)]` macro to document the required security scope per endpoint. This ensures Scalar/OpenAPI consumers know which scope a key needs.
+
+```rust
+#[utoipa::path(
+    get,
+    path = "/api/videos",
+    security(
+        ("api_key" = ["read"]),
+    ),
+    responses(
+        (status = 200, description = "List of videos", body = Vec<Video>),
+    ),
+)]
+```
+
+For session-only endpoints (web UI), no `security()` attribute is needed. For API endpoints, add the appropriate scope: `read`, `write`, or `delete`.
+
+---
+
+## Phase 9: SQLx Offline Data
 
 After all migrations and queries are written:
 
@@ -291,7 +370,7 @@ This regenerates the `.sqlx/` offline query data so CI can build without a live 
 
 ---
 
-## Phase 9: Test Coverage
+## Phase 10: Test Coverage
 
 ### Unit tests (`hof-core`)
 
@@ -301,30 +380,41 @@ This regenerates the `.sqlx/` offline query data so CI can build without a live 
 | `test_generate_api_key_uniqueness` | `auth.rs` | Generate 1000 keys, assert all unique |
 | `test_hash_api_key_consistency` | `auth.rs` | Same input → same hash |
 | `test_prefix_extraction` | `auth.rs` | Verify prefix is first 12 chars of token |
+| `test_constant_time_eq` | `auth.rs` | Verify constant-time comparison produces correct results |
 
 ### Integration tests (`hof-api`)
 
 | Test | Description |
 |---|---|
-| `test_api_auth_valid_key` | Valid Bearer token returns `ApiAuth` with correct scopes |
-| `test_api_auth_invalid_token` | Wrong token returns 401 |
-| `test_api_auth_expired_key` | Expired key returns 401 |
-| `test_api_auth_missing_header` | No Authorization header returns 401 |
-| `test_api_auth_malformed_header` | Bad format (e.g., `Basic ...`) returns 401 |
-| `test_api_scope_guard_read` | Key with `read` scope passes `require_scope(Read)` |
-| `test_api_scope_guard_missing` | Key without `write` fails `require_scope(Write)` with 403 |
-| `test_api_auth_session_bypass` | Session-authenticated request bypasses API key check |
+| `test_auth_session_returns_session_variant` | Valid session returns `Auth::Session` |
+| `test_auth_api_key_returns_api_key_variant` | Valid Bearer token returns `Auth::ApiKey` with correct scopes |
+| `test_auth_no_credentials_returns_401` | No session, no header returns 401 |
+| `test_auth_invalid_token_returns_401` | Wrong token returns 401 |
+| `test_auth_expired_key_returns_401` | Expired key returns 401 |
+| `test_auth_malformed_header_returns_401` | Bad format (e.g., `Basic ...`) returns 401 |
+| `test_scope_guard_session_bypass` | `Auth::Session.require_scope(Write)` returns `Ok(())` |
+| `test_scope_guard_api_key_has_scope` | Key with `read` scope passes `require_scope(Read)` |
+| `test_scope_guard_api_key_missing_scope` | Key without `write` fails with 403 |
 | `test_api_health_no_auth` | `/api/health` works without any auth |
+| `test_auth_rate_limit` | 10+ failed attempts from same IP returns 429 |
+
+### Concurrent and edge case tests
+
+| Test | Description |
+|---|---|
+| `test_concurrent_requests_same_key` | Multiple concurrent requests with same key don't cause race conditions on `touch` |
+| `test_auth_key_exactly_at_expiration` | Key at exact expiration boundary is rejected |
+| `test_touch_best_effort_no_block` | Request completes even if `touch` spawn fails |
 
 ### Handler tests (`hof-web`)
 
 | Test | Description |
-|---|---|---|
+|---|---|
 | `test_create_api_key_success` | Form submit creates key, returns full token once |
 | `test_create_api_key_duplicate_name` | Duplicate name returns error |
 | `test_create_api_key_no_scopes` | At least one scope required |
 | `test_roll_api_key` | Roll replaces hash, old token no longer works |
-| `test_delete_api_key` | Delete removes key, auth fails |
+| `test_delete_api_key` | Delete removes key and events, auth fails |
 | `test_list_api_keys` | List shows all keys for user (never shows hash) |
 
 ---
@@ -337,17 +427,17 @@ This regenerates the `.sqlx/` offline query data so CI can build without a live 
 | `crates/hof-core/migrations/YYYYMMDD_api_keys.down.sql` | New — rollback |
 | `crates/hof-core/src/domain/api_key.rs` | New — domain types |
 | `crates/hof-core/src/domain/mod.rs` | Edit — add `pub mod api_key` |
-| `crates/hof-core/src/auth.rs` | Edit — add key generation + SHA-256 hashing |
+| `crates/hof-core/src/auth.rs` | Edit — add key generation, SHA-256 hashing, constant-time comparison |
 | `crates/hof-core/src/db/api_key.rs` | New — CRUD queries |
 | `crates/hof-core/src/db/mod.rs` | Edit — add `mod api_key` + re-export |
-| `crates/hof-core/Cargo.toml` | Edit — add `sha2` dependency |
-| `crates/hof-api/src/auth.rs` | New — `ApiAuth` extractor + scope guard + middleware |
-| `crates/hof-api/src/lib.rs` | Edit — wire middleware, update OpenAPI security scheme, update `scalar_router` |
-| `crates/hof-api/src/routes/*.rs` | Edit — add scope checks to each handler |
+| `crates/hof-core/Cargo.toml` | Edit — add `sha2`, `subtle` dependencies |
+| `crates/hof-api/src/auth.rs` | New — unified `Auth` enum extractor, scope guard, rate limiting |
+| `crates/hof-api/src/lib.rs` | Edit — wire rate limiter, update OpenAPI security scheme |
+| `crates/hof-api/src/routes/*.rs` | Edit — add scope checks to each handler, update per-endpoint OpenAPI docs |
+| `crates/hof-api/Cargo.toml` | Edit — add `governor` or `tower_governor` dependency |
 | `crates/hof-web/src/pages.rs` | Edit — add NavItem::ApiKeys, key management page + htmx routes |
-| `crates/hof-web/src/main.rs` | Edit — pass state to scalar_router, adjust router nesting |
 | `crates/hof-core/src/auth.rs` | Edit — add unit tests for key generation |
-| `crates/hof-api/src/auth.rs` | Edit — add integration tests for auth middleware |
+| `crates/hof-api/src/auth.rs` | Edit — add integration tests for auth extractor |
 | `crates/hof-web/src/pages.rs` | Edit — add handler tests for key management |
 
 ---
@@ -356,13 +446,14 @@ This regenerates the `.sqlx/` offline query data so CI can build without a live 
 
 1. **Phase 1** — Migration (schema must exist before anything else)
 2. **Phase 2** — Domain types (needed by db layer)
-3. **Phase 3** — Key generation (needed by db + API layers)
-4. **Phase 4** — DB operations (needed by middleware + web page)
-5. **Phase 5** — API middleware + scope enforcement (core auth feature)
+3. **Phase 3** — Key generation + constant-time comparison (needed by db + API layers)
+4. **Phase 4** — DB operations (needed by extractor + web page)
+5. **Phase 5** — Unified `Auth` extractor + rate limiting + scope enforcement (core auth feature)
 6. **Phase 6** — Web UI page (depends on db ops being ready)
-7. **Phase 7** — Scalar auth (small wiring change, can be done with Phase 5)
-8. **Phase 8** — SQLx prepare (final step after all queries compile)
-9. **Phase 9** — Tests (run alongside each phase, final verification)
+7. **Phase 7** — Scalar/docs (no changes, no auth needed)
+8. **Phase 8** — Per-endpoint OpenAPI scope documentation
+9. **Phase 9** — SQLx prepare (final step after all queries compile)
+10. **Phase 10** — Tests (run alongside each phase, final verification)
 
 ---
 
