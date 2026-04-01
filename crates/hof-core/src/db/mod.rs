@@ -1,6 +1,7 @@
 //! Database connection pool and query helpers.
 
 mod activity;
+mod api_key;
 mod profile;
 mod source;
 mod user;
@@ -11,6 +12,7 @@ use std::time::Duration;
 use sqlx::postgres::{PgPool, PgPoolOptions};
 
 pub use activity::*;
+pub use api_key::*;
 pub use profile::*;
 pub use source::*;
 pub use user::*;
