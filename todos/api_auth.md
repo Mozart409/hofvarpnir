@@ -57,13 +57,13 @@ CREATE INDEX IF NOT EXISTS idx_api_key_events_api_key_id ON api_key_events (api_
 CREATE INDEX IF NOT EXISTS idx_api_key_events_user_id    ON api_key_events (user_id);
 ```
 
-### Cleanup strategy for orphaned events
+### Event retention strategy
 
-Events reference deleted keys by `api_key_id` (no FK). To prevent unbounded growth:
+Events reference keys by `api_key_id` (no FK, so events survive key deletion for audit trail).
 
-- **No periodic job in v1** — events are small and infrequent.
-- **On key deletion**, delete all associated events in the same transaction as the key delete (`DELETE FROM api_key_events WHERE api_key_id = $1`). This keeps the table bounded to active keys only.
-- **Future**: Add a `DELETE CASCADE`-style periodic cleanup if events accumulate (e.g., delete events older than 180 days whose key no longer exists).
+- **Events are kept on key deletion** — the `deleted` event is logged and all prior events (created, rolled) remain for audit history.
+- **No periodic cleanup in v1** — events are small and infrequent.
+- **Future**: Add periodic cleanup if events accumulate (e.g., delete events older than 365 days).
 
 ### Down migration
 
@@ -125,23 +125,11 @@ Add functions:
   - Hash: `sha2::Sha256` hex digest of the full token. (SHA-256 is fine for high-entropy random tokens; no need for Argon2.)
 - **`hash_api_key(token: &str) -> String`** — SHA-256 hex digest. Used for lookup on incoming requests.
 
-### Timing-safe comparison
+### New dependency
 
-Use `hmac::Mac::verify_slice` or `subtle::ConstantTimeEq` when comparing the incoming token hash against the stored hash to prevent timing side-channel attacks. Since we hash the token first and compare hex digests, add a constant-time equality check:
+Add `sha2` to `hof-core/Cargo.toml` (already has `rand` via argon2).
 
-```rust
-use subtle::ConstantTimeEq;
-
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    a.ct_eq(b).into()
-}
-```
-
-Apply this when comparing the computed hash against the database value before accepting a key.
-
-### New dependencies
-
-Add `sha2` and `subtle` to `hof-core/Cargo.toml` (already has `rand` via argon2).
+Note: No constant-time comparison needed. The lookup is done via SQL `WHERE key_hash = $1` on a SHA-256 hash of a high-entropy random token — timing attacks are not practical here.
 
 ---
 
@@ -155,10 +143,10 @@ Functions:
 |---|---|
 | `create_api_key(pool, user_id, name, prefix, key_hash, scopes, expires_at) -> ApiKey` | Insert key + log `created` event |
 | `list_api_keys(pool, user_id) -> Vec<ApiKey>` | All keys for a user (never returns hash) |
-| `get_api_key_by_hash(pool, key_hash) -> Option<ApiKey>` | Lookup for auth middleware (use constant-time comparison) |
+| `get_api_key_by_hash(pool, key_hash) -> Option<ApiKey>` | Lookup for auth middleware (SQL WHERE match) |
 | `touch_api_key_last_used(pool, key_id, ip)` | Update `last_used_at` + `last_used_ip` (best-effort spawn) |
 | `roll_api_key(pool, key_id, new_prefix, new_key_hash, new_expires_at) -> ApiKey` | Replace hash + prefix, log `rolled` event |
-| `delete_api_key(pool, key_id, user_id)` | Delete key + associated events in same transaction, log `deleted` event |
+| `delete_api_key(pool, key_id, user_id)` | Delete key, log `deleted` event (events are retained for audit) |
 | `list_api_key_events(pool, api_key_id) -> Vec<ApiKeyEvent>` | Lifecycle events for a key |
 
 Register module in `crates/hof-core/src/db/mod.rs`.
@@ -213,7 +201,7 @@ Implements `FromRequestParts<AppState>`:
 1. **Try session auth first** — attempt to extract `AuthUser` from cookies/session store.
 2. **If session valid** → return `Auth::Session { user_id }`.
 3. **If no session** → check `Authorization: Bearer hof_sk_...` header.
-4. **If Bearer token present** → SHA-256 hash, look up via `get_api_key_by_hash` (constant-time comparison), check expiration.
+4. **If Bearer token present** → SHA-256 hash, look up via `get_api_key_by_hash` (SQL WHERE match), check expiration.
 5. **If key valid** → spawn best-effort background task to `touch_api_key_last_used` (logs errors, doesn't block request).
 6. **If neither session nor valid key** → return `401 Unauthorized`.
 
@@ -380,7 +368,7 @@ This regenerates the `.sqlx/` offline query data so CI can build without a live 
 | `test_generate_api_key_uniqueness` | `auth.rs` | Generate 1000 keys, assert all unique |
 | `test_hash_api_key_consistency` | `auth.rs` | Same input → same hash |
 | `test_prefix_extraction` | `auth.rs` | Verify prefix is first 12 chars of token |
-| `test_constant_time_eq` | `auth.rs` | Verify constant-time comparison produces correct results |
+| `test_hash_api_key_deterministic` | `auth.rs` | Different inputs → different hashes |
 
 ### Integration tests (`hof-api`)
 
@@ -414,7 +402,7 @@ This regenerates the `.sqlx/` offline query data so CI can build without a live 
 | `test_create_api_key_duplicate_name` | Duplicate name returns error |
 | `test_create_api_key_no_scopes` | At least one scope required |
 | `test_roll_api_key` | Roll replaces hash, old token no longer works |
-| `test_delete_api_key` | Delete removes key and events, auth fails |
+| `test_delete_api_key` | Delete removes key, events retained, auth fails for deleted key |
 | `test_list_api_keys` | List shows all keys for user (never shows hash) |
 
 ---
@@ -427,10 +415,10 @@ This regenerates the `.sqlx/` offline query data so CI can build without a live 
 | `crates/hof-core/migrations/YYYYMMDD_api_keys.down.sql` | New — rollback |
 | `crates/hof-core/src/domain/api_key.rs` | New — domain types |
 | `crates/hof-core/src/domain/mod.rs` | Edit — add `pub mod api_key` |
-| `crates/hof-core/src/auth.rs` | Edit — add key generation, SHA-256 hashing, constant-time comparison |
+| `crates/hof-core/src/auth.rs` | Edit — add key generation + SHA-256 hashing |
 | `crates/hof-core/src/db/api_key.rs` | New — CRUD queries |
 | `crates/hof-core/src/db/mod.rs` | Edit — add `mod api_key` + re-export |
-| `crates/hof-core/Cargo.toml` | Edit — add `sha2`, `subtle` dependencies |
+| `crates/hof-core/Cargo.toml` | Edit — add `sha2` dependency |
 | `crates/hof-api/src/auth.rs` | New — unified `Auth` enum extractor, scope guard, rate limiting |
 | `crates/hof-api/src/lib.rs` | Edit — wire rate limiter, update OpenAPI security scheme |
 | `crates/hof-api/src/routes/*.rs` | Edit — add scope checks to each handler, update per-endpoint OpenAPI docs |
@@ -446,7 +434,7 @@ This regenerates the `.sqlx/` offline query data so CI can build without a live 
 
 1. **Phase 1** — Migration (schema must exist before anything else)
 2. **Phase 2** — Domain types (needed by db layer)
-3. **Phase 3** — Key generation + constant-time comparison (needed by db + API layers)
+3. **Phase 3** — Key generation + SHA-256 hashing (needed by db + API layers)
 4. **Phase 4** — DB operations (needed by extractor + web page)
 5. **Phase 5** — Unified `Auth` extractor + rate limiting + scope enforcement (core auth feature)
 6. **Phase 6** — Web UI page (depends on db ops being ready)
@@ -459,6 +447,5 @@ This regenerates the `.sqlx/` offline query data so CI can build without a live 
 
 ## Open Decisions (non-blocking, decide during implementation)
 
-- **Rate limiting on auth failures**: Not in scope for v1, but worth adding later to prevent brute-force.
 - **Key count limit per user**: Consider capping at ~20 keys per user to prevent abuse.
 - **Expired key cleanup**: Let expired keys accumulate (audit trail) or add periodic cleanup job.
