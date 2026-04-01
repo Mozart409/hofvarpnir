@@ -18,7 +18,7 @@ CREATE TABLE IF NOT EXISTS api_keys (
     id          TEXT PRIMARY KEY,               -- ULID
     user_id     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     name        TEXT NOT NULL,                  -- user-chosen label ("CI bot", "backup script")
-    prefix      TEXT NOT NULL,                  -- first 8 chars of token (for display: hof_sk_Ab3x…)
+    prefix      TEXT NOT NULL,                  -- first 12 chars of token (for display: hof_sk_Ab3xY…)
     key_hash    TEXT NOT NULL,                  -- SHA-256 hash of the full token
     scopes      api_key_scope[] NOT NULL,       -- e.g. {read, write}
     expires_at  TIMESTAMPTZ,                    -- NULL = never expires
@@ -29,6 +29,8 @@ CREATE TABLE IF NOT EXISTS api_keys (
 
 CREATE INDEX IF NOT EXISTS idx_api_keys_user_id ON api_keys (user_id);
 CREATE INDEX IF NOT EXISTS idx_api_keys_prefix  ON api_keys (prefix);
+CREATE INDEX IF NOT EXISTS idx_api_keys_key_hash ON api_keys (key_hash);  -- hot path for auth lookups
+CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_user_id_name ON api_keys (user_id, name);  -- enforce unique names per user
 
 CREATE TRIGGER trg_api_keys_updated_at
 BEFORE UPDATE ON api_keys
@@ -205,6 +207,21 @@ Add to `ApiDoc`:
 
 Define `SecurityAddon` to add `ApiKeyAuth` (HTTP Bearer) scheme so Scalar shows the auth input.
 
+### Error response format
+
+All auth errors return JSON with consistent structure:
+
+```json
+// 401 Unauthorized - invalid or missing token
+{"error": "invalid_api_key", "message": "API key not found or invalid"}
+
+// 401 Unauthorized - token expired
+{"error": "api_key_expired", "message": "API key has expired"}
+
+// 403 Forbidden - missing scope
+{"error": "insufficient_scope", "message": "API key missing required scope: write"}
+```
+
 ---
 
 ## Phase 6: Web UI — API Keys Page (`hof-web`)
@@ -274,6 +291,44 @@ This regenerates the `.sqlx/` offline query data so CI can build without a live 
 
 ---
 
+## Phase 9: Test Coverage
+
+### Unit tests (`hof-core`)
+
+| Test | Location | Description |
+|---|---|---|
+| `test_generate_api_key_format` | `auth.rs` | Verify token format: `hof_sk_` prefix + 32 alphanumeric chars |
+| `test_generate_api_key_uniqueness` | `auth.rs` | Generate 1000 keys, assert all unique |
+| `test_hash_api_key_consistency` | `auth.rs` | Same input → same hash |
+| `test_prefix_extraction` | `auth.rs` | Verify prefix is first 12 chars of token |
+
+### Integration tests (`hof-api`)
+
+| Test | Description |
+|---|---|
+| `test_api_auth_valid_key` | Valid Bearer token returns `ApiAuth` with correct scopes |
+| `test_api_auth_invalid_token` | Wrong token returns 401 |
+| `test_api_auth_expired_key` | Expired key returns 401 |
+| `test_api_auth_missing_header` | No Authorization header returns 401 |
+| `test_api_auth_malformed_header` | Bad format (e.g., `Basic ...`) returns 401 |
+| `test_api_scope_guard_read` | Key with `read` scope passes `require_scope(Read)` |
+| `test_api_scope_guard_missing` | Key without `write` fails `require_scope(Write)` with 403 |
+| `test_api_auth_session_bypass` | Session-authenticated request bypasses API key check |
+| `test_api_health_no_auth` | `/api/health` works without any auth |
+
+### Handler tests (`hof-web`)
+
+| Test | Description |
+|---|---|---|
+| `test_create_api_key_success` | Form submit creates key, returns full token once |
+| `test_create_api_key_duplicate_name` | Duplicate name returns error |
+| `test_create_api_key_no_scopes` | At least one scope required |
+| `test_roll_api_key` | Roll replaces hash, old token no longer works |
+| `test_delete_api_key` | Delete removes key, auth fails |
+| `test_list_api_keys` | List shows all keys for user (never shows hash) |
+
+---
+
 ## File Change Summary
 
 | File | Action |
@@ -291,6 +346,9 @@ This regenerates the `.sqlx/` offline query data so CI can build without a live 
 | `crates/hof-api/src/routes/*.rs` | Edit — add scope checks to each handler |
 | `crates/hof-web/src/pages.rs` | Edit — add NavItem::ApiKeys, key management page + htmx routes |
 | `crates/hof-web/src/main.rs` | Edit — pass state to scalar_router, adjust router nesting |
+| `crates/hof-core/src/auth.rs` | Edit — add unit tests for key generation |
+| `crates/hof-api/src/auth.rs` | Edit — add integration tests for auth middleware |
+| `crates/hof-web/src/pages.rs` | Edit — add handler tests for key management |
 
 ---
 
@@ -304,6 +362,7 @@ This regenerates the `.sqlx/` offline query data so CI can build without a live 
 6. **Phase 6** — Web UI page (depends on db ops being ready)
 7. **Phase 7** — Scalar auth (small wiring change, can be done with Phase 5)
 8. **Phase 8** — SQLx prepare (final step after all queries compile)
+9. **Phase 9** — Tests (run alongside each phase, final verification)
 
 ---
 
@@ -311,4 +370,4 @@ This regenerates the `.sqlx/` offline query data so CI can build without a live 
 
 - **Rate limiting on auth failures**: Not in scope for v1, but worth adding later to prevent brute-force.
 - **Key count limit per user**: Consider capping at ~20 keys per user to prevent abuse.
-- **`last_used_at` update frequency**: Update on every request (single `UPDATE SET last_used_at = now() WHERE id = $1` is cheap). Use `tokio::spawn` so it doesn't block the response.
+- **Expired key cleanup**: Let expired keys accumulate (audit trail) or add periodic cleanup job.
