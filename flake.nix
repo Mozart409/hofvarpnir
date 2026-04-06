@@ -114,6 +114,49 @@
         "org.opencontainers.image.revision" = imageRevision;
         "org.opencontainers.image.created" = imageCreated;
       };
+
+      commonDevPackages = with pkgs; [
+        git
+        rust
+        cargo-workspaces
+        opentofu
+        sqlx-cli
+        actionlint
+        bacon
+        cargo-audit
+        cargo-deny
+        cargo-outdated
+        cargo-watch
+        bacon
+        cocogitto
+        deadbranch
+        just
+        keep-sorted
+        lefthook
+        nodejs_24
+        playwright-driver.browsers
+        postgresql_17
+        sqruff
+        tailwindcss_4
+        ffmpeg
+        yt-dlp
+      ];
+
+      linuxDevPackages = with pkgs; [
+        dbeaver-bin
+        docker
+        docker-buildx
+        docker-compose
+        podman
+        podman-compose
+        lazydocker
+        trivy
+        opencode
+        claude-code
+      ];
+
+      darwinDevPackages = with pkgs; [
+      ];
     in {
       # Rust package
       packages =
@@ -224,45 +267,10 @@
       # to use other shells, run:
       # nix develop . --command fish
       devShells.default = pkgs.mkShell {
-        buildInputs = with pkgs; [
-          rust
-          cargo-workspaces
-          opentofu
-          sqlx-cli
-          actionlint
-          bacon
-          cargo-audit
-          cargo-deny
-          cargo-outdated
-          cargo-workspaces
-          cocogitto
-          dbeaver-bin
-          deadbranch
-          docker
-          docker-buildx
-          docker-compose
-          podman
-          podman-compose
-          just
-          keep-sorted
-          lazydocker
-          lefthook
-          nodejs_24
-          opencode
-          opentofu
-          dbeaver-bin
-          playwright-driver.browsers
-          postgresql_17
-          rust
-          sqlx-cli
-          sqruff
-          tailwindcss_4
-          trivy
-          ffmpeg
-          yt-dlp
-          claude-code
-          trivy
-        ];
+        buildInputs =
+          commonDevPackages
+          ++ pkgs.lib.optionals pkgs.stdenv.isLinux linuxDevPackages
+          ++ pkgs.lib.optionals pkgs.stdenv.isDarwin darwinDevPackages;
         shellHook = ''
           lefthook install
           cog install-hook

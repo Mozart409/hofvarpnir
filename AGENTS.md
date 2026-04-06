@@ -202,6 +202,7 @@ let value = some_option.unwrap_or(fallback);
 ```
 
 **Exceptions:** `.unwrap()` is acceptable only in:
+
 - Tests (where panics are expected failure modes)
 - Cases where the invariant is statically provable (document with a comment)
 
@@ -309,6 +310,8 @@ pub async fn list_videos(State(state): State<AppState>) -> Result<impl IntoRespo
 
 In development you can use this connection string to connect to the database. DATABASE_URL=postgresql://postgres:postgres@localhost:5432/hofvarpnir_dev
 
+You can use flake.nix psql client.
+
 ## Project Structure
 
 ```
@@ -343,6 +346,7 @@ All PRs must pass:
 4. `cargo build --all-features --release`
 
 **Important:** Always run clippy with pedantic lints before submitting changes:
+
 ```bash
 cargo clippy --workspace --all-targets -- -W clippy::pedantic
 ```
