@@ -83,7 +83,7 @@ css-build:
     tailwindcss -i input.css -o app.css --minify
 
 # Testing
-test: clear mig-run
+test: clear
     cargo test --all-features -- --include-ignored
 
 # CI simulation

@@ -156,6 +156,7 @@
       ];
 
       darwinDevPackages = with pkgs; [
+        actionlint
       ];
     in {
       # Rust package
