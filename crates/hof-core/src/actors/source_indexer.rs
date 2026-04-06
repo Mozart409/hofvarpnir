@@ -34,8 +34,54 @@ pub struct IndexingResult {
     pub existing_videos: usize,
     /// Number of videos filtered out (shorts, livestreams, before cutoff).
     pub filtered_out: usize,
+    /// Number of videos filtered because they are before cutoff date.
+    pub filtered_before_cutoff: usize,
+    /// Number of videos filtered as shorts.
+    pub filtered_shorts: usize,
+    /// Number of videos filtered as livestreams.
+    pub filtered_livestreams: usize,
+    /// Number of videos filtered because they are unavailable.
+    pub filtered_unavailable: usize,
+    /// Number of videos filtered because they are private.
+    pub filtered_private: usize,
+    /// Number of videos filtered for other reasons.
+    pub filtered_other: usize,
     /// Any errors encountered (non-fatal).
     pub errors: Vec<String>,
+}
+
+impl IndexingResult {
+    fn record_filtered(&mut self, reason: &str) {
+        self.filtered_out += 1;
+
+        let reason_lower = reason.to_lowercase();
+        if reason_lower.contains("cutoff") {
+            self.filtered_before_cutoff += 1;
+        } else if reason_lower.contains("short") {
+            self.filtered_shorts += 1;
+        } else if reason_lower.contains("livestream") || reason_lower.contains("live stream") {
+            self.filtered_livestreams += 1;
+        } else if reason_lower.contains("private") {
+            self.filtered_private += 1;
+        } else if reason_lower.contains("unavailable") || reason_lower.contains("removed") {
+            self.filtered_unavailable += 1;
+        } else {
+            self.filtered_other += 1;
+        }
+    }
+
+    #[must_use]
+    pub fn filtered_summary(&self) -> String {
+        format!(
+            "cutoff={}, shorts={}, livestreams={}, unavailable={}, private={}, other={}",
+            self.filtered_before_cutoff,
+            self.filtered_shorts,
+            self.filtered_livestreams,
+            self.filtered_unavailable,
+            self.filtered_private,
+            self.filtered_other
+        )
+    }
 }
 
 /// The source indexer actor.
@@ -176,6 +222,12 @@ impl SourceIndexerActor {
             new_videos: 0,
             existing_videos: 0,
             filtered_out: 0,
+            filtered_before_cutoff: 0,
+            filtered_shorts: 0,
+            filtered_livestreams: 0,
+            filtered_unavailable: 0,
+            filtered_private: 0,
+            filtered_other: 0,
             errors: Vec::new(),
         };
 
@@ -222,10 +274,17 @@ impl SourceIndexerActor {
         }
 
         // Process each entry.
-        // YouTube playlists are typically sorted newest-first, so we can stop early
-        // once we hit several consecutive videos before the cutoff date.
+        // We stop early once we hit several consecutive videos before the cutoff date.
+        // Entry ordering is provided by the yt-dlp indexing layer.
         const MAX_CONSECUTIVE_BEFORE_CUTOFF: usize = 3;
         let mut consecutive_before_cutoff = 0;
+
+        info!(
+            source_id = %self.source.id,
+            source_type = ?self.source.source_type,
+            platform = %index_result.platform,
+            "Configured entry processing strategy"
+        );
 
         for entry in &index_result.entries {
             match self.process_entry(entry, &index_result.platform).await {
@@ -245,7 +304,7 @@ impl SourceIndexerActor {
                         reason = %reason,
                         "Entry filtered out"
                     );
-                    result.filtered_out += 1;
+                    result.record_filtered(&reason);
                     consecutive_before_cutoff = 0; // Not a cutoff filter
                 }
                 EntryOutcome::BeforeCutoff(reason) => {
@@ -254,7 +313,7 @@ impl SourceIndexerActor {
                         reason = %reason,
                         "Entry before cutoff date"
                     );
-                    result.filtered_out += 1;
+                    result.record_filtered(&reason);
                     consecutive_before_cutoff += 1;
 
                     if consecutive_before_cutoff >= MAX_CONSECUTIVE_BEFORE_CUTOFF {
@@ -319,6 +378,12 @@ impl SourceIndexerActor {
             new = result.new_videos,
             existing = result.existing_videos,
             filtered = result.filtered_out,
+            filtered_before_cutoff = result.filtered_before_cutoff,
+            filtered_shorts = result.filtered_shorts,
+            filtered_livestreams = result.filtered_livestreams,
+            filtered_unavailable = result.filtered_unavailable,
+            filtered_private = result.filtered_private,
+            filtered_other = result.filtered_other,
             errors = result.errors.len(),
             "Indexing complete"
         );

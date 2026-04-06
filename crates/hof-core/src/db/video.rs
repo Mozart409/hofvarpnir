@@ -519,6 +519,38 @@ pub async fn reset_stuck_downloads(pool: &PgPool) -> Result<u64, DbError> {
     Ok(result.rows_affected())
 }
 
+/// Bulk-fetch source display names for a list of videos.
+///
+/// Returns a map of `video_id -> source_display_name` (picks the first source
+/// per video using `COALESCE(custom_name, channel_title, url)`).
+///
+/// # Errors
+///
+/// Returns an error if the database operation fails.
+pub async fn get_source_names_for_videos(
+    pool: &PgPool,
+) -> Result<std::collections::HashMap<Ulid, String>, DbError> {
+    let rows: Vec<(String, String)> = sqlx::query_as(
+        r"
+        SELECT DISTINCT ON (sv.video_id)
+               sv.video_id,
+               COALESCE(s.custom_name, s.channel_title, s.url) AS source_name
+        FROM source_videos sv
+        INNER JOIN sources s ON s.id = sv.source_id
+        ORDER BY sv.video_id, s.created_at ASC
+        ",
+    )
+    .fetch_all(pool)
+    .await?;
+
+    let map = rows
+        .into_iter()
+        .filter_map(|(vid, name)| Ulid::from_string(&vid).ok().map(|id| (id, name)))
+        .collect();
+
+    Ok(map)
+}
+
 /// Delete a video.
 ///
 /// # Errors

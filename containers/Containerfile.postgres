@@ -6,10 +6,10 @@ RUN apt-get update && apt-get install -y \
   && rm -rf /var/lib/apt/lists/*
 
 # Copy initialization script to enable all extensions
-COPY docker/init.sql /docker-entrypoint-initdb.d/
+COPY containers/init.sql /docker-entrypoint-initdb.d/
 
 # Copy always-run initialization script for config updates
-COPY docker/postgres-always-init.sh /docker-entrypoint-initdb.d/
+COPY containers/postgres-always-init.sh /docker-entrypoint-initdb.d/
 
 # Configure shared_preload_libraries for pg_stat_statements
 RUN echo "shared_preload_libraries = 'pg_stat_statements'" >> /usr/share/postgresql/postgresql.conf.sample && \

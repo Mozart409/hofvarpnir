@@ -159,6 +159,12 @@ mod source_indexer_tests {
             new_videos: 0,
             existing_videos: 0,
             filtered_out: 0,
+            filtered_before_cutoff: 0,
+            filtered_shorts: 0,
+            filtered_livestreams: 0,
+            filtered_unavailable: 0,
+            filtered_private: 0,
+            filtered_other: 0,
             errors: Vec::new(),
         };
 
@@ -178,12 +184,24 @@ mod source_indexer_tests {
             new_videos: 10,
             existing_videos: 50,
             filtered_out: 5,
+            filtered_before_cutoff: 1,
+            filtered_shorts: 1,
+            filtered_livestreams: 1,
+            filtered_unavailable: 1,
+            filtered_private: 1,
+            filtered_other: 0,
             errors: vec!["Rate limited".to_string()],
         };
 
         assert_eq!(result.new_videos, 10);
         assert_eq!(result.existing_videos, 50);
         assert_eq!(result.filtered_out, 5);
+        assert_eq!(result.filtered_before_cutoff, 1);
+        assert_eq!(result.filtered_shorts, 1);
+        assert_eq!(result.filtered_livestreams, 1);
+        assert_eq!(result.filtered_unavailable, 1);
+        assert_eq!(result.filtered_private, 1);
+        assert_eq!(result.filtered_other, 0);
         assert_eq!(result.errors.len(), 1);
         assert_eq!(result.errors[0], "Rate limited");
     }

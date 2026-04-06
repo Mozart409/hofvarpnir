@@ -9,15 +9,15 @@ default:
 clear:
     clear
 
-# Docker commands
+# Podman commands
 up: clear
-    docker compose -f docker/compose.dev.yml up -d --build --remove-orphans
+    podman-compose -f containers/compose.dev.yml up -d --build --remove-orphans
 
 down: clear
-    docker compose -f docker/compose.dev.yml down
+    podman-compose -f containers/compose.dev.yml down
 
 logs service="":
-    docker compose -f docker/compose.dev.yml logs -f {{service}}
+    podman-compose -f containers/compose.dev.yml logs -f {{service}}
 
 # Database commands
 [working-directory: 'crates/hof-core']
@@ -71,7 +71,7 @@ lint: clear
 
 # Development
 dev: clear
-    cargo run --bin hofvarpnir
+    cargo watch -c -x 'run -p hof-web --bin hofvarpnir'
 
 # Tailwind CSS
 [working-directory: 'crates/hof-web/assets']
@@ -83,7 +83,7 @@ css-build:
     tailwindcss -i input.css -o app.css --minify
 
 # Testing
-test: clear mig-run
+test: clear
     cargo test --all-features -- --include-ignored
 
 # CI simulation
