@@ -331,6 +331,12 @@ impl Message<IndexingCompleted> for SchedulerActor {
             new = msg.result.new_videos,
             existing = msg.result.existing_videos,
             filtered = msg.result.filtered_out,
+            filtered_before_cutoff = msg.result.filtered_before_cutoff,
+            filtered_shorts = msg.result.filtered_shorts,
+            filtered_livestreams = msg.result.filtered_livestreams,
+            filtered_unavailable = msg.result.filtered_unavailable,
+            filtered_private = msg.result.filtered_private,
+            filtered_other = msg.result.filtered_other,
             errors = msg.result.errors.len(),
             "Indexing completed"
         );
@@ -338,8 +344,11 @@ impl Message<IndexingCompleted> for SchedulerActor {
         // Emit activity event
         if msg.result.errors.is_empty() {
             let message = format!(
-                "Indexed successfully — {} new, {} existing, {} filtered",
-                msg.result.new_videos, msg.result.existing_videos, msg.result.filtered_out
+                "Indexed successfully — {} new, {} existing, {} filtered ({})",
+                msg.result.new_videos,
+                msg.result.existing_videos,
+                msg.result.filtered_out,
+                msg.result.filtered_summary()
             );
             db::log_activity(
                 &self.pool,
@@ -421,6 +430,12 @@ impl SchedulerActor {
                     new_videos: 0,
                     existing_videos: 0,
                     filtered_out: 0,
+                    filtered_before_cutoff: 0,
+                    filtered_shorts: 0,
+                    filtered_livestreams: 0,
+                    filtered_unavailable: 0,
+                    filtered_private: 0,
+                    filtered_other: 0,
                     errors: vec!["Indexer terminated unexpectedly".to_string()],
                 }
             };

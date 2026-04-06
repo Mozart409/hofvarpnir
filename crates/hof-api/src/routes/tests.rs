@@ -682,6 +682,7 @@ mod activity_tests {
             video_id: Some("01ARZ3NDEKTSV4RRFFQ69G5FAX".to_string()),
             profile_id: None,
             created_at: Utc::now(),
+            source_indexing: None,
         };
 
         let json = serde_json::to_string(&response).unwrap();

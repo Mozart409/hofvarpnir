@@ -15,6 +15,7 @@ use tracing::{debug, info, instrument};
 use ulid::Ulid;
 use yt_dlp::Downloader;
 use yt_dlp::client::deps::Libraries;
+use yt_dlp::extractor::ExtractorConfig;
 use yt_dlp::extractor::VideoExtractor;
 use yt_dlp::model::Video as YtVideo;
 use yt_dlp::model::playlist::{Playlist, PlaylistEntry as YtPlaylistEntry};
@@ -322,13 +323,17 @@ impl YtdlpClient {
     pub async fn index_source(&self, url: &str) -> Result<IndexResult, YtdlpError> {
         info!("Indexing source");
 
-        let extractor = self.downloader.generic_extractor();
+        let platform = Self::detect_platform(url);
+
+        let mut extractor = self.downloader.generic_extractor().clone();
+        if platform == "youtube" && url.contains("list=") {
+            extractor.with_arg("--playlist-reverse".to_string());
+        }
+
         let playlist = extractor
             .fetch_playlist(url)
             .await
             .map_err(|e| YtdlpError::PlaylistError(e.to_string()))?;
-
-        let platform = Self::detect_platform(url);
 
         debug!(
             title = %playlist.title,
