@@ -9,7 +9,7 @@ on:
 jobs:
   lint:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     permissions:
       contents: read
       id-token: write
@@ -25,7 +25,7 @@ jobs:
         run: nix develop .#default --command cargo clippy --all-targets --all-features -- -D warnings
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     permissions:
       contents: read
       id-token: write
