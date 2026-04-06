@@ -135,6 +135,7 @@
         lefthook
         nodejs_24
         playwright-driver.browsers
+        podman-compose
         postgresql_17
         sqruff
         tailwindcss_4
@@ -144,12 +145,9 @@
 
       linuxDevPackages = with pkgs; [
         dbeaver-bin
-        docker
-        docker-buildx
-        docker-compose
+        lazydocker
         podman
         podman-compose
-        lazydocker
         trivy
         opencode
         claude-code
@@ -168,7 +166,7 @@
         // pkgs.lib.optionalAttrs (system == "x86_64-linux" || system == "aarch64-linux") {
           # OCI container image (Linux only)
           # Build: nix build .#container
-          # Load:  docker load < result
+          # Load:  podman load < result
           # Push:  skopeo copy docker-archive:result docker://ghcr.io/user/hofvarpnir:tag
           container = pkgs.dockerTools.buildLayeredImage {
             name = "hofvarpnir";
