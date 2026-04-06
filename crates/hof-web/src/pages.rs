@@ -1397,7 +1397,12 @@ async fn downloads_page(
         _ => None,
     });
 
-    let mut videos = match db::list_videos(&state.pool, status_filter).await {
+    let (videos_result, source_names_result) = tokio::join!(
+        db::list_videos(&state.pool, status_filter),
+        db::get_source_names_for_videos(&state.pool),
+    );
+
+    let mut videos = match videos_result {
         Ok(data) => data,
         Err(error) => {
             tracing::error!(%error, "failed to load downloads page");
@@ -1407,6 +1412,8 @@ async fn downloads_page(
             );
         }
     };
+
+    let source_names = source_names_result.unwrap_or_default();
 
     // In-memory title search
     if let Some(ref search) = query.search {
@@ -1490,6 +1497,7 @@ async fn downloads_page(
                             thead class="bg-slate-50 dark:bg-slate-800" {
                                 tr {
                                     th class="px-3 py-2 text-left font-semibold text-slate-700 dark:text-slate-300" { "Title" }
+                                    th class="px-3 py-2 text-left font-semibold text-slate-700 dark:text-slate-300" { "Source" }
                                     th class="px-3 py-2 text-left font-semibold text-slate-700 dark:text-slate-300" { "Platform" }
                                     th class="px-3 py-2 text-left font-semibold text-slate-700 dark:text-slate-300" { "Status" }
                                     th class="px-3 py-2 text-left font-semibold text-slate-700 dark:text-slate-300" { "Attempts" }
@@ -1502,6 +1510,15 @@ async fn downloads_page(
                                         td class="max-w-lg px-3 py-2 text-slate-900 dark:text-slate-100" {
                                             p class="truncate font-medium" { (video.title) }
                                             p class="truncate text-xs text-slate-500 dark:text-slate-400" { (video.id.to_string()) }
+                                        }
+                                        td class="max-w-xs px-3 py-2 text-slate-600 dark:text-slate-400" {
+                                            p class="truncate" {
+                                                @if let Some(name) = source_names.get(&video.id) {
+                                                    (name)
+                                                } @else {
+                                                    span class="text-slate-400 dark:text-slate-500 italic" { "—" }
+                                                }
+                                            }
                                         }
                                         td class="px-3 py-2 text-slate-600 dark:text-slate-400" { (video.platform) }
                                         td class="px-3 py-2" { (status_badge(&video.status)) }
@@ -1928,8 +1945,15 @@ async fn activity_page(
     });
 
     let (events_result, count_result) = tokio::join!(
-        db::list_activity_events(&state.pool, per_page, offset, severity_filter.clone(), None),
-        db::count_activity_events(&state.pool, severity_filter.clone(), None)
+        db::list_activity_events(
+            &state.pool,
+            per_page,
+            offset,
+            severity_filter.clone(),
+            None,
+            None
+        ),
+        db::count_activity_events(&state.pool, severity_filter.clone(), None, None)
     );
 
     let events = match events_result {
@@ -2099,6 +2123,7 @@ fn activity_event_row(event: &hof_core::domain::activity::ActivityEvent) -> Mark
     };
 
     let time_ago = format_time_ago(event.created_at);
+    let source_indexing = event.source_indexing_summary();
 
     html! {
         div class=(format!("flex items-start gap-3 rounded-lg border border-slate-200 dark:border-slate-700 border-l-4 {} bg-white dark:bg-slate-800 p-3", border_color)) {
@@ -2114,6 +2139,19 @@ fn activity_event_row(event: &hof_core::domain::activity::ActivityEvent) -> Mark
                     span class="text-xs text-slate-400 dark:text-slate-500" title=(event.created_at.to_rfc3339()) { (time_ago) }
                 }
                 p class="mt-1 text-sm text-slate-700 dark:text-slate-300" { (event.message) }
+                @if let Some(summary) = source_indexing {
+                    div class="mt-2 flex flex-wrap gap-1.5" {
+                        span class="rounded bg-slate-100 dark:bg-slate-700 px-2 py-0.5 text-xs text-slate-600 dark:text-slate-300" { "new: " (summary.new_videos) }
+                        span class="rounded bg-slate-100 dark:bg-slate-700 px-2 py-0.5 text-xs text-slate-600 dark:text-slate-300" { "existing: " (summary.existing_videos) }
+                        span class="rounded bg-slate-100 dark:bg-slate-700 px-2 py-0.5 text-xs text-slate-600 dark:text-slate-300" { "filtered: " (summary.filtered_total) }
+                        span class="rounded bg-slate-100 dark:bg-slate-700 px-2 py-0.5 text-xs text-slate-600 dark:text-slate-300" { "cutoff: " (summary.filtered_before_cutoff) }
+                        span class="rounded bg-slate-100 dark:bg-slate-700 px-2 py-0.5 text-xs text-slate-600 dark:text-slate-300" { "shorts: " (summary.filtered_shorts) }
+                        span class="rounded bg-slate-100 dark:bg-slate-700 px-2 py-0.5 text-xs text-slate-600 dark:text-slate-300" { "live: " (summary.filtered_livestreams) }
+                        span class="rounded bg-slate-100 dark:bg-slate-700 px-2 py-0.5 text-xs text-slate-600 dark:text-slate-300" { "unavailable: " (summary.filtered_unavailable) }
+                        span class="rounded bg-slate-100 dark:bg-slate-700 px-2 py-0.5 text-xs text-slate-600 dark:text-slate-300" { "private: " (summary.filtered_private) }
+                        span class="rounded bg-slate-100 dark:bg-slate-700 px-2 py-0.5 text-xs text-slate-600 dark:text-slate-300" { "other: " (summary.filtered_other) }
+                    }
+                }
             }
         }
     }
@@ -2140,7 +2178,7 @@ async fn schedule_page(
     let (sources_result, profiles_result, recent_activity_result, cleanup_status) = tokio::join!(
         db::list_sources(&state.pool),
         db::list_profiles(&state.pool),
-        db::list_activity_events(&state.pool, 20, 0, None, None),
+        db::list_activity_events(&state.pool, 20, 0, None, None, None),
         state.cleanup.ask(GetCleanupStatus)
     );
 

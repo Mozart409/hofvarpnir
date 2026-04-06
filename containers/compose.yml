@@ -1,7 +1,7 @@
 services:
   # Hofvarpnir video archival service
   # Build the container using Nix:
-  #   nix build .#container && docker load < result
+  #   nix build .#container && podman load < result
   # Or pull from registry:
   #   image: ghcr.io/user/hofvarpnir:latest
   hofvarpnir:
@@ -41,7 +41,7 @@ services:
     container_name: postgres
     build:
       context: ..
-      dockerfile: docker/postgres.Dockerfile
+      dockerfile: containers/Containerfile.postgres
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
