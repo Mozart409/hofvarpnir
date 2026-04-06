@@ -11,13 +11,13 @@ clear:
 
 # Podman commands
 up: clear
-    podman compose -f docker/compose.dev.yml up -d --build --remove-orphans
+    podman-compose -f containers/compose.dev.yml up -d --build --remove-orphans
 
 down: clear
-    podman compose -f docker/compose.dev.yml down
+    podman-compose -f containers/compose.dev.yml down
 
 logs service="":
-    podman compose -f docker/compose.dev.yml logs -f {{service}}
+    podman-compose -f containers/compose.dev.yml logs -f {{service}}
 
 # Database commands
 [working-directory: 'crates/hof-core']
