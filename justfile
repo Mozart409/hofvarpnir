@@ -71,7 +71,7 @@ lint: clear
 
 # Development
 dev: clear
-    cargo run --bin hofvarpnir
+    cargo watch -c -x 'run -p hof-web --bin hofvarpnir'
 
 # Tailwind CSS
 [working-directory: 'crates/hof-web/assets']
