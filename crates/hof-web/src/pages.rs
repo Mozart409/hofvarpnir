@@ -1397,7 +1397,12 @@ async fn downloads_page(
         _ => None,
     });
 
-    let mut videos = match db::list_videos(&state.pool, status_filter).await {
+    let (videos_result, source_names_result) = tokio::join!(
+        db::list_videos(&state.pool, status_filter),
+        db::get_source_names_for_videos(&state.pool),
+    );
+
+    let mut videos = match videos_result {
         Ok(data) => data,
         Err(error) => {
             tracing::error!(%error, "failed to load downloads page");
@@ -1407,6 +1412,8 @@ async fn downloads_page(
             );
         }
     };
+
+    let source_names = source_names_result.unwrap_or_default();
 
     // In-memory title search
     if let Some(ref search) = query.search {
@@ -1490,6 +1497,7 @@ async fn downloads_page(
                             thead class="bg-slate-50 dark:bg-slate-800" {
                                 tr {
                                     th class="px-3 py-2 text-left font-semibold text-slate-700 dark:text-slate-300" { "Title" }
+                                    th class="px-3 py-2 text-left font-semibold text-slate-700 dark:text-slate-300" { "Source" }
                                     th class="px-3 py-2 text-left font-semibold text-slate-700 dark:text-slate-300" { "Platform" }
                                     th class="px-3 py-2 text-left font-semibold text-slate-700 dark:text-slate-300" { "Status" }
                                     th class="px-3 py-2 text-left font-semibold text-slate-700 dark:text-slate-300" { "Attempts" }
@@ -1502,6 +1510,15 @@ async fn downloads_page(
                                         td class="max-w-lg px-3 py-2 text-slate-900 dark:text-slate-100" {
                                             p class="truncate font-medium" { (video.title) }
                                             p class="truncate text-xs text-slate-500 dark:text-slate-400" { (video.id.to_string()) }
+                                        }
+                                        td class="max-w-xs px-3 py-2 text-slate-600 dark:text-slate-400" {
+                                            p class="truncate" {
+                                                @if let Some(name) = source_names.get(&video.id) {
+                                                    (name)
+                                                } @else {
+                                                    span class="text-slate-400 dark:text-slate-500 italic" { "—" }
+                                                }
+                                            }
                                         }
                                         td class="px-3 py-2 text-slate-600 dark:text-slate-400" { (video.platform) }
                                         td class="px-3 py-2" { (status_badge(&video.status)) }
