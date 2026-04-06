@@ -4838,7 +4838,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.48.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5343,9 +5343,9 @@ dependencies = [
 
 [[package]]
 name = "yt-dlp"
-version = "2.7.1"
+version = "2.7.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c279cc146f47f009f439684b42f8fdf850169d1cc4f5f539d416ec00fac25649"
+checksum = "0c61b9d8cf9a6f06c2a841d03b2b2107c8a4bfff628ddc62a3378500cfa76441"
 dependencies = [
  "async-trait",
  "cfg-if",
@@ -5463,9 +5463,9 @@ dependencies = [
 
 [[package]]
 name = "zip"
-version = "8.4.0"
+version = "8.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7756d0206d058333667493c4014f545f4b9603c4330ccd6d9b3f86dcab59f7d9"
+checksum = "2726508a48f38dceb22b35ecbbd2430efe34ff05c62bd3285f965d7911b33464"
 dependencies = [
  "crc32fast",
  "flate2",
