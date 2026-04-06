@@ -305,6 +305,10 @@ This pattern is commonly needed when:
 pub async fn list_videos(State(state): State<AppState>) -> Result<impl IntoResponse> { ... }
 ```
 
+## Database
+
+In development you can use this connection string to connect to the database. DATABASE_URL=postgresql://postgres:postgres@localhost:5432/hofvarpnir_dev
+
 ## Project Structure
 
 ```
