@@ -60,6 +60,7 @@ pub async fn list_activity_events(
     limit: i64,
     offset: i64,
     severity: Option<ActivitySeverity>,
+    event_type: Option<ActivityEventType>,
     source_id: Option<Ulid>,
 ) -> Result<Vec<ActivityEvent>, DbError> {
     let rows = sqlx::query_as::<_, ActivityEventRow>(
@@ -67,12 +68,14 @@ pub async fn list_activity_events(
         SELECT id, event_type, severity, message, source_id, video_id, profile_id, created_at
         FROM activity_events
         WHERE ($1::activity_severity IS NULL OR severity = $1)
-          AND ($2::text IS NULL OR source_id = $2)
+          AND ($2::activity_event_type IS NULL OR event_type = $2)
+          AND ($3::text IS NULL OR source_id = $3)
         ORDER BY created_at DESC
-        LIMIT $3 OFFSET $4
+        LIMIT $4 OFFSET $5
         ",
     )
     .bind(severity)
+    .bind(event_type)
     .bind(source_id.map(|id| id.to_string()))
     .bind(limit)
     .bind(offset)
@@ -93,6 +96,7 @@ pub async fn list_activity_events(
 pub async fn count_activity_events(
     pool: &PgPool,
     severity: Option<ActivitySeverity>,
+    event_type: Option<ActivityEventType>,
     source_id: Option<Ulid>,
 ) -> Result<i64, DbError> {
     let row: (i64,) = sqlx::query_as(
@@ -100,10 +104,12 @@ pub async fn count_activity_events(
         SELECT COUNT(*)
         FROM activity_events
         WHERE ($1::activity_severity IS NULL OR severity = $1)
-          AND ($2::text IS NULL OR source_id = $2)
+          AND ($2::activity_event_type IS NULL OR event_type = $2)
+          AND ($3::text IS NULL OR source_id = $3)
         ",
     )
     .bind(severity)
+    .bind(event_type)
     .bind(source_id.map(|id| id.to_string()))
     .fetch_one(pool)
     .await?;

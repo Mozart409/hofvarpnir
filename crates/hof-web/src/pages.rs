@@ -1928,8 +1928,15 @@ async fn activity_page(
     });
 
     let (events_result, count_result) = tokio::join!(
-        db::list_activity_events(&state.pool, per_page, offset, severity_filter.clone(), None),
-        db::count_activity_events(&state.pool, severity_filter.clone(), None)
+        db::list_activity_events(
+            &state.pool,
+            per_page,
+            offset,
+            severity_filter.clone(),
+            None,
+            None
+        ),
+        db::count_activity_events(&state.pool, severity_filter.clone(), None, None)
     );
 
     let events = match events_result {
@@ -2099,6 +2106,7 @@ fn activity_event_row(event: &hof_core::domain::activity::ActivityEvent) -> Mark
     };
 
     let time_ago = format_time_ago(event.created_at);
+    let source_indexing = event.source_indexing_summary();
 
     html! {
         div class=(format!("flex items-start gap-3 rounded-lg border border-slate-200 dark:border-slate-700 border-l-4 {} bg-white dark:bg-slate-800 p-3", border_color)) {
@@ -2114,6 +2122,19 @@ fn activity_event_row(event: &hof_core::domain::activity::ActivityEvent) -> Mark
                     span class="text-xs text-slate-400 dark:text-slate-500" title=(event.created_at.to_rfc3339()) { (time_ago) }
                 }
                 p class="mt-1 text-sm text-slate-700 dark:text-slate-300" { (event.message) }
+                @if let Some(summary) = source_indexing {
+                    div class="mt-2 flex flex-wrap gap-1.5" {
+                        span class="rounded bg-slate-100 dark:bg-slate-700 px-2 py-0.5 text-xs text-slate-600 dark:text-slate-300" { "new: " (summary.new_videos) }
+                        span class="rounded bg-slate-100 dark:bg-slate-700 px-2 py-0.5 text-xs text-slate-600 dark:text-slate-300" { "existing: " (summary.existing_videos) }
+                        span class="rounded bg-slate-100 dark:bg-slate-700 px-2 py-0.5 text-xs text-slate-600 dark:text-slate-300" { "filtered: " (summary.filtered_total) }
+                        span class="rounded bg-slate-100 dark:bg-slate-700 px-2 py-0.5 text-xs text-slate-600 dark:text-slate-300" { "cutoff: " (summary.filtered_before_cutoff) }
+                        span class="rounded bg-slate-100 dark:bg-slate-700 px-2 py-0.5 text-xs text-slate-600 dark:text-slate-300" { "shorts: " (summary.filtered_shorts) }
+                        span class="rounded bg-slate-100 dark:bg-slate-700 px-2 py-0.5 text-xs text-slate-600 dark:text-slate-300" { "live: " (summary.filtered_livestreams) }
+                        span class="rounded bg-slate-100 dark:bg-slate-700 px-2 py-0.5 text-xs text-slate-600 dark:text-slate-300" { "unavailable: " (summary.filtered_unavailable) }
+                        span class="rounded bg-slate-100 dark:bg-slate-700 px-2 py-0.5 text-xs text-slate-600 dark:text-slate-300" { "private: " (summary.filtered_private) }
+                        span class="rounded bg-slate-100 dark:bg-slate-700 px-2 py-0.5 text-xs text-slate-600 dark:text-slate-300" { "other: " (summary.filtered_other) }
+                    }
+                }
             }
         }
     }
@@ -2140,7 +2161,7 @@ async fn schedule_page(
     let (sources_result, profiles_result, recent_activity_result, cleanup_status) = tokio::join!(
         db::list_sources(&state.pool),
         db::list_profiles(&state.pool),
-        db::list_activity_events(&state.pool, 20, 0, None, None),
+        db::list_activity_events(&state.pool, 20, 0, None, None, None),
         state.cleanup.ask(GetCleanupStatus)
     );
 

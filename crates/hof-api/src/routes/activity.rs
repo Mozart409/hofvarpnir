@@ -17,7 +17,7 @@ use utoipa::ToSchema;
 
 use hof_core::{
     db,
-    domain::activity::{ActivityEvent, ActivityEventType, ActivitySeverity},
+    domain::activity::{ActivityEvent, ActivityEventType, ActivitySeverity, SourceIndexingSummary},
 };
 
 use crate::AppState;
@@ -42,6 +42,8 @@ pub struct ListActivityQuery {
     pub offset: i64,
     /// Filter by severity level.
     pub severity: Option<ActivitySeverity>,
+    /// Filter by activity event type.
+    pub event_type: Option<ActivityEventType>,
     /// Filter by source ID.
     pub source_id: Option<String>,
 }
@@ -61,10 +63,13 @@ pub struct ActivityEventResponse {
     pub video_id: Option<String>,
     pub profile_id: Option<String>,
     pub created_at: DateTime<Utc>,
+    pub source_indexing: Option<SourceIndexingSummary>,
 }
 
 impl From<ActivityEvent> for ActivityEventResponse {
     fn from(event: ActivityEvent) -> Self {
+        let source_indexing = event.source_indexing_summary();
+
         Self {
             id: event.id.to_string(),
             event_type: event.event_type,
@@ -74,6 +79,7 @@ impl From<ActivityEvent> for ActivityEventResponse {
             video_id: event.video_id.map(|id| id.to_string()),
             profile_id: event.profile_id.map(|id| id.to_string()),
             created_at: event.created_at,
+            source_indexing,
         }
     }
 }
@@ -109,6 +115,7 @@ pub struct ErrorResponse {
         ("limit" = Option<i64>, Query, description = "Maximum number of events (default: 50, max: 200)"),
         ("offset" = Option<i64>, Query, description = "Number of events to skip"),
         ("severity" = Option<ActivitySeverity>, Query, description = "Filter by severity"),
+        ("event_type" = Option<ActivityEventType>, Query, description = "Filter by activity event type"),
         ("source_id" = Option<String>, Query, description = "Filter by source ID")
     ),
     responses(
@@ -143,7 +150,14 @@ pub async fn list_activity(
 
     // Get total count
     let severity_filter = query.severity.clone();
-    let total = match db::count_activity_events(&state.pool, severity_filter, source_id).await {
+    let total = match db::count_activity_events(
+        &state.pool,
+        severity_filter,
+        query.event_type.clone(),
+        source_id,
+    )
+    .await
+    {
         Ok(count) => count,
         Err(e) => {
             tracing::error!(error = %e, "Failed to count activity events");
@@ -158,8 +172,15 @@ pub async fn list_activity(
     };
 
     // Get events
-    match db::list_activity_events(&state.pool, limit, query.offset, query.severity, source_id)
-        .await
+    match db::list_activity_events(
+        &state.pool,
+        limit,
+        query.offset,
+        query.severity,
+        query.event_type,
+        source_id,
+    )
+    .await
     {
         Ok(events) => {
             let responses: Vec<ActivityEventResponse> =
