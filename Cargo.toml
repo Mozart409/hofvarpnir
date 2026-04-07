@@ -20,6 +20,7 @@ color-eyre = "0.6.5"
 crossterm = "0.29"
 dotenvy = "0.15"
 futures = "0.3"
+http = "1"
 kameo = "0.19"
 maud = { version = "0.27", features = ["axum"] }
 mime_guess = "2"
@@ -38,7 +39,7 @@ thiserror = "2"
 tokio = { version = "1", features = ["full"] }
 tokio-stream = "0.1"
 tower = "0.5"
-tower-http = { version = "0.6", features = ["cors", "trace", "fs"] }
+tower-http = { version = "0.6", features = ["cors", "trace", "fs", "request-id", "propagate-header"] }
 tower-sessions = "0.15"
 tower-sessions-core = "0.15"
 tower-sessions-sqlx-store = { version = "0.15", features = ["postgres"], git = "https://github.com/maxcountryman/tower-sessions-stores" }

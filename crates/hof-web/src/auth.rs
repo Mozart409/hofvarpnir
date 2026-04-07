@@ -7,6 +7,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use tower_sessions::Session;
+use tracing::warn;
 use ulid::Ulid;
 
 /// Session key for storing the authenticated user ID.
@@ -68,7 +69,11 @@ pub enum SessionError {
 
 impl IntoResponse for SessionError {
     fn into_response(self) -> Response {
-        // Redirect to login page for auth errors
+        match &self {
+            Self::NotAuthenticated => warn!("auth: no valid session, redirecting to login"),
+            Self::StorageFailed => warn!("auth: session storage failure"),
+            Self::InvalidUserId => warn!("auth: invalid user ID in session"),
+        }
         Redirect::to("/login").into_response()
     }
 }
