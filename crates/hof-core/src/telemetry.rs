@@ -5,9 +5,10 @@
 //! - Environment-based log filtering via `RUST_LOG`
 //! - Per-request ID generation and propagation via `x-request-id` header
 //! - OpenTelemetry trace export via OTLP/gRPC (when `OTEL_EXPORTER_OTLP_ENDPOINT` is set)
+//! - Log shipping to Grafana Loki with `trace_id` correlation (when `LOKI_URL` is set)
 //!
-//! The OpenTelemetry trace pipeline is opt-in: if the endpoint env var is unset the app
-//! behaves exactly as before, with zero OpenTelemetry overhead.
+//! Both the OpenTelemetry and Loki pipelines are opt-in: if the respective env
+//! vars are unset the app behaves exactly as before.
 
 use http::Request;
 use opentelemetry::trace::TracerProvider;
@@ -26,6 +27,8 @@ use ulid::Ulid;
 /// spans are flushed. Hold this in `main` until the process is ready to exit.
 pub struct TelemetryGuard {
     provider: Option<opentelemetry_sdk::trace::SdkTracerProvider>,
+    /// Handle to the Loki background sender task.
+    _loki_task: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl TelemetryGuard {
@@ -52,6 +55,7 @@ impl Drop for TelemetryGuard {
 /// - `LOG_FORMAT` — `json` for structured JSON output, anything else for human-readable (default)
 /// - `OTEL_EXPORTER_OTLP_ENDPOINT` — if set, enables OTLP/gRPC trace export
 /// - `OTEL_SERVICE_NAME` — service name reported to the collector (default: `hofvarpnir`)
+/// - `LOKI_URL` — if set, ships logs to Grafana Loki (e.g. `http://localhost:3100`)
 ///
 /// Returns a [`TelemetryGuard`] that must be held until shutdown. Dropping it
 /// flushes the OpenTelemetry exporter.
@@ -67,6 +71,9 @@ pub fn init_tracing() -> TelemetryGuard {
     // Build the optional OpenTelemetry layer + provider
     let (otel_layer, provider) = init_otel_layer();
 
+    // Build the optional Loki layer + background task
+    let (loki_layer, loki_task) = init_loki_layer();
+
     // Use boxed layers to avoid monomorphization headaches with Option<OpenTelemetryLayer<S>>
     let fmt_layer: Box<dyn Layer<_> + Send + Sync> = if use_json {
         Box::new(fmt::layer().json())
@@ -77,6 +84,7 @@ pub fn init_tracing() -> TelemetryGuard {
     tracing_subscriber::registry()
         .with(env_filter)
         .with(otel_layer)
+        .with(loki_layer)
         .with(fmt_layer)
         .init();
 
@@ -84,7 +92,16 @@ pub fn init_tracing() -> TelemetryGuard {
         tracing::info!("OpenTelemetry trace export enabled");
     }
 
-    TelemetryGuard { provider }
+    // Spawn the Loki background task after the subscriber is initialized
+    let loki_handle = loki_task.map(|task| {
+        tracing::info!("Loki log shipping enabled");
+        tokio::spawn(task)
+    });
+
+    TelemetryGuard {
+        provider,
+        _loki_task: loki_handle,
+    }
 }
 
 /// Try to build an OpenTelemetry tracing layer from env vars.
@@ -128,6 +145,42 @@ where
     let layer = tracing_opentelemetry::layer().with_tracer(tracer);
 
     (Some(layer), Some(provider))
+}
+
+/// Try to build a Loki tracing layer from env vars.
+///
+/// Returns `(Some(layer), Some(task))` when `LOKI_URL` is set, or
+/// `(None, None)` otherwise. The background task must be spawned on the tokio
+/// runtime for log delivery to work.
+fn init_loki_layer() -> (
+    Option<tracing_loki::Layer>,
+    Option<tracing_loki::BackgroundTask>,
+) {
+    let Ok(loki_url) = std::env::var("LOKI_URL") else {
+        return (None, None);
+    };
+
+    let url = match tracing_loki::url::Url::parse(&loki_url) {
+        Ok(u) => u,
+        Err(e) => {
+            eprintln!("Invalid LOKI_URL: {e}");
+            return (None, None);
+        }
+    };
+
+    let service_name = std::env::var("OTEL_SERVICE_NAME").unwrap_or_else(|_| "hofvarpnir".into());
+
+    let builder = tracing_loki::builder()
+        .label("service", service_name)
+        .expect("valid label");
+
+    match builder.build_url(url) {
+        Ok((layer, task)) => (Some(layer), Some(task)),
+        Err(e) => {
+            eprintln!("Failed to create Loki layer: {e}");
+            (None, None)
+        }
+    }
 }
 
 /// Generates a ULID-based `x-request-id` for each incoming HTTP request.

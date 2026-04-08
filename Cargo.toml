@@ -50,6 +50,7 @@ tower-sessions = "0.15"
 tower-sessions-core = "0.15"
 tower-sessions-sqlx-store = { version = "0.15", features = ["postgres"], git = "https://github.com/maxcountryman/tower-sessions-stores" }
 tracing = "0.1"
+tracing-loki = { version = "0.2", default-features = false, features = ["compat-0-2-1", "rustls"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 ulid = { version = "1", features = ["serde"] }
 utoipa = { version = "5", features = ["axum_extras", "chrono", "ulid"] }
