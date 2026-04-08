@@ -141,11 +141,12 @@
         tailwindcss_4
         ffmpeg
         yt-dlp
+        lazydocker
+        podman-tui
       ];
 
       linuxDevPackages = with pkgs; [
         dbeaver-bin
-        lazydocker
         podman
         podman-compose
         trivy
