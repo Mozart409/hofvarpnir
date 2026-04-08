@@ -1431,6 +1431,7 @@ dependencies = [
  "axum",
  "chrono",
  "color-eyre",
+ "dotenvy",
  "futures",
  "hof-api",
  "hof-core",

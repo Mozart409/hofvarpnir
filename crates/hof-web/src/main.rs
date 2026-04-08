@@ -14,6 +14,9 @@ use hof_core::{Config, RequestSpan, UlidRequestId, db, init_tracing, initialize,
 async fn main() -> Result<()> {
     color_eyre::install()?;
 
+    // Load .env before tracing so OTEL_EXPORTER_OTLP_ENDPOINT / LOKI_URL are visible
+    dotenvy::dotenv().ok();
+
     // Initialize tracing (supports LOG_FORMAT=json, OTEL_EXPORTER_OTLP_ENDPOINT)
     let _telemetry_guard = init_tracing();
 

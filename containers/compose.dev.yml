@@ -1,4 +1,5 @@
 services:
+  # Database
   postgres:
     container_name: postgres
     build:
@@ -25,20 +26,87 @@ services:
     image: prometheuscommunity/postgres-exporter:latest
     environment:
       DATA_SOURCE_NAME: postgresql://postgres:postgres@postgres:5432/hofvarpnir_dev?sslmode=disable
-      PG_EXPORTER_EXTEND_QUERY_PATH: /etc/postgres_exporter/queries.yaml
     ports:
       - "9187:9187"
-    volumes:
-      - ./postgres_exporter/queries.yaml:/etc/postgres_exporter/queries.yaml:ro
     networks:
       - hofvarpnir
     depends_on:
       - postgres
+
+  # OpenTelemetry — Tempo (traces) + Loki (logs) + Prometheus (metrics) + Grafana
+  tempo:
+    container_name: tempo
+    image: docker.io/grafana/tempo:2.7.2
+    command: ["-config.file=/etc/tempo/tempo.yml"]
+    ports:
+      - "4317:4317"   # OTLP gRPC
+      - "3200:3200"   # Tempo query API
+    volumes:
+      - ./observability/tempo/tempo.yml:/etc/tempo/tempo.yml:ro
+      - tempo_data:/var/tempo
+    networks:
+      - hofvarpnir
+
+  loki:
+    container_name: loki
+    image: docker.io/grafana/loki:3.4.3
+    command: ["-config.file=/etc/loki/loki.yml"]
+    ports:
+      - "3100:3100"
+    volumes:
+      - ./observability/loki/loki.yml:/etc/loki/loki.yml:ro
+      - loki_data:/loki
+    networks:
+      - hofvarpnir
+
+  prometheus:
+    container_name: prometheus
+    image: docker.io/prom/prometheus:v3.3.0
     command:
-      - '--extend.query-path=/etc/postgres_exporter/queries.yaml'
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--web.enable-remote-write-receiver"
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    networks:
+      - hofvarpnir
+    extra_hosts:
+      - "host.containers.internal:host-gateway"
+
+  grafana:
+    container_name: grafana
+    image: docker.io/grafana/grafana:11.6.0
+    ports:
+      - "3001:3000"
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - tempo
+      - loki
+      - prometheus
+    networks:
+      - hofvarpnir
+
 volumes:
   postgres_data:
     driver: local
+  tempo_data:
+    driver: local
+  loki_data:
+    driver: local
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local
+
 networks:
   hofvarpnir:
     driver: bridge
