@@ -12,6 +12,7 @@ use std::time::Duration;
 use chrono::Utc;
 use kameo::Reply;
 use kameo::prelude::*;
+use metrics::{counter, gauge};
 use sqlx::PgPool;
 use tokio::sync::{Semaphore, mpsc};
 use tokio::time::Instant;
@@ -306,6 +307,8 @@ impl Message<RegisterWorker> for DownloadSupervisor {
 
     async fn handle(&mut self, msg: RegisterWorker, _ctx: &mut Context<Self, Self::Reply>) {
         self.active_downloads.insert(msg.video_id, msg.worker_ref);
+        #[allow(clippy::cast_precision_loss)]
+        gauge!(crate::metrics::DOWNLOADS_ACTIVE).set(self.active_downloads.len() as f64);
         debug!(
             video_id = %msg.video_id,
             active_count = self.active_downloads.len(),
@@ -324,6 +327,8 @@ impl Message<DownloadCompleted> for DownloadSupervisor {
 
     async fn handle(&mut self, msg: DownloadCompleted, _ctx: &mut Context<Self, Self::Reply>) {
         self.active_downloads.remove(&msg.video_id);
+        #[allow(clippy::cast_precision_loss)]
+        gauge!(crate::metrics::DOWNLOADS_ACTIVE).set(self.active_downloads.len() as f64);
         debug!(
             video_id = %msg.video_id,
             active_count = self.active_downloads.len(),
@@ -349,6 +354,7 @@ impl Message<ReportOutcome> for DownloadSupervisor {
                 file_path,
                 file_size_bytes,
             } => {
+                counter!(crate::metrics::DOWNLOADS_COMPLETED_TOTAL).increment(1);
                 info!(
                     video_id = %video_id,
                     file_path = %file_path.display(),
@@ -571,6 +577,7 @@ impl DownloadSupervisor {
 
         if attempts >= max_attempts_i32 {
             // Mark as permanently failed
+            counter!(crate::metrics::DOWNLOADS_FAILED_TOTAL, "reason" => "permanent").increment(1);
             error!(
                 video_id = %video_id,
                 attempts,
@@ -592,6 +599,12 @@ impl DownloadSupervisor {
             .await;
         } else {
             // Schedule retry with exponential backoff
+            let reason = if is_rate_limited {
+                "rate_limited"
+            } else {
+                "retry"
+            };
+            counter!(crate::metrics::DOWNLOADS_FAILED_TOTAL, "reason" => reason).increment(1);
             // attempts is guaranteed non-negative here since we only get here after incrementing
             let attempts_u32 = u32::try_from(attempts).unwrap_or(0);
             let backoff_secs = BACKOFF_BASE_SECS.saturating_mul(2u64.saturating_pow(attempts_u32));

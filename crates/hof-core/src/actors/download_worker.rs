@@ -9,11 +9,12 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use chrono::Datelike;
 use kameo::Reply;
 use kameo::prelude::*;
+use metrics::histogram;
 use sqlx::PgPool;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, instrument, warn};
@@ -146,7 +147,9 @@ impl Message<StartDownload> for DownloadWorker {
         _msg: StartDownload,
         ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
+        let start = Instant::now();
         let outcome = self.execute_download().await;
+        histogram!(crate::metrics::DOWNLOAD_DURATION_SECONDS).record(start.elapsed().as_secs_f64());
 
         // Stop the actor after the download completes
         ctx.actor_ref().stop_gracefully().await.ok();

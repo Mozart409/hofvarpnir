@@ -103,8 +103,9 @@ tracing_subscriber::registry()
 
 ---
 
-## Phase 2: Metrics (Prometheus)
+## Phase 2: Metrics (Prometheus) ✅
 
+**Status:** Complete
 **Goal:** Expose application metrics via `/metrics` for Prometheus to scrape.
 
 ### 2.1 Add metrics dependencies
@@ -139,8 +140,9 @@ tracing_subscriber::registry()
 
 ---
 
-## Phase 3: Distributed Tracing (OpenTelemetry + Tempo)
+## Phase 3: Distributed Tracing (OpenTelemetry + Tempo) ✅
 
+**Status:** Complete
 **Goal:** Export spans to Grafana Tempo. Existing `#[instrument]` annotations become real distributed traces.
 
 ### 3.1 Add OpenTelemetry dependencies
