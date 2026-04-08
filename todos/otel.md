@@ -247,24 +247,32 @@ METRICS_ENABLED=true
 
 ---
 
-## Phase 6: Production Hardening (Future)
+## Phase 6: Production Hardening ✅
 
+**Status:** Complete
 **Goal:** Items to consider once the basics are stable. Not required for initial rollout.
 
-### 6.1 Health/readiness endpoints
+### 6.1 Health/readiness endpoints ✅
 
-- `GET /health` — basic liveness (always 200)
-- `GET /ready` — checks DB connectivity, actor system health
+- `GET /api/health` — comprehensive check (DB, yt-dlp, all 4 actors, startup issues)
+- `GET /api/health/live` — basic liveness (always 200)
+- `GET /api/health/ready` — checks DB connectivity + actor system health
+- Actor health checks: supervisor, scheduler, cleanup, jellyfin_metadata via `is_alive()`
 
-### 6.2 Grafana dashboards
+### 6.2 Grafana dashboards ✅
 
-- Pre-built dashboard: HTTP overview (request rate, latency p50/p95/p99, error rate)
-- Pre-built dashboard: Downloads (active, completed, failed, duration)
-- Pre-built dashboard: System (DB pool, actor mailboxes)
+- Pre-built dashboard: HTTP overview (request rate, latency p50/p95/p99, error rate, requests by status/path)
+- Pre-built dashboard: Downloads (active, completed, failed, duration, source indexing, success rate)
+- Pre-built dashboard: System (DB connections, pool utilization, DB size, cleanup activity, source index duration/errors)
+- Dashboard provisioning config auto-loads JSON dashboards into "Hofvarpnir" folder
 
-### 6.3 Alerting rules
+### 6.3 Alerting rules ✅
 
-- Prometheus alerting rules for: high error rate, download failures spike, DB connection pool exhaustion
+- `HighErrorRate` — >5% HTTP 5xx over 5 minutes
+- `DownloadFailureSpike` — >3 failures in 15 minutes
+- `DbConnectionPoolExhaustion` — >90% connection utilization for 5 minutes
+- `SourceIndexErrors` — any indexing errors in 30 minutes
+- Rules file mounted in both dev and production compose
 
 ### 6.4 Span sampling (if needed)
 

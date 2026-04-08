@@ -475,7 +475,7 @@ mod download_tests {
 
 #[cfg(test)]
 mod health_tests {
-    use crate::routes::health::{ComponentHealth, HealthResponse, HealthStatus};
+    use crate::routes::health::{ActorsHealth, ComponentHealth, HealthResponse, HealthStatus};
 
     #[test]
     fn test_health_response_serialization() {
@@ -488,6 +488,13 @@ mod health_tests {
             ytdlp: ComponentHealth {
                 healthy: true,
                 message: Some("yt-dlp 2024.01.01".to_string()),
+            },
+            actors: ActorsHealth {
+                healthy: true,
+                supervisor: true,
+                scheduler: true,
+                cleanup: true,
+                jellyfin_metadata: true,
             },
             issues: vec![],
         };

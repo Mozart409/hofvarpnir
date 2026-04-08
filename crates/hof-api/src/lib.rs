@@ -111,6 +111,7 @@ impl AppState {
         health::HealthResponse,
         health::HealthStatus,
         health::ComponentHealth,
+        health::ActorsHealth,
         profiles::ProfileResponse,
         profiles::CreateProfileRequest,
         profiles::UpdateProfileRequest,
