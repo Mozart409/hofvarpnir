@@ -1,3 +1,6 @@
+use std::sync::Arc;
+
+use axum::routing::get;
 use color_eyre::Result;
 use http::header::HeaderName;
 use tokio::sync::broadcast;
@@ -11,8 +14,11 @@ use hof_core::{Config, RequestSpan, UlidRequestId, db, init_tracing, initialize,
 async fn main() -> Result<()> {
     color_eyre::install()?;
 
-    // Initialize tracing (supports LOG_FORMAT=json)
-    init_tracing();
+    // Initialize tracing (supports LOG_FORMAT=json, OTEL_EXPORTER_OTLP_ENDPOINT)
+    let _telemetry_guard = init_tracing();
+
+    // Initialize Prometheus metrics
+    let metrics_handle = Arc::new(hof_core::metrics::init_metrics());
 
     // Load configuration
     let config = Config::load()?;
@@ -60,10 +66,18 @@ async fn main() -> Result<()> {
     // Build the application router
     let x_request_id = HeaderName::from_static("x-request-id");
     let app = axum::Router::new()
+        .merge(axum::Router::new().route(
+            "/metrics",
+            get({
+                let handle = Arc::clone(&metrics_handle);
+                move || async move { handle.render() }
+            }),
+        ))
         .nest("/api", hof_api::router(api_state.clone()))
         .nest("/docs", hof_api::scalar_router())
         .merge(hof_web::router(api_state))
         .layer(session_layer)
+        .layer(axum::middleware::from_fn(hof_web::middleware::http_metrics))
         // Layer order (axum applies bottom-up, so outermost layer is last):
         // 1. PropagateHeader: copy x-request-id from request to response
         .layer(PropagateHeaderLayer::new(x_request_id.clone()))

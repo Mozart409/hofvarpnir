@@ -22,6 +22,12 @@ dotenvy = "0.15"
 futures = "0.3"
 http = "1"
 kameo = "0.19"
+metrics = "0.24"
+opentelemetry = { version = "0.31", default-features = false, features = ["trace"] }
+opentelemetry_sdk = { version = "0.31", default-features = false, features = ["trace", "rt-tokio"] }
+opentelemetry-otlp = { version = "0.31", default-features = false, features = ["grpc-tonic", "trace"] }
+tracing-opentelemetry = { version = "0.32", default-features = false }
+metrics-exporter-prometheus = { version = "0.18", default-features = false }
 maud = { version = "0.27", features = ["axum"] }
 mime_guess = "2"
 ratatui = "0.30"

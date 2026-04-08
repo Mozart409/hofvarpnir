@@ -6,10 +6,12 @@
 //! `DownloadSupervisor`.
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use chrono::Utc;
 use kameo::Reply;
 use kameo::prelude::*;
+use metrics::{counter, gauge, histogram};
 use sqlx::PgPool;
 use tracing::{debug, error, info, instrument, warn};
 use ulid::Ulid;
@@ -217,6 +219,7 @@ impl SourceIndexerActor {
     #[allow(clippy::too_many_lines)]
     #[instrument(skip(self), fields(source_id = %self.source.id, url = %self.source.url))]
     async fn execute_indexing(&mut self) -> IndexingResult {
+        let indexing_start = Instant::now();
         let mut result = IndexingResult {
             source_id: self.source.id,
             new_videos: 0,
@@ -237,6 +240,9 @@ impl SourceIndexerActor {
         let index_result = match self.ytdlp.index_source(&self.source.url).await {
             Ok(r) => r,
             Err(e) => {
+                counter!(crate::metrics::SOURCE_INDEX_TOTAL, "status" => "error").increment(1);
+                histogram!(crate::metrics::SOURCE_INDEX_DURATION_SECONDS)
+                    .record(indexing_start.elapsed().as_secs_f64());
                 let error_msg = format!("Failed to index source: {e}");
                 error!(error = %error_msg);
                 result.errors.push(error_msg.clone());
@@ -373,6 +379,12 @@ impl SourceIndexerActor {
                 .generate_jellyfin_metadata_if_needed()
                 .await;
         }
+
+        counter!(crate::metrics::SOURCE_INDEX_TOTAL, "status" => "success").increment(1);
+        histogram!(crate::metrics::SOURCE_INDEX_DURATION_SECONDS)
+            .record(indexing_start.elapsed().as_secs_f64());
+        #[allow(clippy::cast_precision_loss)]
+        gauge!(crate::metrics::SOURCE_INDEX_NEW_VIDEOS).set(result.new_videos as f64);
 
         info!(
             new = result.new_videos,

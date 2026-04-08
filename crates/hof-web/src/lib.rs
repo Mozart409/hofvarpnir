@@ -1,4 +1,5 @@
 pub mod auth;
+pub mod middleware;
 pub mod pages;
 
 use axum::Router;

@@ -14,6 +14,7 @@ pub mod config;
 pub mod db;
 pub mod domain;
 pub mod jellyfin;
+pub mod metrics;
 pub mod startup;
 pub mod telemetry;
 pub mod ytdlp;
@@ -21,4 +22,4 @@ pub mod ytdlp;
 // Re-export commonly used types
 pub use config::Config;
 pub use startup::{ActorSystem, initialize, shutdown};
-pub use telemetry::{RequestSpan, UlidRequestId, init_tracing};
+pub use telemetry::{RequestSpan, TelemetryGuard, UlidRequestId, init_tracing};

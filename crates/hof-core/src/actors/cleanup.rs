@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use kameo::Reply;
 use kameo::prelude::*;
+use metrics::{counter, gauge};
 use sqlx::PgPool;
 use tokio::time::{MissedTickBehavior, interval};
 use tracing::{debug, error, info, instrument, warn};
@@ -226,6 +227,13 @@ impl Message<RunCleanup> for CleanupActor {
                 result.errors.push(format!("Temp file cleanup failed: {e}"));
             }
         }
+
+        let total_cleaned = result.retention_cleaned + result.quota_cleaned;
+        counter!(crate::metrics::VIDEOS_CLEANED_TOTAL).increment(total_cleaned as u64);
+        counter!(crate::metrics::CLEANUP_TEMP_FILES_REMOVED_TOTAL)
+            .increment(result.temp_files_cleaned as u64);
+        #[allow(clippy::cast_precision_loss)]
+        gauge!(crate::metrics::CLEANUP_BYTES_FREED).set(result.bytes_freed as f64);
 
         info!(
             retention_cleaned = result.retention_cleaned,
