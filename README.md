@@ -13,13 +13,13 @@ A self-hosted video archival system that downloads videos from YouTube (and othe
 - **Retention policies**: Automatic cleanup with per-source and per-profile settings
 - **Deduplication**: Videos downloaded once regardless of multiple source references
 - **Real-time progress**: SSE-based live download progress in both web and TUI
+- **Observability**: OpenTelemetry traces (Tempo), log shipping (Loki), Prometheus metrics, and Grafana dashboards
+- **Dark Mode**: Tailwindcss darkmode
 
 ## Planned
 
 - **TUI**: Terminal-based management interface
 - **OIDC**: Implement Oauth2 for e.g. [PocketID](https://github.com/pocket-id/pocket-id)
-- **Metrics**: Prometheus metrics + Endpoint
-- **Dark Mode**: Tailwindcss darkmode
 - **Keyboard Shortcuts**: Vim motions
 
 ## Tech Stack
@@ -75,13 +75,18 @@ Key endpoints:
 
 Configuration is loaded from environment variables:
 
-| Variable               | Description                  | Default |
-| ---------------------- | ---------------------------- | ------- |
-| `DATABASE_URL`         | PostgreSQL connection string | -       |
-| `PORT`                 | Server port                  | 3000    |
-| `YT_DLP_PATH`          | Path to yt-dlp binary        | yt-dlp  |
-| `DOWNLOAD_CONCURRENCY` | Max simultaneous downloads   | 3       |
-| `DOWNLOAD_TIMEOUT`     | Per-download timeout (hours) | 4       |
+| Variable                      | Description                            | Default      |
+| ----------------------------- | -------------------------------------- | ------------ |
+| `DATABASE_URL`                | PostgreSQL connection string           | -            |
+| `PORT`                        | Server port                            | 3000         |
+| `YT_DLP_PATH`                 | Path to yt-dlp binary                  | yt-dlp       |
+| `DOWNLOAD_CONCURRENCY`        | Max simultaneous downloads             | 3            |
+| `DOWNLOAD_TIMEOUT`            | Per-download timeout (hours)           | 4            |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP gRPC endpoint for traces          | - (disabled) |
+| `OTEL_SERVICE_NAME`           | Service name for traces/logs           | hofvarpnir   |
+| `LOKI_URL`                    | Grafana Loki endpoint for log shipping | - (disabled) |
+| `METRICS_ENABLED`             | Enable Prometheus metrics endpoint     | false        |
+| `LOG_FORMAT`                  | Log output format (`json` or default)  | default      |
 
 ## Development
 
