@@ -20,9 +20,24 @@ pub struct HealthResponse {
     pub database: ComponentHealth,
     /// yt-dlp availability status.
     pub ytdlp: ComponentHealth,
+    /// Actor system health status.
+    pub actors: ActorsHealth,
     /// System issues detected during startup or runtime.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub issues: Vec<SystemIssue>,
+}
+
+/// Actor system health status.
+#[derive(Debug, Serialize, ToSchema)]
+#[allow(clippy::struct_excessive_bools)]
+pub struct ActorsHealth {
+    /// Whether all actors are alive.
+    pub healthy: bool,
+    /// Individual actor statuses.
+    pub supervisor: bool,
+    pub scheduler: bool,
+    pub cleanup: bool,
+    pub jellyfin_metadata: bool,
 }
 
 /// Overall health status.
@@ -71,6 +86,7 @@ pub fn router() -> Router<AppState> {
 pub async fn health_check(State(state): State<AppState>) -> impl IntoResponse {
     let db_health = check_database(&state).await;
     let ytdlp_health = check_ytdlp().await;
+    let actors_health = check_actors(&state);
     let issues: Vec<SystemIssue> = state.startup_issues.to_vec();
 
     // Check if any issues are errors (vs warnings)
@@ -78,8 +94,7 @@ pub async fn health_check(State(state): State<AppState>) -> impl IntoResponse {
 
     let status = if !db_health.healthy {
         HealthStatus::Unhealthy
-    } else if !ytdlp_health.healthy || has_error_issues {
-        // Database works, but yt-dlp issues or startup errors = degraded
+    } else if !ytdlp_health.healthy || !actors_health.healthy || has_error_issues {
         HealthStatus::Degraded
     } else {
         HealthStatus::Healthy
@@ -89,6 +104,7 @@ pub async fn health_check(State(state): State<AppState>) -> impl IntoResponse {
         status: status.clone(),
         database: db_health,
         ytdlp: ytdlp_health,
+        actors: actors_health,
         issues,
     };
 
@@ -132,11 +148,27 @@ pub async fn liveness() -> StatusCode {
 )]
 pub async fn readiness(State(state): State<AppState>) -> StatusCode {
     let db_health = check_database(&state).await;
+    let actors_health = check_actors(&state);
 
-    if db_health.healthy {
+    if db_health.healthy && actors_health.healthy {
         StatusCode::OK
     } else {
         StatusCode::SERVICE_UNAVAILABLE
+    }
+}
+
+fn check_actors(state: &AppState) -> ActorsHealth {
+    let supervisor = state.supervisor.is_alive();
+    let scheduler = state.scheduler.is_alive();
+    let cleanup = state.cleanup.is_alive();
+    let jellyfin_metadata = state.jellyfin_metadata.is_alive();
+
+    ActorsHealth {
+        healthy: supervisor && scheduler && cleanup && jellyfin_metadata,
+        supervisor,
+        scheduler,
+        cleanup,
+        jellyfin_metadata,
     }
 }
 
