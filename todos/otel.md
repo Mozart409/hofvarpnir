@@ -180,8 +180,9 @@ tracing_subscriber::registry()
 
 ---
 
-## Phase 4: Log Shipping (Loki)
+## Phase 4: Log Shipping (Loki) ✅
 
+**Status:** Complete
 **Goal:** Ship structured logs to Grafana Loki with `trace_id` for correlation.
 
 ### 4.1 Add tracing-loki dependency
