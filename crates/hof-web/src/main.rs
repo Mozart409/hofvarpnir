@@ -1,17 +1,27 @@
-use color_eyre::Result;
-use tokio::sync::broadcast;
-use tracing_subscriber::EnvFilter;
+use std::sync::Arc;
 
-use hof_core::{Config, db, initialize, shutdown};
+use axum::routing::get;
+use color_eyre::Result;
+use http::header::HeaderName;
+use tokio::sync::broadcast;
+use tower_http::propagate_header::PropagateHeaderLayer;
+use tower_http::request_id::SetRequestIdLayer;
+use tower_http::trace::TraceLayer;
+
+use hof_core::{Config, RequestSpan, UlidRequestId, db, init_tracing, initialize, shutdown};
 
 #[tokio::main]
 async fn main() -> Result<()> {
     color_eyre::install()?;
 
-    // Initialize tracing
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env())
-        .init();
+    // Load .env before tracing so OTEL_EXPORTER_OTLP_ENDPOINT / LOKI_URL are visible
+    dotenvy::dotenv().ok();
+
+    // Initialize tracing (supports LOG_FORMAT=json, OTEL_EXPORTER_OTLP_ENDPOINT)
+    let _telemetry_guard = init_tracing();
+
+    // Initialize Prometheus metrics
+    let metrics_handle = Arc::new(hof_core::metrics::init_metrics());
 
     // Load configuration
     let config = Config::load()?;
@@ -57,11 +67,27 @@ async fn main() -> Result<()> {
     let session_layer = hof_web::session_layer(pool).await?;
 
     // Build the application router
+    let x_request_id = HeaderName::from_static("x-request-id");
     let app = axum::Router::new()
+        .merge(axum::Router::new().route(
+            "/metrics",
+            get({
+                let handle = Arc::clone(&metrics_handle);
+                move || async move { handle.render() }
+            }),
+        ))
         .nest("/api", hof_api::router(api_state.clone()))
         .nest("/docs", hof_api::scalar_router())
         .merge(hof_web::router(api_state))
-        .layer(session_layer);
+        .layer(session_layer)
+        .layer(axum::middleware::from_fn(hof_web::middleware::http_metrics))
+        // Layer order (axum applies bottom-up, so outermost layer is last):
+        // 1. PropagateHeader: copy x-request-id from request to response
+        .layer(PropagateHeaderLayer::new(x_request_id.clone()))
+        // 2. Trace: create span (sees x-request-id set by SetRequestId)
+        .layer(TraceLayer::new_for_http().make_span_with(RequestSpan))
+        // 3. SetRequestId: generate ULID and set x-request-id header
+        .layer(SetRequestIdLayer::new(x_request_id, UlidRequestId));
 
     let bind_addr = config.server.bind_addr();
     let listener = tokio::net::TcpListener::bind(bind_addr).await?;

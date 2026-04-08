@@ -14,15 +14,17 @@ path = "src/main.rs"
 hof-core = { path = "../hof-core" }
 hof-api = { path = "../hof-api" }
 color-eyre.workspace = true
+dotenvy.workspace = true
 tokio.workspace = true
 axum.workspace = true
 tower-http.workspace = true
+http.workspace = true
 maud.workspace = true
 serde.workspace = true
 chrono.workspace = true
 ulid.workspace = true
 tracing.workspace = true
-tracing-subscriber.workspace = true
+metrics.workspace = true
 futures.workspace = true
 tokio-stream.workspace = true
 tower-sessions.workspace = true

@@ -97,3 +97,4 @@ build-oci: clear
 
 trivy: clear build-oci
     trivy image --input result --scanners vuln
+

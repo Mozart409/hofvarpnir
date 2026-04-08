@@ -1,0 +1,54 @@
+groups:
+  - name: hofvarpnir
+    rules:
+      # High HTTP error rate — more than 5% of requests returning 5xx over 5 minutes
+      - alert: HighErrorRate
+        expr: >
+          sum(rate(http_requests_total{status=~"5.."}[5m]))
+          / sum(rate(http_requests_total[5m]))
+          > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High HTTP 5xx error rate"
+          description: >
+            More than 5% of HTTP requests are returning 5xx errors
+            (current value: {{ $value | humanizePercentage }}).
+
+      # Download failure spike — more than 3 failures in 15 minutes
+      - alert: DownloadFailureSpike
+        expr: increase(downloads_failed_total[15m]) > 3
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Download failure spike"
+          description: >
+            {{ $value }} download failures in the last 15 minutes.
+
+      # Database connection pool exhaustion — above 90% utilization
+      - alert: DbConnectionPoolExhaustion
+        expr: >
+          pg_stat_activity_count{datname="hofvarpnir_dev"}
+          / pg_settings_max_connections
+          > 0.9
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Database connection pool near exhaustion"
+          description: >
+            PostgreSQL connection utilization is above 90%
+            (current value: {{ $value | humanizePercentage }}).
+
+      # Source indexing failures — any errors in the last 30 minutes
+      - alert: SourceIndexErrors
+        expr: increase(source_index_total{status="error"}[30m]) > 0
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Source indexing errors detected"
+          description: >
+            {{ $value }} source indexing errors in the last 30 minutes.

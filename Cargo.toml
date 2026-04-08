@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.1.8"
+version = "0.1.9"
 edition = "2024"
 license = "GPL-3.0-or-later"
 rust-version = "1.94.0"
@@ -20,7 +20,14 @@ color-eyre = "0.6.5"
 crossterm = "0.29"
 dotenvy = "0.15"
 futures = "0.3"
+http = "1"
 kameo = "0.19"
+metrics = "0.24"
+opentelemetry = { version = "0.31", default-features = false, features = ["trace"] }
+opentelemetry_sdk = { version = "0.31", default-features = false, features = ["trace", "rt-tokio"] }
+opentelemetry-otlp = { version = "0.31", default-features = false, features = ["grpc-tonic", "trace"] }
+tracing-opentelemetry = { version = "0.32", default-features = false }
+metrics-exporter-prometheus = { version = "0.18", default-features = false }
 maud = { version = "0.27", features = ["axum"] }
 mime_guess = "2"
 ratatui = "0.30"
@@ -38,11 +45,12 @@ thiserror = "2"
 tokio = { version = "1", features = ["full"] }
 tokio-stream = "0.1"
 tower = "0.5"
-tower-http = { version = "0.6", features = ["cors", "trace", "fs"] }
+tower-http = { version = "0.6", features = ["cors", "trace", "fs", "request-id", "propagate-header"] }
 tower-sessions = "0.15"
 tower-sessions-core = "0.15"
 tower-sessions-sqlx-store = { version = "0.15", features = ["postgres"], git = "https://github.com/maxcountryman/tower-sessions-stores" }
 tracing = "0.1"
+tracing-loki = { version = "0.2", default-features = false, features = ["compat-0-2-1", "rustls"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 ulid = { version = "1", features = ["serde"] }
 utoipa = { version = "5", features = ["axum_extras", "chrono", "ulid"] }

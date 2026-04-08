@@ -333,7 +333,8 @@ crates/
 - **IDs**: ulid
 - **Time**: chrono
 - **Errors**: thiserror, color-eyre
-- **Tracing**: tracing, tracing-subscriber
+- **Tracing**: tracing, tracing-subscriber, tracing-opentelemetry, tracing-loki
+- **Metrics**: metrics, metrics-exporter-prometheus
 - **Video**: yt-dlp
 
 ## CI Requirements
@@ -359,6 +360,14 @@ Required for development:
 - `PORT` - Server port (default: 3000)
 - `YT_DLP_PATH` - Path to yt-dlp binary
 - `SQLX_OFFLINE` - Set to `true` for offline builds
+
+Optional (observability):
+
+- `OTEL_EXPORTER_OTLP_ENDPOINT` - OTLP gRPC endpoint for trace export (e.g. `http://localhost:4317`)
+- `OTEL_SERVICE_NAME` - Service name for traces/logs (default: `hofvarpnir`)
+- `LOKI_URL` - Grafana Loki endpoint for log shipping (e.g. `http://localhost:3100`)
+- `METRICS_ENABLED` - Set to `true` to enable Prometheus metrics at `/metrics`
+- `LOG_FORMAT` - Set to `json` for structured JSON log output
 
 ## Language Standards
 
