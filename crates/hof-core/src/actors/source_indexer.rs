@@ -518,7 +518,7 @@ impl SourceIndexerActor {
 
     /// Update channel metadata from indexing results.
     async fn update_channel_metadata(
-        &self,
+        &mut self,
         index_result: &crate::ytdlp::IndexResult,
     ) -> Result<(), db::DbError> {
         let metadata = UpdateChannelMetadata {
@@ -528,7 +528,20 @@ impl SourceIndexerActor {
             channel_thumbnail_url: index_result.thumbnail_url.as_deref(),
         };
 
-        db::update_source_channel_metadata(&self.pool, self.source.id, metadata).await
+        db::update_source_channel_metadata(&self.pool, self.source.id, metadata).await?;
+
+        if let Some(channel_id) = &index_result.channel_id {
+            self.source.channel_id = Some(channel_id.clone());
+        }
+        self.source.channel_title = Some(index_result.title.clone());
+        if let Some(description) = &index_result.description {
+            self.source.channel_description = Some(description.clone());
+        }
+        if let Some(thumbnail_url) = &index_result.thumbnail_url {
+            self.source.channel_thumbnail_url = Some(thumbnail_url.clone());
+        }
+
+        Ok(())
     }
 
     /// Generate Jellyfin metadata files if not already generated.
