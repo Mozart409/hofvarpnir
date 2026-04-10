@@ -1,5 +1,6 @@
 //! Maud page templates and htmx partial endpoints.
 
+use std::collections::HashMap;
 use std::convert::Infallible;
 use std::time::Duration;
 
@@ -29,7 +30,7 @@ use hof_core::{
         profile::{OutputPreset, Profile, Quality},
         source::{Source, SourceType},
         system::IssueSeverity,
-        video::{DownloadProgress, VideoStatus},
+        video::{DownloadProgress, Video, VideoStatus},
     },
     ytdlp::validate_output_template,
 };
@@ -215,6 +216,8 @@ async fn take_flash(session: &Session) -> Option<FlashMessage> {
 struct DownloadsQuery {
     status: Option<String>,
     search: Option<String>,
+    page: Option<i64>,
+    per_page: Option<i64>,
 }
 
 pub fn router(state: AppState) -> Router {
@@ -239,9 +242,11 @@ pub fn router(state: AppState) -> Router {
         .route("/downloads/{id}/retry", post(retry_download))
         .route("/downloads/{id}/cancel", post(cancel_download))
         .route("/downloads/{id}/delete", post(delete_download))
+        .route("/web/downloads/list", get(downloads_list_partial))
         .route("/web/downloads/progress", get(download_progress_sse))
         .route("/web/system-banner", get(system_banner))
         .route("/activity", get(activity_page))
+        .route("/web/activity/list", get(activity_list_partial))
         .route("/schedule", get(schedule_page))
         .route("/schedule/cleanup", post(trigger_cleanup))
         // Static assets (embedded at compile time)
@@ -1414,24 +1419,31 @@ async fn downloads_page(
     axum::extract::Query(query): axum::extract::Query<DownloadsQuery>,
 ) -> impl IntoResponse {
     let flash = take_flash(&session).await;
+    let page_num = query.page.unwrap_or(1).max(1);
+    let per_page = parse_downloads_page_size(query.per_page);
+    let offset = (page_num - 1) * per_page;
+    let search_query = query
+        .search
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
 
-    let status_filter = query.status.as_deref().and_then(|s| match s {
-        "pending" => Some(VideoStatus::Pending),
-        "downloading" => Some(VideoStatus::Downloading),
-        "completed" => Some(VideoStatus::Completed),
-        "failed" => Some(VideoStatus::Failed),
-        "skipped" => Some(VideoStatus::Skipped),
-        "cleaned" => Some(VideoStatus::Cleaned),
-        "permanently_failed" => Some(VideoStatus::PermanentlyFailed),
-        _ => None,
-    });
+    let status_filter = parse_download_status(query.status.as_deref());
+    let current_status = normalized_download_status(query.status.as_deref());
 
-    let (videos_result, source_names_result) = tokio::join!(
-        db::list_videos(&state.pool, status_filter),
+    let (videos_result, count_result, source_names_result) = tokio::join!(
+        db::list_videos_paginated(
+            &state.pool,
+            status_filter.clone(),
+            search_query,
+            per_page,
+            offset
+        ),
+        db::count_videos(&state.pool, status_filter, search_query),
         db::get_source_names_for_videos(&state.pool),
     );
 
-    let mut videos = match videos_result {
+    let videos = match videos_result {
         Ok(data) => data,
         Err(error) => {
             tracing::error!(%error, "failed to load downloads page");
@@ -1442,15 +1454,15 @@ async fn downloads_page(
         }
     };
 
+    let total = count_result.unwrap_or(0);
+    let total_pages = if total == 0 {
+        1
+    } else {
+        (total + per_page - 1) / per_page
+    };
     let source_names = source_names_result.unwrap_or_default();
 
-    // In-memory title search
-    if let Some(ref search) = query.search {
-        let q = search.to_lowercase();
-        videos.retain(|v| v.title.to_lowercase().contains(&q));
-    }
-
-    let current_status = query.status.as_deref().unwrap_or("all");
+    let list_url = downloads_list_url(query.status.as_deref(), search_query, page_num, per_page);
 
     let page = layout_with_flash(
         "Downloads",
@@ -1480,30 +1492,50 @@ async fn downloads_page(
             section class="mt-8 rounded-2xl border border-slate-200 dark:border-slate-700 bg-white/80 dark:bg-slate-800/80 p-6 shadow-sm" {
                 div class="flex flex-wrap items-center gap-4" {
                     nav class="flex flex-wrap gap-1" {
-                        (download_status_filter_link("all", "All", current_status, query.search.as_deref()))
-                        (download_status_filter_link("pending", "Pending", current_status, query.search.as_deref()))
-                        (download_status_filter_link("downloading", "Downloading", current_status, query.search.as_deref()))
-                        (download_status_filter_link("completed", "Completed", current_status, query.search.as_deref()))
-                        (download_status_filter_link("failed", "Failed", current_status, query.search.as_deref()))
-                        (download_status_filter_link("cleaned", "Cleaned", current_status, query.search.as_deref()))
-                        (download_status_filter_link("permanently_failed", "Perm. Failed", current_status, query.search.as_deref()))
-                        (download_status_filter_link("skipped", "Skipped", current_status, query.search.as_deref()))
+                        (download_status_filter_link("all", "All", current_status, search_query, per_page))
+                        (download_status_filter_link("pending", "Pending", current_status, search_query, per_page))
+                        (download_status_filter_link("downloading", "Downloading", current_status, search_query, per_page))
+                        (download_status_filter_link("completed", "Completed", current_status, search_query, per_page))
+                        (download_status_filter_link("failed", "Failed", current_status, search_query, per_page))
+                        (download_status_filter_link("cleaned", "Cleaned", current_status, search_query, per_page))
+                        (download_status_filter_link("permanently_failed", "Perm. Failed", current_status, search_query, per_page))
+                        (download_status_filter_link("skipped", "Skipped", current_status, search_query, per_page))
                     }
-                    form method="get" action="/downloads" class="flex gap-2" {
+                    form
+                        method="get"
+                        action="/downloads"
+                        class="flex gap-2"
+                        hx-get="/web/downloads/list"
+                        hx-target="#downloads-list"
+                        hx-push-url="true"
+                    {
                         @if let Some(ref status) = query.status {
                             input type="hidden" name="status" value=(status);
+                        }
+                        input type="hidden" name="page" value="1";
+                        select
+                            name="per_page"
+                            class="rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 px-2 py-1.5 text-sm text-slate-900 dark:text-slate-100"
+                        {
+                            (page_size_option(25, per_page))
+                            (page_size_option(50, per_page))
+                            (page_size_option(100, per_page))
                         }
                         input
                             type="text"
                             name="search"
                             placeholder="Search by title..."
-                            value=(query.search.as_deref().unwrap_or(""))
+                            value=(search_query.unwrap_or(""))
                             class="rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 px-3 py-1.5 text-sm text-slate-900 dark:text-slate-100";
                         button type="submit"
                             class="rounded-lg bg-slate-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-slate-700"
                         { "Search" }
-                        @if query.search.is_some() || query.status.is_some() {
-                            a href="/downloads"
+                        @if search_query.is_some() || query.status.is_some() {
+                            a
+                                href=(downloads_page_url(None, None, 1, per_page))
+                                hx-get=(downloads_list_url(None, None, 1, per_page))
+                                hx-target="#downloads-list"
+                                hx-push-url="true"
                                 class="rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 px-3 py-1.5 text-sm font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-600"
                             { "Clear" }
                         }
@@ -1511,91 +1543,84 @@ async fn downloads_page(
                 }
             }
 
-            section class="mt-4 rounded-2xl border border-slate-200 dark:border-slate-700 bg-white/80 dark:bg-slate-800/80 p-6 shadow-sm" {
-                h2 class="text-lg font-semibold text-slate-900 dark:text-slate-100" {
-                    "Downloads"
-                    span class="ml-2 text-sm font-normal text-slate-500 dark:text-slate-400" {
-                        "(" (videos.len()) " results)"
-                    }
-                }
-                @if videos.is_empty() {
-                    p class="mt-3 text-sm text-slate-500 dark:text-slate-400" { "No downloads match your filters." }
-                } @else {
-                    div class="mt-4 overflow-x-auto" {
-                        table class="min-w-full divide-y divide-slate-200 text-sm" {
-                            thead class="bg-slate-50 dark:bg-slate-800" {
-                                tr {
-                                    th class="px-3 py-2 text-left font-semibold text-slate-700 dark:text-slate-300" { "Title" }
-                                    th class="px-3 py-2 text-left font-semibold text-slate-700 dark:text-slate-300" { "Source" }
-                                    th class="px-3 py-2 text-left font-semibold text-slate-700 dark:text-slate-300" { "Platform" }
-                                    th class="px-3 py-2 text-left font-semibold text-slate-700 dark:text-slate-300" { "Status" }
-                                    th class="px-3 py-2 text-left font-semibold text-slate-700 dark:text-slate-300" { "Attempts" }
-                                    th class="px-3 py-2 text-left font-semibold text-slate-700 dark:text-slate-300" { "Actions" }
-                                }
-                            }
-                            tbody class="divide-y divide-slate-100 dark:divide-slate-700 bg-white dark:bg-slate-900" {
-                                @for video in &videos {
-                                    tr {
-                                        td class="max-w-lg px-3 py-2 text-slate-900 dark:text-slate-100" {
-                                            p class="truncate font-medium" { (video.title) }
-                                            p class="truncate text-xs text-slate-500 dark:text-slate-400" { (video.id.to_string()) }
-                                        }
-                                        td class="max-w-xs px-3 py-2 text-slate-600 dark:text-slate-400" {
-                                            p class="truncate" {
-                                                @if let Some(name) = source_names.get(&video.id) {
-                                                    (name)
-                                                } @else {
-                                                    span class="text-slate-400 dark:text-slate-500 italic" { "—" }
-                                                }
-                                            }
-                                        }
-                                        td class="px-3 py-2 text-slate-600 dark:text-slate-400" { (video.platform) }
-                                        td class="px-3 py-2" { (status_badge(&video.status)) }
-                                        td class="px-3 py-2 text-slate-600 dark:text-slate-400" { (video.attempts) }
-                                        td class="px-3 py-2" {
-                                            div class="flex gap-2" {
-                                                @if matches!(video.status, VideoStatus::Failed | VideoStatus::PermanentlyFailed | VideoStatus::Cleaned) {
-                                                    form method="post" action=(format!("/downloads/{}/retry", video.id)) {
-                                                        button class="rounded-lg border border-sky-200 dark:border-sky-800 bg-sky-50 dark:bg-sky-900/50 px-3 py-1.5 text-xs font-medium text-sky-700 dark:text-sky-300 hover:bg-sky-100 dark:hover:bg-sky-900" type="submit" {
-                                                            "Retry"
-                                                        }
-                                                    }
-                                                }
-                                                @if matches!(video.status, VideoStatus::Pending | VideoStatus::Downloading) {
-                                                    form method="post" action=(format!("/downloads/{}/cancel", video.id)) {
-                                                        button
-                                                            class="rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/50 px-3 py-1.5 text-xs font-medium text-amber-700 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-900"
-                                                            type="submit"
-                                                            onclick="return confirm('Cancel this download?')"
-                                                        {
-                                                            "Cancel"
-                                                        }
-                                                    }
-                                                }
-                                                @if video.status == VideoStatus::Completed {
-                                                    form method="post" action=(format!("/downloads/{}/delete", video.id)) {
-                                                        button
-                                                            class="rounded-lg border border-rose-200 dark:border-rose-800 bg-rose-50 dark:bg-rose-900/50 px-3 py-1.5 text-xs font-medium text-rose-700 dark:text-rose-300 hover:bg-rose-100 dark:hover:bg-rose-900"
-                                                            type="submit"
-                                                            onclick="return confirm('Delete this video? The file will be removed from disk.')"
-                                                        {
-                                                            "Delete"
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
+            div
+                id="downloads-list"
+                hx-get=(list_url)
+                hx-trigger="load"
+                hx-target="this"
+                hx-swap="innerHTML"
+            {
+                (downloads_list_markup(
+                    &videos,
+                    &source_names,
+                    page_num,
+                    total_pages,
+                    total,
+                    query.status.as_deref(),
+                    search_query,
+                    per_page,
+                ))
             }
         },
     );
 
     (StatusCode::OK, page)
+}
+
+async fn downloads_list_partial(
+    _auth: AuthUser,
+    State(state): State<AppState>,
+    axum::extract::Query(query): axum::extract::Query<DownloadsQuery>,
+) -> impl IntoResponse {
+    let page_num = query.page.unwrap_or(1).max(1);
+    let per_page = parse_downloads_page_size(query.per_page);
+    let offset = (page_num - 1) * per_page;
+    let search_query = query
+        .search
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let status_filter = parse_download_status(query.status.as_deref());
+
+    let (videos_result, count_result, source_names_result) = tokio::join!(
+        db::list_videos_paginated(
+            &state.pool,
+            status_filter.clone(),
+            search_query,
+            per_page,
+            offset
+        ),
+        db::count_videos(&state.pool, status_filter, search_query),
+        db::get_source_names_for_videos(&state.pool),
+    );
+
+    let videos = match videos_result {
+        Ok(data) => data,
+        Err(error) => {
+            tracing::error!(%error, "failed to load downloads partial");
+            return error_page("Failed to load downloads page").into_response();
+        }
+    };
+
+    let total = count_result.unwrap_or(0);
+    let total_pages = if total == 0 {
+        1
+    } else {
+        (total + per_page - 1) / per_page
+    };
+    let source_names = source_names_result.unwrap_or_default();
+
+    downloads_list_markup(
+        &videos,
+        &source_names,
+        page_num,
+        total_pages,
+        total,
+        query.status.as_deref(),
+        search_query,
+        per_page,
+    )
+    .into_response()
 }
 
 #[allow(clippy::too_many_lines)]
@@ -1954,6 +1979,7 @@ async fn system_banner(State(state): State<AppState>) -> impl IntoResponse {
 struct ActivityQuery {
     severity: Option<String>,
     page: Option<i64>,
+    per_page: Option<i64>,
 }
 
 async fn activity_page(
@@ -1962,16 +1988,10 @@ async fn activity_page(
     axum::extract::Query(query): axum::extract::Query<ActivityQuery>,
 ) -> impl IntoResponse {
     let page_num = query.page.unwrap_or(1).max(1);
-    let per_page: i64 = 50;
+    let per_page = parse_activity_page_size(query.per_page);
     let offset = (page_num - 1) * per_page;
 
-    let severity_filter = query.severity.as_deref().and_then(|s| match s {
-        "info" => Some(ActivitySeverity::Info),
-        "success" => Some(ActivitySeverity::Success),
-        "warning" => Some(ActivitySeverity::Warning),
-        "error" => Some(ActivitySeverity::Error),
-        _ => None,
-    });
+    let severity_filter = parse_activity_severity(query.severity.as_deref());
 
     let (events_result, count_result) = tokio::join!(
         db::list_activity_events(
@@ -1999,59 +2019,29 @@ async fn activity_page(
     let total = count_result.unwrap_or(0);
     let total_pages = (total + per_page - 1) / per_page;
 
-    let current_severity = query.severity.as_deref().unwrap_or("all");
+    let current_severity = normalized_activity_severity(query.severity.as_deref());
+    let list_url = activity_list_url(query.severity.as_deref(), page_num, per_page);
 
     let page = layout(
         "Activity",
         NavItem::Activity,
         html! {
             section class="rounded-2xl border border-slate-200 dark:border-slate-700 bg-white/80 dark:bg-slate-800/80 p-6 shadow-sm" {
-                div class="flex flex-wrap items-center justify-between gap-3" {
-                    h2 class="text-lg font-semibold text-slate-900 dark:text-slate-100" { "Activity Log" }
-                    nav class="flex gap-1" {
-                        (severity_filter_link("all", "All", current_severity))
-                        (severity_filter_link("info", "Info", current_severity))
-                        (severity_filter_link("success", "Success", current_severity))
-                        (severity_filter_link("warning", "Warning", current_severity))
-                        (severity_filter_link("error", "Error", current_severity))
-                    }
-                }
-
-                @if events.is_empty() {
-                    p class="mt-4 rounded-lg border border-dashed border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-800 px-4 py-8 text-center text-sm text-slate-500 dark:text-slate-400" {
-                        "No activity events recorded yet."
-                    }
-                } @else {
-                    div class="mt-4 space-y-2" {
-                        @for event in &events {
-                            (activity_event_row(event))
-                        }
-                    }
-
-                    // Pagination
-                    @if total_pages > 1 {
-                        nav class="mt-6 flex items-center justify-center gap-2" {
-                            @if page_num > 1 {
-                                a
-                                    class="rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 px-3 py-1.5 text-sm text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-600"
-                                    href=(format!("/activity?severity={}&page={}", current_severity, page_num - 1))
-                                {
-                                    "Previous"
-                                }
-                            }
-                            span class="text-sm text-slate-500 dark:text-slate-400" {
-                                (format!("Page {} of {}", page_num, total_pages))
-                            }
-                            @if page_num < total_pages {
-                                a
-                                    class="rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 px-3 py-1.5 text-sm text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-600"
-                                    href=(format!("/activity?severity={}&page={}", current_severity, page_num + 1))
-                                {
-                                    "Next"
-                                }
-                            }
-                        }
-                    }
+                h2 class="text-lg font-semibold text-slate-900 dark:text-slate-100" { "Activity Log" }
+                div
+                    id="activity-content"
+                    hx-get=(list_url)
+                    hx-trigger="load"
+                    hx-target="this"
+                    hx-swap="innerHTML"
+                {
+                    (activity_content_markup(
+                        &events,
+                        page_num,
+                        total_pages,
+                        current_severity,
+                        per_page,
+                    ))
                 }
             }
         },
@@ -2060,11 +2050,54 @@ async fn activity_page(
     (StatusCode::OK, page)
 }
 
+async fn activity_list_partial(
+    _auth: AuthUser,
+    State(state): State<AppState>,
+    axum::extract::Query(query): axum::extract::Query<ActivityQuery>,
+) -> impl IntoResponse {
+    let page_num = query.page.unwrap_or(1).max(1);
+    let per_page = parse_activity_page_size(query.per_page);
+    let offset = (page_num - 1) * per_page;
+    let severity_filter = parse_activity_severity(query.severity.as_deref());
+
+    let (events_result, count_result) = tokio::join!(
+        db::list_activity_events(
+            &state.pool,
+            per_page,
+            offset,
+            severity_filter.clone(),
+            None,
+            None
+        ),
+        db::count_activity_events(&state.pool, severity_filter, None, None)
+    );
+
+    let events = match events_result {
+        Ok(data) => data,
+        Err(error) => {
+            tracing::error!(%error, "failed to load activity partial");
+            return error_page("Failed to load activity log").into_response();
+        }
+    };
+
+    let total = count_result.unwrap_or(0);
+    let total_pages = if total == 0 {
+        1
+    } else {
+        (total + per_page - 1) / per_page
+    };
+    let current_severity = normalized_activity_severity(query.severity.as_deref());
+
+    activity_content_markup(&events, page_num, total_pages, current_severity, per_page)
+        .into_response()
+}
+
 fn download_status_filter_link(
     value: &str,
     label: &str,
     current: &str,
     search: Option<&str>,
+    per_page: i64,
 ) -> Markup {
     let active = value == current;
     let classes = if active {
@@ -2072,38 +2105,416 @@ fn download_status_filter_link(
     } else {
         "rounded-full bg-slate-100 dark:bg-slate-700 px-3 py-1 text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-600"
     };
-    let mut href = if value == "all" {
-        "/downloads".to_string()
-    } else {
-        format!("/downloads?status={value}")
-    };
-    if let Some(q) = search.filter(|q| !q.is_empty()) {
-        let sep = if href.contains('?') { '&' } else { '?' };
-        href.push(sep);
-        href.push_str("search=");
-        href.push_str(q);
-    }
+    let status = if value == "all" { None } else { Some(value) };
+    let href = downloads_page_url(status, search, 1, per_page);
+    let hx_get = downloads_list_url(status, search, 1, per_page);
 
     html! {
-        a class=(classes) href=(href) { (label) }
+        a
+            class=(classes)
+            href=(href)
+            hx-get=(hx_get)
+            hx-target="#downloads-list"
+            hx-push-url="true"
+        {
+            (label)
+        }
     }
 }
 
-fn severity_filter_link(value: &str, label: &str, current: &str) -> Markup {
+fn severity_filter_link(value: &str, label: &str, current: &str, per_page: i64) -> Markup {
     let active = value == current;
     let classes = if active {
         "rounded-full bg-slate-900 dark:bg-slate-100 px-3 py-1 text-xs font-medium text-white dark:text-slate-900"
     } else {
         "rounded-full bg-slate-100 dark:bg-slate-700 px-3 py-1 text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-600"
     };
-    let href = if value == "all" {
-        "/activity".to_string()
+    let severity = if value == "all" { None } else { Some(value) };
+    let href = activity_page_url(severity, 1, per_page);
+    let hx_get = activity_list_url(severity, 1, per_page);
+
+    html! {
+        a
+            class=(classes)
+            href=(href)
+            hx-get=(hx_get)
+            hx-target="#activity-content"
+            hx-push-url="true"
+        {
+            (label)
+        }
+    }
+}
+
+fn activity_page_size_link(size: i64, current_size: i64, severity: Option<&str>) -> Markup {
+    let active = size == current_size;
+    let classes = if active {
+        "rounded-full bg-slate-900 dark:bg-slate-100 px-2.5 py-1 text-xs font-medium text-white dark:text-slate-900"
     } else {
-        format!("/activity?severity={value}")
+        "rounded-full bg-slate-100 dark:bg-slate-700 px-2.5 py-1 text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-600"
+    };
+    let href = activity_page_url(severity, 1, size);
+    let hx_get = activity_list_url(severity, 1, size);
+
+    html! {
+        a
+            class=(classes)
+            href=(href)
+            hx-get=(hx_get)
+            hx-target="#activity-content"
+            hx-push-url="true"
+        {
+            (size)
+        }
+    }
+}
+
+fn page_size_option(size: i64, current_size: i64) -> Markup {
+    if size == current_size {
+        html! {
+            option value=(size) selected { (size) " / page" }
+        }
+    } else {
+        html! {
+            option value=(size) { (size) " / page" }
+        }
+    }
+}
+
+const fn parse_downloads_page_size(value: Option<i64>) -> i64 {
+    match value {
+        Some(size) if matches!(size, 25 | 50 | 100) => size,
+        _ => 25,
+    }
+}
+
+const fn parse_activity_page_size(value: Option<i64>) -> i64 {
+    match value {
+        Some(size) if matches!(size, 25 | 50 | 100) => size,
+        _ => 50,
+    }
+}
+
+fn parse_download_status(status: Option<&str>) -> Option<VideoStatus> {
+    status.and_then(|s| match s {
+        "pending" => Some(VideoStatus::Pending),
+        "downloading" => Some(VideoStatus::Downloading),
+        "completed" => Some(VideoStatus::Completed),
+        "failed" => Some(VideoStatus::Failed),
+        "skipped" => Some(VideoStatus::Skipped),
+        "cleaned" => Some(VideoStatus::Cleaned),
+        "permanently_failed" => Some(VideoStatus::PermanentlyFailed),
+        _ => None,
+    })
+}
+
+fn normalized_download_status(status: Option<&str>) -> &str {
+    match status {
+        Some(
+            value @ ("pending" | "downloading" | "completed" | "failed" | "skipped" | "cleaned"
+            | "permanently_failed"),
+        ) => value,
+        _ => "all",
+    }
+}
+
+fn parse_activity_severity(value: Option<&str>) -> Option<ActivitySeverity> {
+    value.and_then(|severity| match severity {
+        "info" => Some(ActivitySeverity::Info),
+        "success" => Some(ActivitySeverity::Success),
+        "warning" => Some(ActivitySeverity::Warning),
+        "error" => Some(ActivitySeverity::Error),
+        _ => None,
+    })
+}
+
+fn normalized_activity_severity(value: Option<&str>) -> &str {
+    match value {
+        Some(severity @ ("info" | "success" | "warning" | "error")) => severity,
+        _ => "all",
+    }
+}
+
+fn downloads_page_url(
+    status: Option<&str>,
+    search: Option<&str>,
+    page: i64,
+    per_page: i64,
+) -> String {
+    downloads_url("/downloads", status, search, page, per_page)
+}
+
+fn downloads_list_url(
+    status: Option<&str>,
+    search: Option<&str>,
+    page: i64,
+    per_page: i64,
+) -> String {
+    downloads_url("/web/downloads/list", status, search, page, per_page)
+}
+
+fn downloads_url(
+    base: &str,
+    status: Option<&str>,
+    search: Option<&str>,
+    page: i64,
+    per_page: i64,
+) -> String {
+    let mut params = Vec::new();
+
+    if let Some(value) = status.filter(|value| *value != "all") {
+        params.push(format!("status={value}"));
+    }
+    if let Some(value) = search.filter(|value| !value.is_empty()) {
+        params.push(format!("search={value}"));
+    }
+    if page > 1 {
+        params.push(format!("page={page}"));
+    }
+    if per_page != 25 {
+        params.push(format!("per_page={per_page}"));
+    }
+
+    if params.is_empty() {
+        base.to_string()
+    } else {
+        format!("{base}?{}", params.join("&"))
+    }
+}
+
+fn activity_page_url(severity: Option<&str>, page: i64, per_page: i64) -> String {
+    activity_url("/activity", severity, page, per_page)
+}
+
+fn activity_list_url(severity: Option<&str>, page: i64, per_page: i64) -> String {
+    activity_url("/web/activity/list", severity, page, per_page)
+}
+
+fn activity_url(base: &str, severity: Option<&str>, page: i64, per_page: i64) -> String {
+    let mut params = Vec::new();
+
+    if let Some(value) = severity.filter(|value| *value != "all") {
+        params.push(format!("severity={value}"));
+    }
+    if page > 1 {
+        params.push(format!("page={page}"));
+    }
+    if per_page != 50 {
+        params.push(format!("per_page={per_page}"));
+    }
+
+    if params.is_empty() {
+        base.to_string()
+    } else {
+        format!("{base}?{}", params.join("&"))
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_lines)]
+fn downloads_list_markup(
+    videos: &[Video],
+    source_names: &HashMap<Ulid, String>,
+    page_num: i64,
+    total_pages: i64,
+    total: i64,
+    status: Option<&str>,
+    search: Option<&str>,
+    per_page: i64,
+) -> Markup {
+    let current_status = normalized_download_status(status);
+    let status_param = if current_status == "all" {
+        None
+    } else {
+        Some(current_status)
     };
 
     html! {
-        a class=(classes) href=(href) { (label) }
+        section class="mt-4 rounded-2xl border border-slate-200 dark:border-slate-700 bg-white/80 dark:bg-slate-800/80 p-6 shadow-sm" {
+            h2 class="text-lg font-semibold text-slate-900 dark:text-slate-100" {
+                "Downloads"
+                span class="ml-2 text-sm font-normal text-slate-500 dark:text-slate-400" {
+                    "(" (total) " results)"
+                }
+            }
+            @if videos.is_empty() {
+                p class="mt-3 text-sm text-slate-500 dark:text-slate-400" { "No downloads match your filters." }
+            } @else {
+                div class="mt-4 overflow-x-auto" {
+                    table class="min-w-full divide-y divide-slate-200 text-sm" {
+                        thead class="bg-slate-50 dark:bg-slate-800" {
+                            tr {
+                                th class="px-3 py-2 text-left font-semibold text-slate-700 dark:text-slate-300" { "Title" }
+                                th class="px-3 py-2 text-left font-semibold text-slate-700 dark:text-slate-300" { "Source" }
+                                th class="px-3 py-2 text-left font-semibold text-slate-700 dark:text-slate-300" { "Platform" }
+                                th class="px-3 py-2 text-left font-semibold text-slate-700 dark:text-slate-300" { "Status" }
+                                th class="px-3 py-2 text-left font-semibold text-slate-700 dark:text-slate-300" { "Attempts" }
+                                th class="px-3 py-2 text-left font-semibold text-slate-700 dark:text-slate-300" { "Actions" }
+                            }
+                        }
+                        tbody class="divide-y divide-slate-100 dark:divide-slate-700 bg-white dark:bg-slate-900" {
+                            @for video in videos {
+                                tr {
+                                    td class="max-w-lg px-3 py-2 text-slate-900 dark:text-slate-100" {
+                                        p class="truncate font-medium" { (video.title) }
+                                        p class="truncate text-xs text-slate-500 dark:text-slate-400" { (video.id.to_string()) }
+                                    }
+                                    td class="max-w-xs px-3 py-2 text-slate-600 dark:text-slate-400" {
+                                        p class="truncate" {
+                                            @if let Some(name) = source_names.get(&video.id) {
+                                                (name)
+                                            } @else {
+                                                span class="text-slate-400 dark:text-slate-500 italic" { "—" }
+                                            }
+                                        }
+                                    }
+                                    td class="px-3 py-2 text-slate-600 dark:text-slate-400" { (video.platform) }
+                                    td class="px-3 py-2" { (status_badge(&video.status)) }
+                                    td class="px-3 py-2 text-slate-600 dark:text-slate-400" { (video.attempts) }
+                                    td class="px-3 py-2" {
+                                        div class="flex gap-2" {
+                                            @if matches!(video.status, VideoStatus::Failed | VideoStatus::PermanentlyFailed | VideoStatus::Cleaned) {
+                                                form method="post" action=(format!("/downloads/{}/retry", video.id)) {
+                                                    button class="rounded-lg border border-sky-200 dark:border-sky-800 bg-sky-50 dark:bg-sky-900/50 px-3 py-1.5 text-xs font-medium text-sky-700 dark:text-sky-300 hover:bg-sky-100 dark:hover:bg-sky-900" type="submit" {
+                                                        "Retry"
+                                                    }
+                                                }
+                                            }
+                                            @if matches!(video.status, VideoStatus::Pending | VideoStatus::Downloading) {
+                                                form method="post" action=(format!("/downloads/{}/cancel", video.id)) {
+                                                    button
+                                                        class="rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/50 px-3 py-1.5 text-xs font-medium text-amber-700 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-900"
+                                                        type="submit"
+                                                        onclick="return confirm('Cancel this download?')"
+                                                    {
+                                                        "Cancel"
+                                                    }
+                                                }
+                                            }
+                                            @if video.status == VideoStatus::Completed {
+                                                form method="post" action=(format!("/downloads/{}/delete", video.id)) {
+                                                    button
+                                                        class="rounded-lg border border-rose-200 dark:border-rose-800 bg-rose-50 dark:bg-rose-900/50 px-3 py-1.5 text-xs font-medium text-rose-700 dark:text-rose-300 hover:bg-rose-100 dark:hover:bg-rose-900"
+                                                        type="submit"
+                                                        onclick="return confirm('Delete this video? The file will be removed from disk.')"
+                                                    {
+                                                        "Delete"
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            @if total_pages > 1 {
+                nav class="mt-6 flex items-center justify-center gap-2" {
+                    @if page_num > 1 {
+                        a
+                            class="rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 px-3 py-1.5 text-sm text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-600"
+                            href=(downloads_page_url(status_param, search, page_num - 1, per_page))
+                            hx-get=(downloads_list_url(status_param, search, page_num - 1, per_page))
+                            hx-target="#downloads-list"
+                            hx-push-url="true"
+                        {
+                            "Previous"
+                        }
+                    }
+                    span class="text-sm text-slate-500 dark:text-slate-400" {
+                        (format!("Page {} of {}", page_num, total_pages))
+                    }
+                    @if page_num < total_pages {
+                        a
+                            class="rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 px-3 py-1.5 text-sm text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-600"
+                            href=(downloads_page_url(status_param, search, page_num + 1, per_page))
+                            hx-get=(downloads_list_url(status_param, search, page_num + 1, per_page))
+                            hx-target="#downloads-list"
+                            hx-push-url="true"
+                        {
+                            "Next"
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn activity_content_markup(
+    events: &[hof_core::domain::activity::ActivityEvent],
+    page_num: i64,
+    total_pages: i64,
+    current_severity: &str,
+    per_page: i64,
+) -> Markup {
+    let severity_param = if current_severity == "all" {
+        None
+    } else {
+        Some(current_severity)
+    };
+
+    html! {
+        div class="mt-3 flex flex-wrap items-center gap-3" {
+            nav class="flex gap-1" {
+                (severity_filter_link("all", "All", current_severity, per_page))
+                (severity_filter_link("info", "Info", current_severity, per_page))
+                (severity_filter_link("success", "Success", current_severity, per_page))
+                (severity_filter_link("warning", "Warning", current_severity, per_page))
+                (severity_filter_link("error", "Error", current_severity, per_page))
+            }
+            nav class="flex items-center gap-1" {
+                span class="px-2 text-xs font-medium text-slate-500 dark:text-slate-400" { "Rows" }
+                (activity_page_size_link(25, per_page, severity_param))
+                (activity_page_size_link(50, per_page, severity_param))
+                (activity_page_size_link(100, per_page, severity_param))
+            }
+        }
+
+        @if events.is_empty() {
+            p class="mt-4 rounded-lg border border-dashed border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-800 px-4 py-8 text-center text-sm text-slate-500 dark:text-slate-400" {
+                "No activity events recorded yet."
+            }
+        } @else {
+            div class="mt-4 space-y-2" {
+                @for event in events {
+                    (activity_event_row(event))
+                }
+            }
+
+            @if total_pages > 1 {
+                nav class="mt-6 flex items-center justify-center gap-2" {
+                    @if page_num > 1 {
+                        a
+                            class="rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 px-3 py-1.5 text-sm text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-600"
+                            href=(activity_page_url(severity_param, page_num - 1, per_page))
+                            hx-get=(activity_list_url(severity_param, page_num - 1, per_page))
+                            hx-target="#activity-content"
+                            hx-push-url="true"
+                        {
+                            "Previous"
+                        }
+                    }
+                    span class="text-sm text-slate-500 dark:text-slate-400" {
+                        (format!("Page {} of {}", page_num, total_pages))
+                    }
+                    @if page_num < total_pages {
+                        a
+                            class="rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 px-3 py-1.5 text-sm text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-600"
+                            href=(activity_page_url(severity_param, page_num + 1, per_page))
+                            hx-get=(activity_list_url(severity_param, page_num + 1, per_page))
+                            hx-target="#activity-content"
+                            hx-push-url="true"
+                        {
+                            "Next"
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
