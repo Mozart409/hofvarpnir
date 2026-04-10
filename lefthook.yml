@@ -39,6 +39,10 @@ pre-push:
   parallel: true
   jobs:
     - name: test
+      glob:
+        - "*.rs"
+        - "**/*.sql"
+        - "Cargo.{toml,lock}"
       run: just test
     - name: clippy-all
       glob: "*.rs"
