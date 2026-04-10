@@ -208,6 +208,70 @@ pub async fn list_videos(
         .map_err(DbError::from)
 }
 
+/// List videos with optional status/title filters and pagination.
+///
+/// # Errors
+///
+/// Returns an error if the database operation fails.
+pub async fn list_videos_paginated(
+    pool: &PgPool,
+    status_filter: Option<VideoStatus>,
+    search: Option<&str>,
+    limit: i64,
+    offset: i64,
+) -> Result<Vec<Video>, DbError> {
+    let rows = sqlx::query_as::<_, VideoRow>(
+        r"
+        SELECT id, platform, platform_video_id, title, description,
+               duration_secs, published_at, thumbnail_url, status, attempts,
+               next_retry, last_error, file_path, file_size_bytes,
+               downloaded_at, created_at, updated_at
+        FROM videos
+        WHERE ($1::video_status IS NULL OR status = $1)
+          AND ($2::text IS NULL OR title ILIKE '%' || $2 || '%')
+        ORDER BY created_at DESC
+        LIMIT $3 OFFSET $4
+        ",
+    )
+    .bind(status_filter)
+    .bind(search)
+    .bind(limit)
+    .bind(offset)
+    .fetch_all(pool)
+    .await?;
+
+    rows.into_iter()
+        .map(Video::try_from)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(DbError::from)
+}
+
+/// Count videos with optional status/title filters.
+///
+/// # Errors
+///
+/// Returns an error if the database operation fails.
+pub async fn count_videos(
+    pool: &PgPool,
+    status_filter: Option<VideoStatus>,
+    search: Option<&str>,
+) -> Result<i64, DbError> {
+    let row: (i64,) = sqlx::query_as(
+        r"
+        SELECT COUNT(*)
+        FROM videos
+        WHERE ($1::video_status IS NULL OR status = $1)
+          AND ($2::text IS NULL OR title ILIKE '%' || $2 || '%')
+        ",
+    )
+    .bind(status_filter)
+    .bind(search)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(row.0)
+}
+
 /// List videos for a specific source (via join table).
 ///
 /// # Errors
