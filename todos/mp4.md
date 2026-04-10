@@ -1,92 +1,122 @@
-# Profile-Level yt-dlp Format Override Plan
+# Profile-Level Output Preset Plan
 
 ## Issue Goal
 
 Reduce Jellyfin/server remux overhead by preferring direct-play friendly outputs (H.264 + AAC in MP4), while still handling cases where YouTube only offers VP9/AV1 or non-AAC audio.
 
-## Scope Decision (updated)
+## Scope Decision
 
 - No global `.env` knob.
-- Add **runtime configuration on profiles** so each profile can opt into/override yt-dlp format behavior.
+- Add **runtime configuration on profiles** via an `OutputPreset` enum so each profile can target a specific playback environment.
+- Default new and existing profiles to `Browser` (the direct-play fix).
 
-## Proposed Design
+## Design
 
-### 1) Profile model: add per-profile format override
+### 1) `OutputPreset` enum (new, on profile)
 
-- Add nullable profile field, e.g. `ytdlp_format_override: Option<String>`.
-- Semantics:
-  - `None` => use application default format policy (MP4-friendly default described below).
-  - `Some(value)` => pass through as explicit yt-dlp `-f` selector for that profile.
-- Keep this field orthogonal to existing `quality` (quality still constrains target resolution behavior).
+```rust
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::Type, ToSchema)]
+#[sqlx(type_name = "output_preset", rename_all = "lowercase")]
+pub enum OutputPreset {
+    Auto,       // yt-dlp picks best codecs, MKV container (current behavior)
+    Browser,    // H.264 + AAC, MP4 container — Jellyfin/browser direct-play
+    Tv,         // H.265/HEVC + AAC, MP4 container — smart TV direct-play
+}
+```
 
-### 2) Default format policy (no override provided)
+Default: `Browser` for all new profiles. Migration sets existing profiles to `Browser`.
 
-- Introduce a default format selector that prefers browser/Jellyfin direct-play compatibility:
-  - Prefer AVC/H.264 video + MP4A/AAC audio.
-  - Prefer mux result in MP4 (`--merge-output-format mp4`).
-- Add graceful fallback branches in the selector so downloads do not fail when exact AVC+AAC is unavailable.
-- For quality presets (`2160p`, `1080p`, etc.), include quality-aware constraints in generated selector (idiomatic Rust builder/function rather than stringly scattered logic).
+### 2) `FormatPolicy` struct (internal, not persisted)
 
-### 3) Output extension handling (important)
+Resolved from `(Quality, OutputPreset)` — single codepath, replaces `quality_to_yt_quality()`.
 
-- Current template rendering hardcodes `.mkv` in `render_output_relative_path` and `{ext}` replacement.
-- Update template rendering to use a **resolved target container extension** from download settings (default `mp4`, potentially other value if profile override implies different behavior).
-- Ensure fallback filename and extension normalization logic no longer forces MKV.
+```rust
+pub struct FormatPolicy {
+    pub video_quality: VideoQuality,          // from yt-dlp crate
+    pub audio_quality: AudioQuality,          // always Best
+    pub video_codec: VideoCodecPreference,    // from yt-dlp crate
+    pub audio_codec: AudioCodecPreference,    // from yt-dlp crate
+    pub container_ext: &'static str,          // "mkv" or "mp4"
+}
+```
 
-### 4) Data flow wiring
+Mapping:
+
+| OutputPreset | VideoCodecPreference | AudioCodecPreference | container_ext |
+|-------------|---------------------|---------------------|--------------|
+| Auto        | Any                 | Any                 | mkv          |
+| Browser     | AVC1                | AAC                 | mp4          |
+| Tv          | Custom("hevc")      | AAC                 | mp4          |
+
+When `Quality::AudioOnly`: skip video codec preference entirely, let yt-dlp pick best audio, container determined by preset (`mp4` for Browser/Tv, `mkv` for Auto — but yt-dlp picks the audio container naturally since there's no video mux).
+
+`Quality` maps to `VideoQuality` as before (Best → Best, Q1080p → CustomHeight(1080), etc).
+
+### 3) Output template extension refactor
+
+- `render_output_relative_path()` gains a `container_ext: &str` parameter.
+- All hardcoded `"mkv"` replaced with `container_ext`.
+- Extension enforcement logic becomes generic (check/append `container_ext` instead of `.mkv`).
+- Comment on line 523 updated.
+- Tests updated to be parameterized over extension.
+
+### 4) yt-dlp execution path changes
+
+- `DownloadRequest` carries `FormatPolicy` instead of `&Quality`.
+- In `YtdlpClient::download_video`:
+  - Pass `FormatPolicy` fields to `DownloadBuilder`: `.video_quality()`, `.audio_quality()`, `.video_codec()`, `.audio_codec()`.
+  - Output path uses `container_ext` from policy (via updated `render_output_relative_path`).
+- Delete `quality_to_yt_quality()` — fully replaced by `FormatPolicy::from(quality, preset)`.
+- No raw format selector strings needed — the yt-dlp crate's native API handles codec selection and fallback internally.
+
+### 5) Data flow wiring
 
 - Extend domain + DB structs:
-  - `Profile`, `ProfileRow`
-  - `CreateProfile`, `UpdateProfile`
-- Add SQL migration for new nullable `profiles.ytdlp_format_override` column.
+  - `Profile`, `ProfileRow`: add `output_preset: OutputPreset`
+  - `CreateProfile`, `UpdateProfile`: add field
+- Add SQL migration:
+  - Create `output_preset` PostgreSQL ENUM type with `auto`, `browser`, `tv` values.
+  - Add `output_preset` column to `profiles` with `DEFAULT 'browser'` and `NOT NULL`.
+  - Set all existing rows to `browser`.
+  - Down migration: drop column, drop type.
 - Update CRUD SQL (`INSERT`, `SELECT`, `UPDATE`, response mapping).
 
-### 5) API + web runtime config exposure
+### 6) API + web UI
 
-- API (`hof-api`): include new field in create/update/request/response types.
-- Web UI (`hof-web`): add profile form input for optional format override.
-- Validation:
-  - Accept empty as `None`.
-  - Basic guardrails (non-empty trim, max length, reject obvious invalid control chars).
-  - Keep validation pragmatic; let yt-dlp remain final authority for complex selector correctness.
-
-### 6) yt-dlp execution path changes
-
-- Update `DownloadRequest` to carry resolved format/container config derived from profile.
-- In `YtdlpClient::download_video`, apply:
-  - format selector (`-f ...`) from override or default builder.
-  - merge output format (`mp4`) for default policy.
-- Preserve existing progress/error behavior.
-
-## Acceptance Criteria Mapping
-
-- Runtime profile config override exists: `ytdlp_format_override` on profile.
-- Default behavior prefers MP4 container with H.264 + AAC when available.
-- Fallback path remains graceful when preferred codecs are not available at requested quality.
+- **API (`hof-api`)**: add `output_preset` to `CreateProfileRequest`, `UpdateProfileRequest`, `ProfileResponse`.
+- **Web UI (`hof-web`)**: add dropdown to profile form (similar to existing quality dropdown).
+  - `OutputPresetForm` enum for form deserialization.
+  - Options labeled: "Auto (best quality)", "Browser (Jellyfin/web direct-play)", "TV (smart TV direct-play)".
 
 ## Implementation Steps
 
-1. Add migration and profile model/DB plumbing for `ytdlp_format_override`.
-2. Add API + web form support for create/edit/read.
-3. Add format policy module/helpers in `hof-core` (default selector + quality constraints + container ext).
-4. Wire resolved policy into `DownloadRequest` and yt-dlp invocation.
-5. Refactor output template extension handling to be container-driven, not MKV-hardcoded.
-6. Update tests (profile CRUD, template rendering, quality/format mapping, any API snapshots).
-7. Run: `cargo fmt --all`, `cargo clippy --workspace --all-targets -- -W clippy::pedantic`, targeted tests, then workspace tests.
+1. Add `OutputPreset` enum to `hof-core/src/domain/profile.rs`.
+2. Add migration for `output_preset` ENUM type and column.
+3. Update `Profile`, `ProfileRow`, `CreateProfile`, `UpdateProfile` structs and CRUD SQL.
+4. Add `FormatPolicy` struct and `build_format_policy(quality, preset)` function in `hof-core/src/ytdlp.rs`.
+5. Refactor `render_output_relative_path` to accept `container_ext` parameter; update all hardcoded `.mkv`.
+6. Update `DownloadRequest` to carry `FormatPolicy`; wire into `download_video` builder calls.
+7. Delete `quality_to_yt_quality()`.
+8. Update API types and handlers in `hof-api/src/routes/profiles.rs`.
+9. Update web form types and template in `hof-web/src/pages.rs`.
+10. Update all callers of `DownloadRequest` and `render_output_relative_path`.
+11. Update tests (profile CRUD, template rendering, format policy mapping).
+12. Run: `cargo fmt --all`, `cargo clippy --workspace --all-targets -- -W clippy::pedantic`, targeted tests, then workspace tests.
 
 ## Test Plan
 
 - Unit tests:
-  - default selector generation by `Quality` (including fallback chain)
-  - override pass-through behavior
-  - output template `{ext}` and fallback filename with `mp4`
+  - `build_format_policy` for each `(Quality, OutputPreset)` combination
+  - `render_output_relative_path` with `"mp4"` and `"mkv"` extensions
+  - fallback filename with correct extension
 - Integration/API tests:
-  - create/update/get profile round-trip with and without override
-  - validation behavior for empty/invalid override values
-- Behavioral smoke test (if feasible in existing harness):
-  - confirm produced path/container defaults to mp4 in normal flow
+  - create/update/get profile round-trip with each preset value
+  - default value behavior for new profiles
+- Behavioral:
+  - confirm output path uses `.mp4` extension when preset is `Browser` or `Tv`
 
 ## Risks / Notes
 
-- The current `yt_dlp` Rust crate API may expose format controls differently than raw CLI args; if direct flag parity is limited, we should centralize a minimal adapter layer instead of scattering workarounds.
-- For `AudioOnly`, we should keep behavior explicit (likely not forcing MP4 video container); this needs a small policy branch but does not block core issue.
+- The yt-dlp crate's `select_video_format` does a best-effort match — if AVC1 is not available at the requested quality, it may return `None`. The download will error. This is acceptable: the user chose a specific preset knowing their content. We should surface a clear error message.
+- For `AudioOnly` + any preset, there's no video stream to constrain. Audio codec preference still applies (AAC for Browser/Tv), but the container is determined by the audio stream format, not by us.
+- `Tv` uses `Custom("hevc")` since the yt-dlp crate's `VideoCodecPreference` doesn't have a native HEVC variant. The `matches_video_codec` function does substring matching, so `"hevc"` will match codec strings containing "hevc" or "h265" — need to verify this covers YouTube's codec identifiers (they typically report as `"vp09..."` or `"av01..."` or `"avc1..."` — HEVC/H.265 is rare on YouTube but common on other platforms).
