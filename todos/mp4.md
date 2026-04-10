@@ -125,6 +125,62 @@ Graceful fallback requirement (explicit):
 12. Update tests (profile CRUD, template rendering, format policy mapping, error code mapping).
 13. Run: `cargo fmt --all`, `cargo clippy --workspace --all-targets -- -W clippy::pedantic`, targeted tests, then workspace tests.
 
+## Implementation Phases (Checklist)
+
+### Phase 0 - Planning and Scope
+
+- [x] Confirm runtime profile config (not `.env`) as source of truth.
+- [x] Define `OutputPreset`-based approach (`Auto`, `Browser`, `Tv`).
+- [x] Define graceful fallback expectations and audio-only extension behavior.
+- [x] Define initial machine-readable error code contract.
+
+### Phase 1 - Persistence and Domain Wiring
+
+- [ ] Add `output_preset` PostgreSQL enum + `profiles.output_preset` column migration.
+- [ ] Backfill existing rows to `browser` and enforce `NOT NULL` + default.
+- [ ] Update `Profile`, `ProfileRow`, `CreateProfile`, `UpdateProfile` in `hof-core`.
+- [ ] Update profile CRUD SQL and mapping for read/write support.
+
+### Phase 2 - Core Download Policy Refactor
+
+- [ ] Add `FormatPolicy` and `build_format_policy(quality, preset)` in `crates/hof-core/src/ytdlp.rs`.
+- [ ] Update `DownloadRequest` to carry `FormatPolicy`.
+- [ ] Replace `quality_to_yt_quality()` usage and remove it.
+- [ ] Implement deterministic fallback stages for `Browser`/`Tv`.
+- [ ] Add structured internal context for fallback stage selection (for logs/errors).
+
+### Phase 3 - Output Path and Extension Semantics
+
+- [ ] Refactor `render_output_relative_path()` to accept `container_ext`.
+- [ ] Replace hardcoded `.mkv` usage with policy-driven extension.
+- [ ] Disable extension forcing for `Quality::AudioOnly`.
+- [ ] Ensure fallback filename generation honors non-audio and audio-only rules.
+
+### Phase 4 - API and Web UI Exposure
+
+- [ ] Add `output_preset` to API request/response DTOs in `crates/hof-api/src/routes/profiles.rs`.
+- [ ] Validate and persist preset through create/update handlers.
+- [ ] Add preset field to web form model (`OutputPresetForm`) in `crates/hof-web/src/pages.rs`.
+- [ ] Add dropdowns in create/edit profile UI with agreed labels.
+
+### Phase 5 - Error Contract and Observability
+
+- [ ] Introduce and wire error codes: `DOWNLOAD_FORMAT_UNAVAILABLE`, `DOWNLOAD_FORMAT_INVALID_PRESET`, `DOWNLOAD_EXECUTION_FAILED`.
+- [ ] Include machine-readable code + human message in API error responses.
+- [ ] Include code + preset + quality + fallback stage in worker/activity logs.
+- [ ] Ensure fallback exhaustion maps to stable, testable error output.
+
+### Phase 6 - Verification and Hardening
+
+- [ ] Add/adjust unit tests for `FormatPolicy` mapping and fallback behavior.
+- [ ] Add/adjust unit tests for template rendering across `mp4`/`mkv` + audio-only no-force.
+- [ ] Add integration/API tests for profile preset round-trip and defaults.
+- [ ] Add integration test for preferred-codec-unavailable -> fallback succeeds.
+- [ ] Add integration test for fallback exhaustion -> expected machine-readable error code.
+- [ ] Run `cargo fmt --all`.
+- [ ] Run `cargo clippy --workspace --all-targets -- -W clippy::pedantic`.
+- [ ] Run targeted tests and then workspace tests.
+
 ## Test Plan
 
 - Unit tests:
