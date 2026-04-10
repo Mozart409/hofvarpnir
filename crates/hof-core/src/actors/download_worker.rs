@@ -157,7 +157,7 @@ impl Message<StartDownload> for DownloadWorker {
         ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
         let start = Instant::now();
-        let outcome = self.execute_download().await;
+        let outcome = Box::pin(self.execute_download()).await;
         histogram!(crate::metrics::DOWNLOAD_DURATION_SECONDS).record(start.elapsed().as_secs_f64());
 
         // Stop the actor after the download completes

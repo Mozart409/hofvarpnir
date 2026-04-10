@@ -175,8 +175,8 @@ Graceful fallback requirement (explicit):
 - [x] Add/adjust unit tests for `FormatPolicy` mapping and fallback behavior.
 - [x] Add/adjust unit tests for template rendering across `mp4`/`mkv` + audio-only no-force.
 - [x] Add integration/API tests for profile preset round-trip and defaults.
-- [ ] Add integration test for preferred-codec-unavailable -> fallback succeeds.
-- [ ] Add integration test for fallback exhaustion -> expected machine-readable error code.
+- [x] Add integration test for preferred-codec-unavailable -> fallback succeeds.
+- [x] Add integration test for fallback exhaustion -> expected machine-readable error code.
 - [x] Run `cargo fmt --all`.
 - [x] Run `cargo clippy --workspace --all-targets -- -W clippy::pedantic`.
 - [x] Run targeted tests and then workspace tests.

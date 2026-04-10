@@ -6,6 +6,7 @@
 //! - Video downloading with progress callbacks
 //! - Quality selection based on profile settings
 
+use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -516,62 +517,28 @@ impl YtdlpClient {
         }
 
         let attempts = fallback_attempts(request.format_policy);
-        let mut last_error = None;
-        let mut selected_stage = None;
-        let mut last_stage = None;
-
-        let mut result_path = None;
-        for attempt in &attempts {
-            last_stage = Some(attempt.stage);
-            debug!(
-                stage = ?attempt.stage,
-                video_quality = ?attempt.video_quality,
-                video_codec = ?attempt.video_codec,
-                audio_codec = ?attempt.audio_codec,
-                preset = ?request.format_policy.preset,
-                quality = ?request.format_policy.quality,
-                "Attempting format selection"
-            );
-
-            match self
-                .downloader
-                .download(&video, &output_path)
-                .video_quality(attempt.video_quality)
-                .audio_quality(request.format_policy.audio_quality)
-                .video_codec(attempt.video_codec.clone())
-                .audio_codec(attempt.audio_codec.clone())
-                .execute()
-                .await
-            {
-                Ok(path) => {
-                    selected_stage = Some(attempt.stage);
-                    result_path = Some(path);
-                    break;
+        let (result_path, selected_stage) =
+            execute_fallback_attempts(&attempts, request.format_policy, |attempt| {
+                let video_quality = attempt.video_quality;
+                let video_codec = attempt.video_codec.clone();
+                let audio_codec = attempt.audio_codec.clone();
+                let video_ref = video.clone();
+                let output_path_ref = output_path.clone();
+                async move {
+                    self.downloader
+                        .download(&video_ref, &output_path_ref)
+                        .video_quality(video_quality)
+                        .audio_quality(request.format_policy.audio_quality)
+                        .video_codec(video_codec)
+                        .audio_codec(audio_codec)
+                        .execute()
+                        .await
+                        .map_err(|err| err.to_string())
                 }
-                Err(err) => {
-                    last_error = Some(err.to_string());
-                    debug!(
-                        stage = ?attempt.stage,
-                        error = last_error.as_deref(),
-                        "Format selection attempt failed"
-                    );
-                }
-            }
-        }
+            })
+            .await?;
 
-        let result_path = result_path.ok_or_else(|| {
-            let detail = last_error.unwrap_or_else(|| "no compatible format found".to_string());
-            YtdlpError::FormatUnavailable {
-                preset: request.format_policy.preset.clone(),
-                quality: request.format_policy.quality.clone(),
-                last_stage,
-                detail,
-            }
-        })?;
-
-        if let Some(stage) = selected_stage {
-            debug!(stage = ?stage, "Selected format fallback stage");
-        }
+        debug!(stage = ?selected_stage, "Selected format fallback stage");
 
         // Get file size
         let file_size = tokio::fs::metadata(&result_path)
@@ -715,6 +682,52 @@ fn fallback_attempts(policy: &FormatPolicy) -> Vec<FallbackAttempt> {
     }
 
     deduped
+}
+
+async fn execute_fallback_attempts<F, Fut>(
+    attempts: &[FallbackAttempt],
+    policy: &FormatPolicy,
+    mut execute: F,
+) -> Result<(PathBuf, FallbackStage), YtdlpError>
+where
+    F: FnMut(&FallbackAttempt) -> Fut,
+    Fut: Future<Output = Result<PathBuf, String>>,
+{
+    let mut last_error = None;
+    let mut last_stage = None;
+
+    for attempt in attempts {
+        last_stage = Some(attempt.stage);
+        debug!(
+            stage = ?attempt.stage,
+            video_quality = ?attempt.video_quality,
+            video_codec = ?attempt.video_codec,
+            audio_codec = ?attempt.audio_codec,
+            preset = ?policy.preset,
+            quality = ?policy.quality,
+            "Attempting format selection"
+        );
+
+        match execute(attempt).await {
+            Ok(path) => return Ok((path, attempt.stage)),
+            Err(err) => {
+                last_error = Some(err);
+                debug!(
+                    stage = ?attempt.stage,
+                    error = last_error.as_deref(),
+                    "Format selection attempt failed"
+                );
+            }
+        }
+    }
+
+    let detail = last_error.unwrap_or_else(|| "no compatible format found".to_string());
+    Err(YtdlpError::FormatUnavailable {
+        preset: policy.preset.clone(),
+        quality: policy.quality.clone(),
+        last_stage,
+        detail,
+    })
 }
 
 fn quality_fallback_chain(quality: &Quality) -> Vec<VideoQuality> {
@@ -1215,6 +1228,44 @@ mod tests {
                 .iter()
                 .any(|attempt| attempt.stage == FallbackStage::AnyCodec)
         );
+    }
+
+    #[tokio::test]
+    async fn test_fallback_recovers_when_preferred_codec_unavailable() {
+        let policy = FormatPolicy::from(&Quality::Q1080p, &OutputPreset::Browser);
+        let attempts = fallback_attempts(&policy);
+
+        let result = execute_fallback_attempts(&attempts, &policy, |attempt| {
+            let stage = attempt.stage;
+            async move {
+                if stage == FallbackStage::PreferredCodecPair {
+                    return Err("preferred codec not available".to_string());
+                }
+                Ok(PathBuf::from("/tmp/fallback-success.mp4"))
+            }
+        })
+        .await;
+
+        let (_, selected_stage) = result.expect("fallback should succeed");
+        assert_eq!(selected_stage, FallbackStage::PreferredVideoCodec);
+    }
+
+    #[tokio::test]
+    async fn test_fallback_exhaustion_returns_machine_readable_error_code() {
+        let policy = FormatPolicy::from(&Quality::Q1080p, &OutputPreset::Browser);
+        let attempts = fallback_attempts(&policy);
+
+        let error = execute_fallback_attempts(&attempts, &policy, |_attempt| async {
+            Err("no compatible format".to_string())
+        })
+        .await
+        .expect_err("fallback exhaustion should fail");
+
+        assert_eq!(
+            error.machine_code(),
+            Some(YtdlpError::DOWNLOAD_FORMAT_UNAVAILABLE)
+        );
+        assert_eq!(error.fallback_stage(), Some(FallbackStage::AnyCodec));
     }
 
     #[test]
