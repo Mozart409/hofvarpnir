@@ -42,6 +42,7 @@ mod profile_tests {
         assert_eq!(response.user_id, profile.user_id.to_string());
         assert_eq!(response.name, "Test Profile");
         assert!(matches!(response.quality, Quality::Q1080p));
+        assert!(matches!(response.output_preset, OutputPreset::Browser));
         assert_eq!(response.naming_template, "{title}-{id}.{ext}");
         assert_eq!(response.output_dir, "/downloads");
         assert!(!response.include_livestreams);
@@ -65,6 +66,7 @@ mod profile_tests {
         assert_eq!(req.name, "My Profile");
         assert!(!req.include_livestreams); // default false
         assert!(!req.include_shorts); // default false
+        assert!(req.output_preset.is_none());
         // Default quota is 100GB
         assert_eq!(req.storage_quota_bytes, 100 * 1024 * 1024 * 1024);
         assert!(req.retention_days.is_none());
@@ -76,6 +78,7 @@ mod profile_tests {
             "user_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
             "name": "Full Profile",
             "quality": "Best",
+            "output_preset": "Tv",
             "naming_template": "{title}-{id}.{ext}",
             "output_dir": "/media/videos",
             "include_livestreams": true,
@@ -87,6 +90,7 @@ mod profile_tests {
         let req: CreateProfileRequest = serde_json::from_str(json).unwrap();
         assert!(req.include_livestreams);
         assert!(req.include_shorts);
+        assert!(matches!(req.output_preset, Some(OutputPreset::Tv)));
         assert_eq!(req.storage_quota_bytes, 500_000_000_000);
         assert_eq!(req.retention_days, Some(90));
     }
@@ -98,6 +102,7 @@ mod profile_tests {
         let req: UpdateProfileRequest = serde_json::from_str(json).unwrap();
         assert_eq!(req.name, Some("Updated Name".to_string()));
         assert!(req.quality.is_none());
+        assert!(req.output_preset.is_none());
         assert!(req.naming_template.is_none());
         assert!(req.output_dir.is_none());
         assert!(req.include_livestreams.is_none());
@@ -343,8 +348,45 @@ mod download_tests {
         assert_eq!(response.duration_secs, Some(215));
         assert!(matches!(response.status, VideoStatus::Completed));
         assert_eq!(response.attempts, 1);
+        assert!(response.last_error_code.is_none());
         assert_eq!(response.file_path, Some("/downloads/test.mp4".to_string()));
         assert_eq!(response.file_size_bytes, Some(150_000_000));
+    }
+
+    #[test]
+    fn test_video_response_extracts_machine_error_code() {
+        use chrono::Utc;
+        use hof_core::domain::video::Video;
+        use ulid::Ulid;
+
+        let video = Video {
+            id: Ulid::new(),
+            platform: "youtube".to_string(),
+            platform_video_id: "dQw4w9WgXcQ".to_string(),
+            title: "Test Video".to_string(),
+            description: None,
+            duration_secs: None,
+            published_at: None,
+            thumbnail_url: None,
+            status: VideoStatus::Failed,
+            attempts: 2,
+            next_retry: Some(Utc::now()),
+            last_error: Some(
+                "[DOWNLOAD_FORMAT_UNAVAILABLE] Failed to download video: ...".to_string(),
+            ),
+            file_path: None,
+            file_size_bytes: None,
+            downloaded_at: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+
+        let response: VideoResponse = video.into();
+
+        assert_eq!(
+            response.last_error_code,
+            Some("DOWNLOAD_FORMAT_UNAVAILABLE".to_string())
+        );
     }
 
     #[test]
