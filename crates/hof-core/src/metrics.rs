@@ -14,6 +14,7 @@ use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
 /// # Panics
 ///
 /// Panics if a global metrics recorder has already been installed.
+#[must_use]
 pub fn init_metrics() -> PrometheusHandle {
     let recorder = PrometheusBuilder::new().build_recorder();
     let handle = recorder.handle();
