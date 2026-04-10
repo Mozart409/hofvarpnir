@@ -48,7 +48,17 @@ Mapping:
 | Browser     | AVC1                | AAC                 | mp4          |
 | Tv          | Custom("hevc")      | AAC                 | mp4          |
 
-When `Quality::AudioOnly`: skip video codec preference entirely, let yt-dlp pick best audio, container determined by preset (`mp4` for Browser/Tv, `mkv` for Auto — but yt-dlp picks the audio container naturally since there's no video mux).
+When `Quality::AudioOnly`: skip video codec preference entirely, let yt-dlp pick best audio, and do not force container extension in template rendering. The final extension comes from the actual result path returned by yt-dlp.
+
+Graceful fallback requirement (explicit):
+
+- For `Browser`/`Tv`, format selection must be best-effort and not fail immediately when preferred codecs are unavailable at requested quality.
+- Fallback order:
+  1. Preferred codec pair at requested quality (e.g. AVC+AAC for `Browser`).
+  2. Preferred video codec + best available audio at requested quality.
+  3. Best available muxable pair at requested quality.
+  4. If none available at requested quality, relax quality constraint one level at a time until a muxable pair is found.
+- Only return a hard error when no downloadable muxable format exists after fallback exhaustion.
 
 `Quality` maps to `VideoQuality` as before (Best → Best, Q1080p → CustomHeight(1080), etc).
 
@@ -57,8 +67,9 @@ When `Quality::AudioOnly`: skip video codec preference entirely, let yt-dlp pick
 - `render_output_relative_path()` gains a `container_ext: &str` parameter.
 - All hardcoded `"mkv"` replaced with `container_ext`.
 - Extension enforcement logic becomes generic (check/append `container_ext` instead of `.mkv`).
+- For `Quality::AudioOnly`, extension enforcement is disabled (do not append/force any extension).
 - Comment on line 523 updated.
-- Tests updated to be parameterized over extension.
+- Tests updated to be parameterized over extension and audio-only no-force behavior.
 
 ### 4) yt-dlp execution path changes
 
@@ -88,6 +99,16 @@ When `Quality::AudioOnly`: skip video codec preference entirely, let yt-dlp pick
   - `OutputPresetForm` enum for form deserialization.
   - Options labeled: "Auto (best quality)", "Browser (Jellyfin/web direct-play)", "TV (smart TV direct-play)".
 
+### 7) Error contract and codes
+
+- Add structured error code(s) for format-selection/download failures surfaced by API and activity log.
+- Proposed codes:
+  - `DOWNLOAD_FORMAT_UNAVAILABLE`: preferred preset/quality could not be satisfied directly, fallback exhausted.
+  - `DOWNLOAD_FORMAT_INVALID_PRESET`: preset maps to invalid selector/config (defensive, should be rare).
+  - `DOWNLOAD_EXECUTION_FAILED`: yt-dlp execution failed after selection succeeded.
+- API error responses should include both a user-readable message and machine-readable code.
+- Worker/activity logging should include code + preset + quality + selected fallback stage for debugging.
+
 ## Implementation Steps
 
 1. Add `OutputPreset` enum to `hof-core/src/domain/profile.rs`.
@@ -100,8 +121,9 @@ When `Quality::AudioOnly`: skip video codec preference entirely, let yt-dlp pick
 8. Update API types and handlers in `hof-api/src/routes/profiles.rs`.
 9. Update web form types and template in `hof-web/src/pages.rs`.
 10. Update all callers of `DownloadRequest` and `render_output_relative_path`.
-11. Update tests (profile CRUD, template rendering, format policy mapping).
-12. Run: `cargo fmt --all`, `cargo clippy --workspace --all-targets -- -W clippy::pedantic`, targeted tests, then workspace tests.
+11. Implement and propagate structured error codes for format policy + download failures.
+12. Update tests (profile CRUD, template rendering, format policy mapping, error code mapping).
+13. Run: `cargo fmt --all`, `cargo clippy --workspace --all-targets -- -W clippy::pedantic`, targeted tests, then workspace tests.
 
 ## Test Plan
 
@@ -114,9 +136,12 @@ When `Quality::AudioOnly`: skip video codec preference entirely, let yt-dlp pick
   - default value behavior for new profiles
 - Behavioral:
   - confirm output path uses `.mp4` extension when preset is `Browser` or `Tv`
+  - confirm audio-only downloads do not get forced extension appended by template renderer
+  - integration test: trigger a case where preferred codec is unavailable and assert fallback succeeds (no hard failure)
+  - integration test: trigger fallback exhaustion and assert API/worker returns expected machine-readable error code
 
 ## Risks / Notes
 
-- The yt-dlp crate's `select_video_format` does a best-effort match — if AVC1 is not available at the requested quality, it may return `None`. The download will error. This is acceptable: the user chose a specific preset knowing their content. We should surface a clear error message.
-- For `AudioOnly` + any preset, there's no video stream to constrain. Audio codec preference still applies (AAC for Browser/Tv), but the container is determined by the audio stream format, not by us.
+- Fallback logic must be deterministic and logged, otherwise diagnosing codec-selection behavior will be difficult.
+- For `AudioOnly` + any preset, there's no video stream to constrain. Audio codec preference still applies (AAC for Browser/Tv), but container/extension is determined by yt-dlp output, not forced by us.
 - `Tv` uses `Custom("hevc")` since the yt-dlp crate's `VideoCodecPreference` doesn't have a native HEVC variant. The `matches_video_codec` function does substring matching, so `"hevc"` will match codec strings containing "hevc" or "h265" — need to verify this covers YouTube's codec identifiers (they typically report as `"vp09..."` or `"av01..."` or `"avc1..."` — HEVC/H.265 is rare on YouTube but common on other platforms).
