@@ -16,7 +16,7 @@ use utoipa::ToSchema;
 
 use hof_core::{
     db::{self, CreateProfile, UpdateProfile},
-    domain::profile::{Profile, Quality},
+    domain::profile::{OutputPreset, Profile, Quality},
     ytdlp::validate_output_template,
 };
 
@@ -243,6 +243,7 @@ pub async fn create_profile(
         user_id,
         name: &req.name,
         quality: req.quality,
+        output_preset: OutputPreset::Browser,
         naming_template: req.naming_template.trim(),
         output_dir: &req.output_dir,
         include_livestreams: req.include_livestreams,
@@ -372,6 +373,7 @@ pub async fn update_profile(
     let data = UpdateProfile {
         name: req.name.as_deref(),
         quality: req.quality,
+        output_preset: None,
         naming_template: validated_naming_template.as_deref(),
         output_dir: req.output_dir.as_deref(),
         include_livestreams: req.include_livestreams,

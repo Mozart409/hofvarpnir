@@ -12,7 +12,7 @@ mod profile_tests {
     use crate::routes::profiles::{
         CreateProfileRequest, ErrorResponse, ProfileResponse, UpdateProfileRequest,
     };
-    use hof_core::domain::profile::Quality;
+    use hof_core::domain::profile::{OutputPreset, Quality};
 
     #[test]
     fn test_profile_response_from_profile() {
@@ -25,6 +25,7 @@ mod profile_tests {
             user_id: Ulid::new(),
             name: "Test Profile".to_string(),
             quality: Quality::Q1080p,
+            output_preset: OutputPreset::Browser,
             naming_template: "{title}-{id}.{ext}".to_string(),
             output_dir: "/downloads".to_string(),
             include_livestreams: false,

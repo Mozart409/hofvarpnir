@@ -22,6 +22,14 @@ pub enum Quality {
     AudioOnly,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, sqlx::Type, ToSchema)]
+#[sqlx(type_name = "output_preset", rename_all = "lowercase")]
+pub enum OutputPreset {
+    Auto,
+    Browser,
+    Tv,
+}
+
 /// A download configuration that can apply to sources from any platform.
 /// yt-dlp auto-detects the platform from each source URL.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -30,6 +38,7 @@ pub struct Profile {
     pub user_id: Ulid,
     pub name: String,
     pub quality: Quality,
+    pub output_preset: OutputPreset,
     pub naming_template: String,
     pub output_dir: String,
     pub include_livestreams: bool,
@@ -47,6 +56,7 @@ pub struct ProfileRow {
     pub user_id: String,
     pub name: String,
     pub quality: Quality,
+    pub output_preset: OutputPreset,
     pub naming_template: String,
     pub output_dir: String,
     pub include_livestreams: bool,
@@ -66,6 +76,7 @@ impl TryFrom<ProfileRow> for Profile {
             user_id: Ulid::from_string(&row.user_id)?,
             name: row.name,
             quality: row.quality,
+            output_preset: row.output_preset,
             naming_template: row.naming_template,
             output_dir: row.output_dir,
             include_livestreams: row.include_livestreams,

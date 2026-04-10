@@ -19,9 +19,11 @@ use yt_dlp::extractor::ExtractorConfig;
 use yt_dlp::extractor::VideoExtractor;
 use yt_dlp::model::Video as YtVideo;
 use yt_dlp::model::playlist::{Playlist, PlaylistEntry as YtPlaylistEntry};
-use yt_dlp::model::selector::{AudioQuality, VideoQuality};
+use yt_dlp::model::selector::{
+    AudioCodecPreference, AudioQuality, VideoCodecPreference, VideoQuality,
+};
 
-use crate::domain::profile::Quality;
+use crate::domain::profile::{OutputPreset, Quality};
 use crate::domain::video::DownloadProgress;
 
 /// Errors that can occur during yt-dlp operations.
@@ -212,9 +214,50 @@ pub struct DownloadRequest<'a> {
     pub output_dir: &'a Path,
     pub naming_template: &'a str,
     pub template_data: &'a OutputTemplateData,
-    pub quality: &'a Quality,
+    pub format_policy: &'a FormatPolicy,
     pub video_id: Ulid,
     pub progress_tx: Option<mpsc::Sender<DownloadProgress>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FallbackStage {
+    PreferredCodecPair,
+    PreferredVideoCodec,
+    AnyCodec,
+}
+
+#[derive(Debug, Clone)]
+pub struct FormatPolicy {
+    pub quality: Quality,
+    pub preset: OutputPreset,
+    pub audio_quality: AudioQuality,
+    pub video_codec: VideoCodecPreference,
+    pub audio_codec: AudioCodecPreference,
+    pub container_ext: &'static str,
+}
+
+impl FormatPolicy {
+    #[must_use]
+    pub fn from(quality: &Quality, preset: &OutputPreset) -> Self {
+        let (video_codec, audio_codec, container_ext) = match preset {
+            OutputPreset::Auto => (VideoCodecPreference::Any, AudioCodecPreference::Any, "mkv"),
+            OutputPreset::Browser => (VideoCodecPreference::AVC1, AudioCodecPreference::AAC, "mp4"),
+            OutputPreset::Tv => (
+                VideoCodecPreference::Custom("hevc".to_string()),
+                AudioCodecPreference::AAC,
+                "mp4",
+            ),
+        };
+
+        Self {
+            quality: quality.clone(),
+            preset: preset.clone(),
+            audio_quality: AudioQuality::Best,
+            video_codec,
+            audio_codec,
+            container_ext,
+        }
+    }
 }
 
 /// Context values used to render advanced output templates.
@@ -367,7 +410,7 @@ impl YtdlpClient {
     /// # Errors
     ///
     /// Returns an error if the download fails.
-    #[instrument(skip(self, request), fields(url = %request.url, quality = ?request.quality))]
+    #[instrument(skip(self, request), fields(url = %request.url, policy = ?request.format_policy))]
     pub async fn download_video(
         &self,
         request: DownloadRequest<'_>,
@@ -402,18 +445,62 @@ impl YtdlpClient {
             })?;
         }
 
-        // Build download with quality settings
-        let video_quality = quality_to_yt_quality(request.quality);
+        let attempts = fallback_attempts(request.format_policy);
+        let mut last_error = None;
+        let mut selected_stage = None;
+        let mut last_stage = None;
 
-        // Use the fluent download builder
-        let result_path = self
-            .downloader
-            .download(&video, &output_path)
-            .video_quality(video_quality)
-            .audio_quality(AudioQuality::Best)
-            .execute()
-            .await
-            .map_err(|e| YtdlpError::DownloadError(e.to_string()))?;
+        let mut result_path = None;
+        for attempt in &attempts {
+            last_stage = Some(attempt.stage);
+            debug!(
+                stage = ?attempt.stage,
+                video_quality = ?attempt.video_quality,
+                video_codec = ?attempt.video_codec,
+                audio_codec = ?attempt.audio_codec,
+                preset = ?request.format_policy.preset,
+                quality = ?request.format_policy.quality,
+                "Attempting format selection"
+            );
+
+            match self
+                .downloader
+                .download(&video, &output_path)
+                .video_quality(attempt.video_quality)
+                .audio_quality(request.format_policy.audio_quality)
+                .video_codec(attempt.video_codec.clone())
+                .audio_codec(attempt.audio_codec.clone())
+                .execute()
+                .await
+            {
+                Ok(path) => {
+                    selected_stage = Some(attempt.stage);
+                    result_path = Some(path);
+                    break;
+                }
+                Err(err) => {
+                    last_error = Some(err.to_string());
+                    debug!(
+                        stage = ?attempt.stage,
+                        error = last_error.as_deref(),
+                        "Format selection attempt failed"
+                    );
+                }
+            }
+        }
+
+        let result_path = result_path.ok_or_else(|| {
+            let stage = last_stage.map_or_else(|| "none".to_string(), |value| format!("{value:?}"));
+            let detail = last_error.unwrap_or_else(|| "no compatible format found".to_string());
+            YtdlpError::DownloadError(format!(
+                "format fallback exhausted for preset {:?} and quality {:?} (last_stage={stage}): {detail}",
+                request.format_policy.preset, request.format_policy.quality
+            ))
+        })?;
+
+        if let Some(stage) = selected_stage {
+            debug!(stage = ?stage, "Selected format fallback stage");
+        }
 
         // Get file size
         let file_size = tokio::fs::metadata(&result_path)
@@ -501,17 +588,123 @@ impl YtdlpClient {
     }
 }
 
-/// Convert our Quality enum to yt-dlp's `VideoQuality`.
-const fn quality_to_yt_quality(quality: &Quality) -> VideoQuality {
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FallbackAttempt {
+    stage: FallbackStage,
+    video_quality: VideoQuality,
+    video_codec: VideoCodecPreference,
+    audio_codec: AudioCodecPreference,
+}
+
+fn fallback_attempts(policy: &FormatPolicy) -> Vec<FallbackAttempt> {
+    let quality_levels = quality_fallback_chain(&policy.quality);
+    let mut attempts = Vec::new();
+
+    for video_quality in quality_levels {
+        if policy.preset == OutputPreset::Auto {
+            attempts.push(FallbackAttempt {
+                stage: FallbackStage::AnyCodec,
+                video_quality,
+                video_codec: VideoCodecPreference::Any,
+                audio_codec: AudioCodecPreference::Any,
+            });
+            continue;
+        }
+
+        attempts.push(FallbackAttempt {
+            stage: FallbackStage::PreferredCodecPair,
+            video_quality,
+            video_codec: policy.video_codec.clone(),
+            audio_codec: policy.audio_codec.clone(),
+        });
+        attempts.push(FallbackAttempt {
+            stage: FallbackStage::PreferredVideoCodec,
+            video_quality,
+            video_codec: policy.video_codec.clone(),
+            audio_codec: AudioCodecPreference::Any,
+        });
+        attempts.push(FallbackAttempt {
+            stage: FallbackStage::AnyCodec,
+            video_quality,
+            video_codec: VideoCodecPreference::Any,
+            audio_codec: AudioCodecPreference::Any,
+        });
+    }
+
+    let mut deduped = Vec::new();
+    for attempt in attempts {
+        if !deduped.contains(&attempt) {
+            deduped.push(attempt);
+        }
+    }
+
+    deduped
+}
+
+fn quality_fallback_chain(quality: &Quality) -> Vec<VideoQuality> {
     match quality {
-        Quality::Best => VideoQuality::Best,
-        Quality::Q4320p => VideoQuality::CustomHeight(4320),
-        Quality::Q2160p => VideoQuality::CustomHeight(2160),
-        Quality::Q1440p => VideoQuality::CustomHeight(1440),
-        Quality::Q1080p => VideoQuality::CustomHeight(1080),
-        Quality::Q720p => VideoQuality::CustomHeight(720),
-        Quality::Q480p => VideoQuality::CustomHeight(480),
-        Quality::AudioOnly => VideoQuality::Worst, // Audio-only handled differently
+        Quality::Best => vec![
+            VideoQuality::Best,
+            VideoQuality::High,
+            VideoQuality::Medium,
+            VideoQuality::Low,
+            VideoQuality::Worst,
+        ],
+        Quality::Q4320p => vec![
+            VideoQuality::CustomHeight(4320),
+            VideoQuality::CustomHeight(2160),
+            VideoQuality::CustomHeight(1440),
+            VideoQuality::CustomHeight(1080),
+            VideoQuality::CustomHeight(720),
+            VideoQuality::CustomHeight(480),
+            VideoQuality::High,
+            VideoQuality::Medium,
+            VideoQuality::Low,
+            VideoQuality::Worst,
+        ],
+        Quality::Q2160p => vec![
+            VideoQuality::CustomHeight(2160),
+            VideoQuality::CustomHeight(1440),
+            VideoQuality::CustomHeight(1080),
+            VideoQuality::CustomHeight(720),
+            VideoQuality::CustomHeight(480),
+            VideoQuality::High,
+            VideoQuality::Medium,
+            VideoQuality::Low,
+            VideoQuality::Worst,
+        ],
+        Quality::Q1440p => vec![
+            VideoQuality::CustomHeight(1440),
+            VideoQuality::CustomHeight(1080),
+            VideoQuality::CustomHeight(720),
+            VideoQuality::CustomHeight(480),
+            VideoQuality::High,
+            VideoQuality::Medium,
+            VideoQuality::Low,
+            VideoQuality::Worst,
+        ],
+        Quality::Q1080p => vec![
+            VideoQuality::CustomHeight(1080),
+            VideoQuality::CustomHeight(720),
+            VideoQuality::CustomHeight(480),
+            VideoQuality::High,
+            VideoQuality::Medium,
+            VideoQuality::Low,
+            VideoQuality::Worst,
+        ],
+        Quality::Q720p => vec![
+            VideoQuality::CustomHeight(720),
+            VideoQuality::CustomHeight(480),
+            VideoQuality::Medium,
+            VideoQuality::Low,
+            VideoQuality::Worst,
+        ],
+        Quality::Q480p => vec![
+            VideoQuality::CustomHeight(480),
+            VideoQuality::Low,
+            VideoQuality::Worst,
+        ],
+        Quality::AudioOnly => vec![VideoQuality::Worst],
     }
 }
 
@@ -868,15 +1061,42 @@ mod tests {
     }
 
     #[test]
-    fn test_quality_conversion() {
-        assert!(matches!(
-            quality_to_yt_quality(&Quality::Best),
-            VideoQuality::Best
-        ));
-        assert!(matches!(
-            quality_to_yt_quality(&Quality::Q1080p),
-            VideoQuality::CustomHeight(1080)
-        ));
+    fn test_format_policy_browser_defaults() {
+        let policy = FormatPolicy::from(&Quality::Q1080p, &OutputPreset::Browser);
+
+        assert_eq!(policy.preset, OutputPreset::Browser);
+        assert!(matches!(policy.video_codec, VideoCodecPreference::AVC1));
+        assert!(matches!(policy.audio_codec, AudioCodecPreference::AAC));
+        assert_eq!(policy.container_ext, "mp4");
+    }
+
+    #[test]
+    fn test_quality_fallback_chain_orders_descending() {
+        let chain = quality_fallback_chain(&Quality::Q1080p);
+        assert_eq!(chain.first(), Some(&VideoQuality::CustomHeight(1080)));
+        assert_eq!(chain.last(), Some(&VideoQuality::Worst));
+    }
+
+    #[test]
+    fn test_fallback_attempts_include_all_stages_for_browser() {
+        let policy = FormatPolicy::from(&Quality::Q480p, &OutputPreset::Browser);
+        let attempts = fallback_attempts(&policy);
+
+        assert!(
+            attempts
+                .iter()
+                .any(|attempt| attempt.stage == FallbackStage::PreferredCodecPair)
+        );
+        assert!(
+            attempts
+                .iter()
+                .any(|attempt| attempt.stage == FallbackStage::PreferredVideoCodec)
+        );
+        assert!(
+            attempts
+                .iter()
+                .any(|attempt| attempt.stage == FallbackStage::AnyCodec)
+        );
     }
 
     #[test]

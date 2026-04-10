@@ -218,6 +218,7 @@ impl Message<EnqueueDownload> for DownloadSupervisor {
             let config = DownloadConfig {
                 timeout: download_timeout,
                 quality: profile.quality.clone(),
+                output_preset: profile.output_preset.clone(),
                 output_dir: PathBuf::from(&profile.output_dir),
                 naming_template: profile.naming_template.clone(),
                 source_id: source.id,

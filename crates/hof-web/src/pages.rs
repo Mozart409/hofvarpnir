@@ -26,7 +26,7 @@ use hof_core::{
     db::{self, CreateProfile, CreateSource, UpdateProfile, UpdateSource},
     domain::{
         activity::{ActivityEventType, ActivitySeverity},
-        profile::{Profile, Quality},
+        profile::{OutputPreset, Profile, Quality},
         source::{Source, SourceType},
         system::IssueSeverity,
         video::{DownloadProgress, VideoStatus},
@@ -710,6 +710,7 @@ async fn create_profile(
         user_id: auth.user_id,
         name: form.name.trim(),
         quality: form.quality.into(),
+        output_preset: OutputPreset::Browser,
         naming_template,
         output_dir: form.output_dir.trim(),
         include_livestreams: form.include_livestreams.is_some(),
@@ -780,6 +781,7 @@ async fn update_profile(
     let update = UpdateProfile {
         name: Some(form.name.trim()),
         quality: Some(form.quality.into()),
+        output_preset: None,
         naming_template: Some(naming_template),
         output_dir: Some(form.output_dir.trim()),
         include_livestreams: Some(form.include_livestreams.is_some()),
