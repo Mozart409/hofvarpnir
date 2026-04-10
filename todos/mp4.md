@@ -151,35 +151,35 @@ Graceful fallback requirement (explicit):
 
 ### Phase 3 - Output Path and Extension Semantics
 
-- [ ] Refactor `render_output_relative_path()` to accept `container_ext`.
-- [ ] Replace hardcoded `.mkv` usage with policy-driven extension.
-- [ ] Disable extension forcing for `Quality::AudioOnly`.
-- [ ] Ensure fallback filename generation honors non-audio and audio-only rules.
+- [x] Refactor `render_output_relative_path()` to accept `container_ext`.
+- [x] Replace hardcoded `.mkv` usage with policy-driven extension.
+- [x] Disable extension forcing for `Quality::AudioOnly`.
+- [x] Ensure fallback filename generation honors non-audio and audio-only rules.
 
 ### Phase 4 - API and Web UI Exposure
 
-- [ ] Add `output_preset` to API request/response DTOs in `crates/hof-api/src/routes/profiles.rs`.
-- [ ] Validate and persist preset through create/update handlers.
-- [ ] Add preset field to web form model (`OutputPresetForm`) in `crates/hof-web/src/pages.rs`.
-- [ ] Add dropdowns in create/edit profile UI with agreed labels.
+- [x] Add `output_preset` to API request/response DTOs in `crates/hof-api/src/routes/profiles.rs`.
+- [x] Validate and persist preset through create/update handlers.
+- [x] Add preset field to web form model (`OutputPresetForm`) in `crates/hof-web/src/pages.rs`.
+- [x] Add dropdowns in create/edit profile UI with agreed labels.
 
 ### Phase 5 - Error Contract and Observability
 
-- [ ] Introduce and wire error codes: `DOWNLOAD_FORMAT_UNAVAILABLE`, `DOWNLOAD_FORMAT_INVALID_PRESET`, `DOWNLOAD_EXECUTION_FAILED`.
-- [ ] Include machine-readable code + human message in API error responses.
-- [ ] Include code + preset + quality + fallback stage in worker/activity logs.
-- [ ] Ensure fallback exhaustion maps to stable, testable error output.
+- [x] Introduce and wire error codes: `DOWNLOAD_FORMAT_UNAVAILABLE`, `DOWNLOAD_FORMAT_INVALID_PRESET`, `DOWNLOAD_EXECUTION_FAILED`.
+- [x] Include machine-readable code + human message in API error responses.
+- [x] Include code + preset + quality + fallback stage in worker/activity logs.
+- [x] Ensure fallback exhaustion maps to stable, testable error output.
 
 ### Phase 6 - Verification and Hardening
 
-- [ ] Add/adjust unit tests for `FormatPolicy` mapping and fallback behavior.
-- [ ] Add/adjust unit tests for template rendering across `mp4`/`mkv` + audio-only no-force.
-- [ ] Add integration/API tests for profile preset round-trip and defaults.
+- [x] Add/adjust unit tests for `FormatPolicy` mapping and fallback behavior.
+- [x] Add/adjust unit tests for template rendering across `mp4`/`mkv` + audio-only no-force.
+- [x] Add integration/API tests for profile preset round-trip and defaults.
 - [ ] Add integration test for preferred-codec-unavailable -> fallback succeeds.
 - [ ] Add integration test for fallback exhaustion -> expected machine-readable error code.
 - [x] Run `cargo fmt --all`.
-- [ ] Run `cargo clippy --workspace --all-targets -- -W clippy::pedantic`.
-- [ ] Run targeted tests and then workspace tests.
+- [x] Run `cargo clippy --workspace --all-targets -- -W clippy::pedantic`.
+- [x] Run targeted tests and then workspace tests.
 
 ## Test Plan
 

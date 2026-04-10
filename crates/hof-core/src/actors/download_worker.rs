@@ -24,7 +24,8 @@ use crate::db;
 use crate::domain::profile::{OutputPreset, Quality};
 use crate::domain::video::{DownloadProgress, Video};
 use crate::ytdlp::{
-    DownloadRequest, DownloadResult, FormatPolicy, OutputTemplateData, YtdlpClient, YtdlpError,
+    DownloadRequest, DownloadResult, FallbackStage, FormatPolicy, OutputTemplateData, YtdlpClient,
+    YtdlpError,
 };
 
 const INCOMPLETE_DIR_NAME: &str = "incomplete";
@@ -62,6 +63,10 @@ pub enum DownloadOutcome {
     Failed {
         video_id: Ulid,
         error: String,
+        error_code: Option<&'static str>,
+        preset: OutputPreset,
+        quality: Quality,
+        fallback_stage: Option<FallbackStage>,
         is_rate_limited: bool,
     },
 }
@@ -174,6 +179,10 @@ impl DownloadWorker {
             return DownloadOutcome::Failed {
                 video_id,
                 error: format!("Database error: {e}"),
+                error_code: Some(YtdlpError::DOWNLOAD_EXECUTION_FAILED),
+                preset: self.config.output_preset.clone(),
+                quality: self.config.quality.clone(),
+                fallback_stage: None,
                 is_rate_limited: false,
             };
         }
@@ -208,6 +217,10 @@ impl DownloadWorker {
                 DownloadOutcome::Failed {
                     video_id,
                     error,
+                    error_code: Some(YtdlpError::DOWNLOAD_EXECUTION_FAILED),
+                    preset: self.config.output_preset.clone(),
+                    quality: self.config.quality.clone(),
+                    fallback_stage: None,
                     is_rate_limited: false,
                 }
             }
@@ -270,6 +283,10 @@ impl DownloadWorker {
                 return DownloadOutcome::Failed {
                     video_id,
                     error: message,
+                    error_code: Some(YtdlpError::DOWNLOAD_EXECUTION_FAILED),
+                    preset: self.config.output_preset.clone(),
+                    quality: self.config.quality.clone(),
+                    fallback_stage: None,
                     is_rate_limited: false,
                 };
             }
@@ -391,11 +408,29 @@ impl DownloadWorker {
         let video_id = self.video.id;
         let is_rate_limited = matches!(error, YtdlpError::RateLimited(_));
         let error_str = error.to_string();
+        let error_code = error.machine_code();
+        let fallback_stage = error.fallback_stage();
+        let preset = self.config.output_preset.clone();
+        let quality = self.config.quality.clone();
 
         if is_rate_limited {
-            warn!(error = %error_str, "Download rate limited");
+            warn!(
+                error = %error_str,
+                error_code,
+                preset = ?preset,
+                quality = ?quality,
+                fallback_stage = ?fallback_stage,
+                "Download rate limited"
+            );
         } else {
-            error!(error = %error_str, "Download failed");
+            error!(
+                error = %error_str,
+                error_code,
+                preset = ?preset,
+                quality = ?quality,
+                fallback_stage = ?fallback_stage,
+                "Download failed"
+            );
         }
 
         // Note: The supervisor will handle retry scheduling and database updates
@@ -404,6 +439,10 @@ impl DownloadWorker {
         DownloadOutcome::Failed {
             video_id,
             error: error_str,
+            error_code,
+            preset,
+            quality,
+            fallback_stage,
             is_rate_limited,
         }
     }

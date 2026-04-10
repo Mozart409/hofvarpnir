@@ -22,14 +22,24 @@ use ulid::Ulid;
 use crate::config::DownloadConfig as AppDownloadConfig;
 use crate::db;
 use crate::domain::activity::{ActivityEventType, ActivitySeverity};
-use crate::domain::profile::Profile;
+use crate::domain::profile::{OutputPreset, Profile, Quality};
 use crate::domain::source::Source;
 use crate::domain::video::{DownloadProgress, Video, VideoStatus};
+use crate::ytdlp::FallbackStage;
 use crate::ytdlp::YtdlpClient;
 
 use super::download_worker::{
     DownloadConfig, DownloadOutcome, DownloadWorker, DownloadWorkerArgs, StartDownload,
 };
+
+struct FailureContext<'a> {
+    error: &'a str,
+    error_code: Option<&'static str>,
+    preset: &'a OutputPreset,
+    quality: &'a Quality,
+    fallback_stage: Option<FallbackStage>,
+    is_rate_limited: bool,
+}
 
 /// Exponential backoff configuration.
 const BACKOFF_BASE_SECS: u64 = 120; // 2 minutes
@@ -385,9 +395,21 @@ impl Message<ReportOutcome> for DownloadSupervisor {
             DownloadOutcome::Failed {
                 video_id,
                 error,
+                error_code,
+                preset,
+                quality,
+                fallback_stage,
                 is_rate_limited,
             } => {
-                self.handle_failure(video_id, &error, is_rate_limited).await;
+                let failure = FailureContext {
+                    error: &error,
+                    error_code,
+                    preset: &preset,
+                    quality: &quality,
+                    fallback_stage,
+                    is_rate_limited,
+                };
+                self.handle_failure(video_id, failure).await;
             }
         }
     }
@@ -551,8 +573,9 @@ impl DownloadSupervisor {
     }
 
     /// Handle a download failure with retry scheduling.
-    async fn handle_failure(&mut self, video_id: Ulid, error: &str, is_rate_limited: bool) {
-        if is_rate_limited {
+    #[allow(clippy::too_many_lines)]
+    async fn handle_failure(&mut self, video_id: Ulid, failure: FailureContext<'_>) {
+        if failure.is_rate_limited {
             // Increase global rate limit backoff
             self.rate_limit_backoff_multiplier =
                 (self.rate_limit_backoff_multiplier * 2).min(MAX_RATE_LIMIT_MULTIPLIER);
@@ -582,12 +605,26 @@ impl DownloadSupervisor {
             error!(
                 video_id = %video_id,
                 attempts,
+                error_code = failure.error_code,
+                preset = ?failure.preset,
+                quality = ?failure.quality,
+                fallback_stage = ?failure.fallback_stage,
                 "Max attempts reached, marking as permanently failed"
             );
-            if let Err(e) = db::mark_video_failed(&self.pool, video_id, error, None).await {
+            let persisted_error = failure.error_code.map_or_else(
+                || failure.error.to_string(),
+                |code| format!("[{code}] {}", failure.error),
+            );
+            if let Err(e) =
+                db::mark_video_failed(&self.pool, video_id, &persisted_error, None).await
+            {
                 error!(error = %e, "Failed to mark video as permanently failed");
             }
-            let message = format!("Permanently failed after {attempts} attempts — {error}");
+            let code_text = failure.error_code.unwrap_or("UNKNOWN");
+            let message = format!(
+                "[{code_text}] Permanently failed after {attempts} attempts — preset={:?} quality={:?} stage={:?} — {}",
+                failure.preset, failure.quality, failure.fallback_stage, failure.error
+            );
             db::log_activity(
                 &self.pool,
                 ActivityEventType::DownloadFailed,
@@ -600,7 +637,7 @@ impl DownloadSupervisor {
             .await;
         } else {
             // Schedule retry with exponential backoff
-            let reason = if is_rate_limited {
+            let reason = if failure.is_rate_limited {
                 "rate_limited"
             } else {
                 "retry"
@@ -619,16 +656,29 @@ impl DownloadSupervisor {
                 attempts,
                 next_retry = %next_retry,
                 backoff_secs = capped_backoff,
+                error_code = failure.error_code,
+                preset = ?failure.preset,
+                quality = ?failure.quality,
+                fallback_stage = ?failure.fallback_stage,
                 "Scheduling retry"
             );
 
+            let persisted_error = failure.error_code.map_or_else(
+                || failure.error.to_string(),
+                |code| format!("[{code}] {}", failure.error),
+            );
             if let Err(e) =
-                db::mark_video_failed(&self.pool, video_id, error, Some(next_retry)).await
+                db::mark_video_failed(&self.pool, video_id, &persisted_error, Some(next_retry))
+                    .await
             {
                 error!(error = %e, "Failed to schedule retry");
             }
 
-            let message = format!("Retry #{attempts} scheduled at {next_retry} — {error}");
+            let code_text = failure.error_code.unwrap_or("UNKNOWN");
+            let message = format!(
+                "[{code_text}] Retry #{attempts} scheduled at {next_retry} — preset={:?} quality={:?} stage={:?} — {}",
+                failure.preset, failure.quality, failure.fallback_stage, failure.error
+            );
             db::log_activity(
                 &self.pool,
                 ActivityEventType::RetryScheduled,

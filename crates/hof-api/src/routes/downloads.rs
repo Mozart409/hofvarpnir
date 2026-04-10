@@ -72,6 +72,7 @@ pub struct VideoResponse {
     pub attempts: i32,
     pub next_retry: Option<DateTime<Utc>>,
     pub last_error: Option<String>,
+    pub last_error_code: Option<String>,
     pub file_path: Option<String>,
     pub file_size_bytes: Option<i64>,
     pub downloaded_at: Option<DateTime<Utc>>,
@@ -81,6 +82,8 @@ pub struct VideoResponse {
 
 impl From<Video> for VideoResponse {
     fn from(v: Video) -> Self {
+        let last_error_code = v.last_error.as_deref().and_then(extract_error_code);
+
         Self {
             id: v.id.to_string(),
             platform: v.platform,
@@ -94,6 +97,7 @@ impl From<Video> for VideoResponse {
             attempts: v.attempts,
             next_retry: v.next_retry,
             last_error: v.last_error,
+            last_error_code,
             file_path: v.file_path,
             file_size_bytes: v.file_size_bytes,
             downloaded_at: v.downloaded_at,
@@ -101,6 +105,19 @@ impl From<Video> for VideoResponse {
             updated_at: v.updated_at,
         }
     }
+}
+
+fn extract_error_code(error: &str) -> Option<String> {
+    if !error.starts_with('[') {
+        return None;
+    }
+
+    let closing = error.find(']')?;
+    if closing <= 1 {
+        return None;
+    }
+
+    Some(error[1..closing].to_string())
 }
 
 /// Response for retry endpoint.

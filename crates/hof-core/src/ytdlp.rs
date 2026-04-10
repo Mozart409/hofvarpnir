@@ -41,9 +41,37 @@ pub enum YtdlpError {
     #[error("Failed to fetch playlist info: {0}")]
     PlaylistError(String),
 
-    /// Failed to download video.
-    #[error("Failed to download video: {0}")]
-    DownloadError(String),
+    /// Preferred preset/quality could not be satisfied after fallback exhaustion.
+    #[error(
+        "Failed to download video: format fallback exhausted for preset {preset:?} and quality {quality:?} (last_stage={last_stage:?}): {detail}"
+    )]
+    FormatUnavailable {
+        preset: OutputPreset,
+        quality: Quality,
+        last_stage: Option<FallbackStage>,
+        detail: String,
+    },
+
+    /// Defensive error when preset-to-selector mapping is invalid.
+    #[error(
+        "Failed to download video: invalid format preset for preset {preset:?} and quality {quality:?}: {detail}"
+    )]
+    FormatInvalidPreset {
+        preset: OutputPreset,
+        quality: Quality,
+        detail: String,
+    },
+
+    /// yt-dlp execution failed after format selection.
+    #[error(
+        "Failed to download video: execution failed for preset {preset:?} and quality {quality:?} (stage={stage:?}): {detail}"
+    )]
+    DownloadExecutionFailed {
+        preset: OutputPreset,
+        quality: Quality,
+        stage: Option<FallbackStage>,
+        detail: String,
+    },
 
     /// Video not found or unavailable.
     #[error("Video unavailable: {0}")]
@@ -52,6 +80,40 @@ pub enum YtdlpError {
     /// Rate limited by the platform.
     #[error("Rate limited (HTTP 429): {0}")]
     RateLimited(String),
+}
+
+impl YtdlpError {
+    pub const DOWNLOAD_FORMAT_UNAVAILABLE: &str = "DOWNLOAD_FORMAT_UNAVAILABLE";
+    pub const DOWNLOAD_FORMAT_INVALID_PRESET: &str = "DOWNLOAD_FORMAT_INVALID_PRESET";
+    pub const DOWNLOAD_EXECUTION_FAILED: &str = "DOWNLOAD_EXECUTION_FAILED";
+
+    #[must_use]
+    pub const fn machine_code(&self) -> Option<&'static str> {
+        match self {
+            Self::FormatUnavailable { .. } => Some(Self::DOWNLOAD_FORMAT_UNAVAILABLE),
+            Self::FormatInvalidPreset { .. } => Some(Self::DOWNLOAD_FORMAT_INVALID_PRESET),
+            Self::DownloadExecutionFailed { .. } => Some(Self::DOWNLOAD_EXECUTION_FAILED),
+            Self::InitializationError(_)
+            | Self::MetadataError(_)
+            | Self::PlaylistError(_)
+            | Self::VideoUnavailable(_)
+            | Self::RateLimited(_) => None,
+        }
+    }
+
+    #[must_use]
+    pub const fn fallback_stage(&self) -> Option<FallbackStage> {
+        match self {
+            Self::FormatUnavailable { last_stage, .. } => *last_stage,
+            Self::DownloadExecutionFailed { stage, .. } => *stage,
+            Self::InitializationError(_)
+            | Self::MetadataError(_)
+            | Self::PlaylistError(_)
+            | Self::FormatInvalidPreset { .. }
+            | Self::VideoUnavailable(_)
+            | Self::RateLimited(_) => None,
+        }
+    }
 }
 
 impl From<yt_dlp::error::Error> for YtdlpError {
@@ -410,6 +472,7 @@ impl YtdlpClient {
     /// # Errors
     ///
     /// Returns an error if the download fails.
+    #[allow(clippy::too_many_lines)]
     #[instrument(skip(self, request), fields(url = %request.url, policy = ?request.format_policy))]
     pub async fn download_video(
         &self,
@@ -436,12 +499,19 @@ impl YtdlpClient {
             resolved_title,
             &platform_video_id,
             request.template_data,
+            request.format_policy.container_ext,
+            !matches!(request.format_policy.quality, Quality::AudioOnly),
         );
         let output_path = request.output_dir.join(output_relative_path);
 
         if let Some(parent) = output_path.parent() {
             tokio::fs::create_dir_all(parent).await.map_err(|e| {
-                YtdlpError::DownloadError(format!("Failed to create output subdirectory: {e}"))
+                YtdlpError::DownloadExecutionFailed {
+                    preset: request.format_policy.preset.clone(),
+                    quality: request.format_policy.quality.clone(),
+                    stage: None,
+                    detail: format!("Failed to create output subdirectory: {e}"),
+                }
             })?;
         }
 
@@ -490,12 +560,13 @@ impl YtdlpClient {
         }
 
         let result_path = result_path.ok_or_else(|| {
-            let stage = last_stage.map_or_else(|| "none".to_string(), |value| format!("{value:?}"));
             let detail = last_error.unwrap_or_else(|| "no compatible format found".to_string());
-            YtdlpError::DownloadError(format!(
-                "format fallback exhausted for preset {:?} and quality {:?} (last_stage={stage}): {detail}",
-                request.format_policy.preset, request.format_policy.quality
-            ))
+            YtdlpError::FormatUnavailable {
+                preset: request.format_policy.preset.clone(),
+                quality: request.format_policy.quality.clone(),
+                last_stage,
+                detail,
+            }
         })?;
 
         if let Some(stage) = selected_stage {
@@ -549,7 +620,12 @@ impl YtdlpClient {
         // Create output directory if needed
         tokio::fs::create_dir_all(request.output_dir)
             .await
-            .map_err(|e| YtdlpError::DownloadError(format!("Failed to create output dir: {e}")))?;
+            .map_err(|e| YtdlpError::DownloadExecutionFailed {
+                preset: request.format_policy.preset.clone(),
+                quality: request.format_policy.quality.clone(),
+                stage: None,
+                detail: format!("Failed to create output dir: {e}"),
+            })?;
 
         self.download_video(request).await
     }
@@ -713,14 +789,17 @@ fn quality_fallback_chain(quality: &Quality) -> Vec<VideoQuality> {
 /// Supported placeholders:
 /// - `{title}` / `{{ title }}` -> video title (sanitized)
 /// - `{id}` / `{{ id }}` -> platform video ID (sanitized)
-/// - `{ext}` / `%(ext)s` -> final container extension (`mkv`)
+/// - `{ext}` / `%(ext)s` -> final container extension (when forced)
 /// - `{{ source_custom_name/or default }}` -> source display name
 /// - `{{ season_by_year__episode_by_date_and_index }}` -> `SYYYYEYYYYMMDD-III`
+#[allow(clippy::literal_string_with_formatting_args)]
 fn render_output_relative_path(
     template: &str,
     title: &str,
     platform_video_id: &str,
     template_data: &OutputTemplateData,
+    container_ext: &str,
+    force_container_ext: bool,
 ) -> PathBuf {
     let safe_title = sanitize_filename_component(title);
     let safe_id = sanitize_filename_component(platform_video_id);
@@ -735,10 +814,15 @@ fn render_output_relative_path(
 
     // Double-brace placeholders MUST be replaced before single-brace ones,
     // otherwise `{{ext}}` is partially matched by `{ext}` leaving residual braces.
-    #[allow(clippy::literal_string_with_formatting_args)]
+    let ext = if force_container_ext {
+        container_ext
+    } else {
+        ""
+    };
+
     let mut rendered = template
-        .replace("{{ ext }}", "mkv")
-        .replace("{{ext}}", "mkv")
+        .replace("{{ ext }}", ext)
+        .replace("{{ext}}", ext)
         .replace("{{ title }}", &safe_title)
         .replace("{{title}}", &safe_title)
         .replace("{{ id }}", &safe_id)
@@ -760,11 +844,15 @@ fn render_output_relative_path(
         .replace("{title}", &safe_title)
         .replace("{id}", &safe_id)
         .replace("{year}", &year)
-        .replace("{ext}", "mkv")
-        .replace("%(ext)s", "mkv");
+        .replace("{ext}", ext)
+        .replace("%(ext)s", ext);
 
     if rendered.trim().is_empty() {
-        rendered = format!("{safe_title}-{safe_id}.mkv");
+        rendered = if force_container_ext {
+            format!("{safe_title}-{safe_id}.{container_ext}")
+        } else {
+            format!("{safe_title}-{safe_id}")
+        };
     }
 
     let rendered = rendered.replace('\\', "/");
@@ -777,7 +865,11 @@ fn render_output_relative_path(
         .collect();
 
     if segments.is_empty() {
-        segments.push(format!("{safe_title}-{safe_id}.mkv"));
+        segments.push(if force_container_ext {
+            format!("{safe_title}-{safe_id}.{container_ext}")
+        } else {
+            format!("{safe_title}-{safe_id}")
+        });
     }
 
     // SAFETY: segments is guaranteed non-empty - we push a fallback above if it was empty
@@ -785,15 +877,27 @@ fn render_output_relative_path(
         unreachable!("segments is guaranteed to contain at least one segment")
     };
 
-    let is_mkv_extension = Path::new(last_segment)
-        .extension()
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("mkv"));
-    if !is_mkv_extension {
-        last_segment.push_str(".mkv");
-    }
+    if force_container_ext {
+        let has_container_extension = Path::new(last_segment)
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case(container_ext));
+        if !has_container_extension {
+            last_segment.push('.');
+            last_segment.push_str(container_ext);
+        }
 
-    while last_segment.ends_with(".mkv.mkv") {
-        last_segment.truncate(last_segment.len().saturating_sub(4));
+        let duplicate = format!(".{container_ext}.{container_ext}");
+        while last_segment
+            .to_ascii_lowercase()
+            .ends_with(&duplicate.to_ascii_lowercase())
+        {
+            last_segment.truncate(last_segment.len().saturating_sub(container_ext.len() + 1));
+        }
+    } else {
+        *last_segment = last_segment.trim_end_matches('.').to_string();
+        if last_segment.is_empty() {
+            *last_segment = format!("{safe_title}-{safe_id}");
+        }
     }
 
     segments
@@ -1001,6 +1105,8 @@ mod tests {
             "Great Race",
             "Hx4xrg6wVNI",
             &template_data(),
+            "mkv",
+            true,
         );
         assert_eq!(output, PathBuf::from("Great Race-Hx4xrg6wVNI.mkv"));
     }
@@ -1012,14 +1118,22 @@ mod tests {
             "F1 overtakes",
             "Hx4xrg6wVNI",
             &template_data(),
+            "mkv",
+            true,
         );
         assert_eq!(output, PathBuf::from("F1 overtakes-Hx4xrg6wVNI.mkv"));
     }
 
     #[test]
     fn test_render_output_filename_sanitizes_path_chars() {
-        let output =
-            render_output_relative_path("../{title}/{id}", "a/b:c*?", "id/1", &template_data());
+        let output = render_output_relative_path(
+            "../{title}/{id}",
+            "a/b:c*?",
+            "id/1",
+            &template_data(),
+            "mkv",
+            true,
+        );
         let output_str = output.to_string_lossy();
         assert!(!output_str.contains(".."));
         assert!(!output_str.contains('\\'));
@@ -1037,6 +1151,8 @@ mod tests {
             "F1 Overtake Breakdown",
             "Hx4xrg6wVNI",
             &template_data(),
+            "mkv",
+            true,
         );
 
         assert_eq!(
@@ -1052,6 +1168,8 @@ mod tests {
             "This shot in the F1 movie could've been a lot better",
             "abc123",
             &template_data(),
+            "mkv",
+            true,
         );
 
         assert_eq!(
@@ -1170,6 +1288,8 @@ mod tests {
             "Monaco GP Highlights",
             "abc123",
             &template_data(),
+            "mkv",
+            true,
         );
 
         assert_eq!(
@@ -1190,5 +1310,66 @@ mod tests {
         let template = "../{{ title }}.{{ ext }}";
         let error = validate_output_template(template).expect_err("template should fail");
         assert!(error.contains("path traversal"));
+    }
+
+    #[test]
+    fn test_machine_error_code_for_format_unavailable() {
+        let error = YtdlpError::FormatUnavailable {
+            preset: OutputPreset::Browser,
+            quality: Quality::Q1080p,
+            last_stage: Some(FallbackStage::AnyCodec),
+            detail: "no compatible format found".to_string(),
+        };
+
+        assert_eq!(
+            error.machine_code(),
+            Some(YtdlpError::DOWNLOAD_FORMAT_UNAVAILABLE)
+        );
+        assert_eq!(error.fallback_stage(), Some(FallbackStage::AnyCodec));
+    }
+
+    #[test]
+    fn test_machine_error_code_for_download_execution_failed() {
+        let error = YtdlpError::DownloadExecutionFailed {
+            preset: OutputPreset::Tv,
+            quality: Quality::Best,
+            stage: Some(FallbackStage::PreferredCodecPair),
+            detail: "yt-dlp exited with status 1".to_string(),
+        };
+
+        assert_eq!(
+            error.machine_code(),
+            Some(YtdlpError::DOWNLOAD_EXECUTION_FAILED)
+        );
+        assert_eq!(
+            error.fallback_stage(),
+            Some(FallbackStage::PreferredCodecPair)
+        );
+    }
+
+    #[test]
+    fn test_render_output_filename_uses_mp4_when_requested() {
+        let output = render_output_relative_path(
+            "{title}-{id}.{ext}",
+            "Great Race",
+            "Hx4xrg6wVNI",
+            &template_data(),
+            "mp4",
+            true,
+        );
+        assert_eq!(output, PathBuf::from("Great Race-Hx4xrg6wVNI.mp4"));
+    }
+
+    #[test]
+    fn test_render_output_filename_audio_only_does_not_force_extension() {
+        let output = render_output_relative_path(
+            "{title}-{id}.{ext}",
+            "Great Race",
+            "Hx4xrg6wVNI",
+            &template_data(),
+            "mp4",
+            false,
+        );
+        assert_eq!(output, PathBuf::from("Great Race-Hx4xrg6wVNI"));
     }
 }

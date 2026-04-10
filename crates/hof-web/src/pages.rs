@@ -109,6 +109,24 @@ impl From<QualityForm> for Quality {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "lowercase")]
+enum OutputPresetForm {
+    Auto,
+    Browser,
+    Tv,
+}
+
+impl From<OutputPresetForm> for OutputPreset {
+    fn from(value: OutputPresetForm) -> Self {
+        match value {
+            OutputPresetForm::Auto => Self::Auto,
+            OutputPresetForm::Browser => Self::Browser,
+            OutputPresetForm::Tv => Self::Tv,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "lowercase")]
 enum SourceTypeForm {
     Channel,
     Playlist,
@@ -127,6 +145,7 @@ impl From<SourceTypeForm> for SourceType {
 pub struct ProfileForm {
     name: String,
     quality: QualityForm,
+    output_preset: OutputPresetForm,
     naming_template: String,
     output_dir: String,
     include_livestreams: Option<String>,
@@ -648,6 +667,14 @@ async fn profiles_page(
                             }
                         }
                     }
+                    div {
+                        label class="block text-sm font-medium text-slate-700 dark:text-slate-300" for="output_preset" { "Output Preset" }
+                        select class="mt-1 w-full rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 px-3 py-2 text-sm text-slate-900 dark:text-slate-100 shadow-sm" name="output_preset" id="output_preset" required {
+                            @for preset in output_preset_options() {
+                                option value=(preset.value) selected[(preset.value == "browser")] { (preset.label) }
+                            }
+                        }
+                    }
                     (input_text("Name", "name", "Daily Archive", true, ""))
                     (input_text("Naming Template", "naming_template", "{{source_custom_name/or default}}/{{year}}/{{title}}.{{ext}}", true, "{{source_custom_name/or default}}/{{year}}/{{title}}.{{ext}}"))
                     (input_text("Output Directory", "output_dir", "/data/videos", true, ""))
@@ -710,7 +737,7 @@ async fn create_profile(
         user_id: auth.user_id,
         name: form.name.trim(),
         quality: form.quality.into(),
-        output_preset: OutputPreset::Browser,
+        output_preset: form.output_preset.into(),
         naming_template,
         output_dir: form.output_dir.trim(),
         include_livestreams: form.include_livestreams.is_some(),
@@ -781,7 +808,7 @@ async fn update_profile(
     let update = UpdateProfile {
         name: Some(form.name.trim()),
         quality: Some(form.quality.into()),
-        output_preset: None,
+        output_preset: Some(form.output_preset.into()),
         naming_template: Some(naming_template),
         output_dir: Some(form.output_dir.trim()),
         include_livestreams: Some(form.include_livestreams.is_some()),
@@ -2556,6 +2583,14 @@ fn profile_editor(profile: &Profile) -> Markup {
                         }
                     }
                 }
+                div {
+                    label class="block text-sm font-medium text-slate-700 dark:text-slate-300" { "Output Preset" }
+                    select class="mt-1 w-full rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 px-3 py-2 text-sm text-slate-900 dark:text-slate-100 shadow-sm" name="output_preset" required {
+                        @for preset in output_preset_options() {
+                            option value=(preset.value) selected[(preset.value == output_preset_value(&profile.output_preset))] { (preset.label) }
+                        }
+                    }
+                }
                 (input_text("Name", "name", "", true, &profile.name))
                 (input_text("Naming Template", "naming_template", "", true, &profile.naming_template))
                 (input_text("Output Directory", "output_dir", "", true, &profile.output_dir))
@@ -2846,6 +2881,28 @@ struct QualityOption {
     label: &'static str,
 }
 
+const fn output_preset_options() -> &'static [OutputPresetOption] {
+    &[
+        OutputPresetOption {
+            value: "auto",
+            label: "Auto (best quality)",
+        },
+        OutputPresetOption {
+            value: "browser",
+            label: "Browser (Jellyfin/web direct-play)",
+        },
+        OutputPresetOption {
+            value: "tv",
+            label: "TV (smart TV direct-play)",
+        },
+    ]
+}
+
+struct OutputPresetOption {
+    value: &'static str,
+    label: &'static str,
+}
+
 const fn quality_label(quality: &Quality) -> &'static str {
     match quality {
         Quality::Best => "Best",
@@ -2869,6 +2926,14 @@ const fn quality_value(quality: &Quality) -> &'static str {
         Quality::Q720p => "720p",
         Quality::Q480p => "480p",
         Quality::AudioOnly => "audio_only",
+    }
+}
+
+const fn output_preset_value(output_preset: &OutputPreset) -> &'static str {
+    match output_preset {
+        OutputPreset::Auto => "auto",
+        OutputPreset::Browser => "browser",
+        OutputPreset::Tv => "tv",
     }
 }
 
