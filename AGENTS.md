@@ -337,6 +337,52 @@ crates/
 - **Metrics**: metrics, metrics-exporter-prometheus
 - **Video**: yt-dlp
 
+## Recent Download Features (MP4/Direct-Play Work)
+
+This repository now includes profile-level output preset behavior for download format selection.
+
+- **Profile output preset** (`OutputPreset`):
+  - `Auto` -> keep broad compatibility behavior (`mkv`, any codecs)
+  - `Browser` -> direct-play preference (`mp4`, AVC/H.264 + AAC)
+  - `Tv` -> direct-play preference (`mp4`, HEVC + AAC)
+- `output_preset` is persisted in PostgreSQL (`profiles.output_preset`) and exposed through API + web profile forms.
+
+### Download policy model
+
+- `FormatPolicy` (in `crates/hof-core/src/ytdlp.rs`) is resolved from `(Quality, OutputPreset)`.
+- Download fallback is deterministic and staged (`FallbackStage`):
+  1. preferred video+audio codec pair
+  2. preferred video codec + any audio
+  3. any muxable codec pair
+  4. then quality is relaxed until exhausted
+- On exhaustion, download returns a structured format-unavailable error.
+
+### Output path/extension behavior
+
+- Output template rendering is container-aware (`container_ext`) instead of hardcoded `.mkv`.
+- For `Quality::AudioOnly`, extension forcing is disabled; final extension is determined by yt-dlp output.
+
+### Error contract
+
+Machine-readable error codes for download failures are implemented in `YtdlpError`:
+
+- `DOWNLOAD_FORMAT_UNAVAILABLE`
+- `DOWNLOAD_FORMAT_INVALID_PRESET`
+- `DOWNLOAD_EXECUTION_FAILED`
+
+These codes are propagated into worker/supervisor logs and persisted failure text (`[CODE] ...`).
+API download responses expose parsed `last_error_code` when available.
+
+### Testing guidance for this area
+
+- Targeted fallback tests live in `crates/hof-core/src/ytdlp.rs`.
+- Validate end-to-end status/error behavior with:
+
+```bash
+cargo test -p hof-core ytdlp::tests::test_fallback_
+cargo test -p hof-api download_tests::test_video_response_
+```
+
 ## CI Requirements
 
 All PRs must pass:
