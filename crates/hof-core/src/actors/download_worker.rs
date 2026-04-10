@@ -21,9 +21,11 @@ use tracing::{debug, error, info, instrument, warn};
 use ulid::Ulid;
 
 use crate::db;
-use crate::domain::profile::Quality;
+use crate::domain::profile::{OutputPreset, Quality};
 use crate::domain::video::{DownloadProgress, Video};
-use crate::ytdlp::{DownloadRequest, DownloadResult, OutputTemplateData, YtdlpClient, YtdlpError};
+use crate::ytdlp::{
+    DownloadRequest, DownloadResult, FormatPolicy, OutputTemplateData, YtdlpClient, YtdlpError,
+};
 
 const INCOMPLETE_DIR_NAME: &str = "incomplete";
 const COMPLETED_DIR_NAME: &str = "completed";
@@ -35,6 +37,8 @@ pub struct DownloadConfig {
     pub timeout: Duration,
     /// Quality setting for the download.
     pub quality: Quality,
+    /// Output preset used to resolve codec/container preferences.
+    pub output_preset: OutputPreset,
     /// Output directory for the downloaded file.
     pub output_dir: PathBuf,
     /// Naming template for the output file.
@@ -182,12 +186,13 @@ impl DownloadWorker {
 
         // Execute download with timeout
         let incomplete_dir = self.incomplete_dir();
+        let format_policy = FormatPolicy::from(&self.config.quality, &self.config.output_preset);
         let download_future = self.ytdlp.download_video_to_dir(DownloadRequest {
             url: &url,
             output_dir: &incomplete_dir,
             naming_template: &self.config.naming_template,
             template_data: &template_data,
-            quality: &self.config.quality,
+            format_policy: &format_policy,
             video_id,
             progress_tx: Some(self.progress_tx.clone()),
         });

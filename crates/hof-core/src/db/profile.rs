@@ -4,7 +4,7 @@ use sqlx::postgres::PgPool;
 use ulid::Ulid;
 
 use super::DbError;
-use crate::domain::profile::{Profile, ProfileRow, Quality};
+use crate::domain::profile::{OutputPreset, Profile, ProfileRow, Quality};
 
 /// Data required to create a new profile.
 #[derive(Debug, Clone)]
@@ -12,6 +12,7 @@ pub struct CreateProfile<'a> {
     pub user_id: Ulid,
     pub name: &'a str,
     pub quality: Quality,
+    pub output_preset: OutputPreset,
     pub naming_template: &'a str,
     pub output_dir: &'a str,
     pub include_livestreams: bool,
@@ -25,6 +26,7 @@ pub struct CreateProfile<'a> {
 pub struct UpdateProfile<'a> {
     pub name: Option<&'a str>,
     pub quality: Option<Quality>,
+    pub output_preset: Option<OutputPreset>,
     pub naming_template: Option<&'a str>,
     pub output_dir: Option<&'a str>,
     pub include_livestreams: Option<bool>,
@@ -43,9 +45,9 @@ pub async fn create_profile(pool: &PgPool, data: CreateProfile<'_>) -> Result<Pr
     let row = sqlx::query_as::<_, ProfileRow>(
         r"
         INSERT INTO profiles (id, user_id, name, quality, naming_template, output_dir,
-                              include_livestreams, include_shorts, storage_quota_bytes, retention_days)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-        RETURNING id, user_id, name, quality, naming_template, output_dir,
+                              output_preset, include_livestreams, include_shorts, storage_quota_bytes, retention_days)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+        RETURNING id, user_id, name, quality, output_preset, naming_template, output_dir,
                   include_livestreams, include_shorts, storage_quota_bytes, retention_days,
                   created_at, updated_at
         ",
@@ -56,6 +58,7 @@ pub async fn create_profile(pool: &PgPool, data: CreateProfile<'_>) -> Result<Pr
     .bind(&data.quality)
     .bind(data.naming_template)
     .bind(data.output_dir)
+    .bind(&data.output_preset)
     .bind(data.include_livestreams)
     .bind(data.include_shorts)
     .bind(data.storage_quota_bytes)
@@ -75,6 +78,7 @@ pub async fn get_profile(pool: &PgPool, id: Ulid) -> Result<Profile, DbError> {
     let row = sqlx::query_as::<_, ProfileRow>(
         r"
         SELECT id, user_id, name, quality, naming_template, output_dir,
+               output_preset,
                include_livestreams, include_shorts, storage_quota_bytes, retention_days,
                created_at, updated_at
         FROM profiles
@@ -98,6 +102,7 @@ pub async fn list_profiles_for_user(pool: &PgPool, user_id: Ulid) -> Result<Vec<
     let rows = sqlx::query_as::<_, ProfileRow>(
         r"
         SELECT id, user_id, name, quality, naming_template, output_dir,
+               output_preset,
                include_livestreams, include_shorts, storage_quota_bytes, retention_days,
                created_at, updated_at
         FROM profiles
@@ -124,6 +129,7 @@ pub async fn list_profiles(pool: &PgPool) -> Result<Vec<Profile>, DbError> {
     let rows = sqlx::query_as::<_, ProfileRow>(
         r"
         SELECT id, user_id, name, quality, naming_template, output_dir,
+               output_preset,
                include_livestreams, include_shorts, storage_quota_bytes, retention_days,
                created_at, updated_at
         FROM profiles
@@ -154,14 +160,15 @@ pub async fn update_profile(
         UPDATE profiles
         SET name = COALESCE($2, name),
             quality = COALESCE($3, quality),
-            naming_template = COALESCE($4, naming_template),
-            output_dir = COALESCE($5, output_dir),
-            include_livestreams = COALESCE($6, include_livestreams),
-            include_shorts = COALESCE($7, include_shorts),
-            storage_quota_bytes = COALESCE($8, storage_quota_bytes),
-            retention_days = CASE WHEN $9 THEN $10 ELSE retention_days END
+            output_preset = COALESCE($4, output_preset),
+            naming_template = COALESCE($5, naming_template),
+            output_dir = COALESCE($6, output_dir),
+            include_livestreams = COALESCE($7, include_livestreams),
+            include_shorts = COALESCE($8, include_shorts),
+            storage_quota_bytes = COALESCE($9, storage_quota_bytes),
+            retention_days = CASE WHEN $10 THEN $11 ELSE retention_days END
         WHERE id = $1
-        RETURNING id, user_id, name, quality, naming_template, output_dir,
+        RETURNING id, user_id, name, quality, output_preset, naming_template, output_dir,
                   include_livestreams, include_shorts, storage_quota_bytes, retention_days,
                   created_at, updated_at
         ",
@@ -169,6 +176,7 @@ pub async fn update_profile(
     .bind(id.to_string())
     .bind(data.name)
     .bind(data.quality.as_ref())
+    .bind(data.output_preset.as_ref())
     .bind(data.naming_template)
     .bind(data.output_dir)
     .bind(data.include_livestreams)

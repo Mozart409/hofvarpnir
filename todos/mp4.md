@@ -136,18 +136,18 @@ Graceful fallback requirement (explicit):
 
 ### Phase 1 - Persistence and Domain Wiring
 
-- [ ] Add `output_preset` PostgreSQL enum + `profiles.output_preset` column migration.
-- [ ] Backfill existing rows to `browser` and enforce `NOT NULL` + default.
-- [ ] Update `Profile`, `ProfileRow`, `CreateProfile`, `UpdateProfile` in `hof-core`.
-- [ ] Update profile CRUD SQL and mapping for read/write support.
+- [x] Add `output_preset` PostgreSQL enum + `profiles.output_preset` column migration.
+- [x] Backfill existing rows to `browser` and enforce `NOT NULL` + default.
+- [x] Update `Profile`, `ProfileRow`, `CreateProfile`, `UpdateProfile` in `hof-core`.
+- [x] Update profile CRUD SQL and mapping for read/write support.
 
 ### Phase 2 - Core Download Policy Refactor
 
-- [ ] Add `FormatPolicy` and `build_format_policy(quality, preset)` in `crates/hof-core/src/ytdlp.rs`.
-- [ ] Update `DownloadRequest` to carry `FormatPolicy`.
-- [ ] Replace `quality_to_yt_quality()` usage and remove it.
-- [ ] Implement deterministic fallback stages for `Browser`/`Tv`.
-- [ ] Add structured internal context for fallback stage selection (for logs/errors).
+- [x] Add `FormatPolicy` and `build_format_policy(quality, preset)` in `crates/hof-core/src/ytdlp.rs`.
+- [x] Update `DownloadRequest` to carry `FormatPolicy`.
+- [x] Replace `quality_to_yt_quality()` usage and remove it.
+- [x] Implement deterministic fallback stages for `Browser`/`Tv`.
+- [x] Add structured internal context for fallback stage selection (for logs/errors).
 
 ### Phase 3 - Output Path and Extension Semantics
 
@@ -177,7 +177,7 @@ Graceful fallback requirement (explicit):
 - [ ] Add integration/API tests for profile preset round-trip and defaults.
 - [ ] Add integration test for preferred-codec-unavailable -> fallback succeeds.
 - [ ] Add integration test for fallback exhaustion -> expected machine-readable error code.
-- [ ] Run `cargo fmt --all`.
+- [x] Run `cargo fmt --all`.
 - [ ] Run `cargo clippy --workspace --all-targets -- -W clippy::pedantic`.
 - [ ] Run targeted tests and then workspace tests.
 
