@@ -240,14 +240,17 @@ pub struct IndexResult {
     pub channel_id: Option<String>,
     /// Channel/uploader name.
     pub channel_name: Option<String>,
-    /// URL to the best thumbnail from the first video (used for poster).
+    /// URL to the source thumbnail/avatar (used for poster).
     pub thumbnail_url: Option<String>,
 }
 
 impl IndexResult {
     fn from_playlist(playlist: &Playlist, platform: &str) -> Self {
-        // Try to get thumbnail from first entry
-        let thumbnail_url = playlist.entries.first().and_then(|e| e.thumbnail.clone());
+        let thumbnail_url = if platform == "youtube" {
+            None
+        } else {
+            playlist.entries.first().and_then(|e| e.thumbnail.clone())
+        };
 
         Self {
             platform: platform.to_string(),
@@ -450,14 +453,14 @@ impl YtdlpClient {
 
         let mut result = IndexResult::from_playlist(&playlist, &platform);
 
-        // For YouTube channels, if no thumbnail from playlist, try fetching first video's metadata
+        // For YouTube, resolve the channel avatar instead of using a video's thumbnail.
         if platform == "youtube"
             && result.thumbnail_url.is_none()
-            && let Some(first_entry) = playlist.entries.first()
-            && let Ok(video) = extractor.fetch_video(&first_entry.url).await
-            && let Some(thumbnail) = video.thumbnail
+            && let Some(channel_url) =
+                youtube_channel_url(&playlist, url, result.channel_id.as_deref())
+            && let Some(thumbnail) = fetch_youtube_channel_thumbnail(&channel_url).await
         {
-            debug!(thumbnail = %thumbnail, "Found thumbnail from first video");
+            debug!(thumbnail = %thumbnail, channel_url = %channel_url, "Resolved YouTube channel thumbnail");
             result.thumbnail_url = Some(thumbnail);
         }
 
@@ -629,6 +632,55 @@ impl YtdlpClient {
     pub fn shutdown(&self) {
         self.downloader.shutdown();
     }
+}
+
+fn youtube_channel_url(
+    playlist: &Playlist,
+    source_url: &str,
+    channel_id: Option<&str>,
+) -> Option<String> {
+    playlist
+        .uploader_url
+        .clone()
+        .or_else(|| channel_id.map(|id| format!("https://www.youtube.com/channel/{id}")))
+        .or_else(|| {
+            let looks_like_channel = source_url.contains("youtube.com/@")
+                || source_url.contains("youtube.com/channel/")
+                || source_url.contains("youtube.com/c/")
+                || source_url.contains("youtube.com/user/");
+            looks_like_channel.then(|| source_url.to_string())
+        })
+}
+
+fn extract_og_image_url(html: &str) -> Option<String> {
+    const DOUBLE_QUOTE_MARKER: &str = r#"<meta property="og:image" content=""#;
+    const SINGLE_QUOTE_MARKER: &str = r"<meta property='og:image' content='";
+
+    if let Some(start) = html.find(DOUBLE_QUOTE_MARKER) {
+        let rest = &html[start + DOUBLE_QUOTE_MARKER.len()..];
+        if let Some(end) = rest.find('"') {
+            return Some(rest[..end].to_string());
+        }
+    }
+
+    if let Some(start) = html.find(SINGLE_QUOTE_MARKER) {
+        let rest = &html[start + SINGLE_QUOTE_MARKER.len()..];
+        if let Some(end) = rest.find('\'') {
+            return Some(rest[..end].to_string());
+        }
+    }
+
+    None
+}
+
+async fn fetch_youtube_channel_thumbnail(channel_url: &str) -> Option<String> {
+    let response = reqwest::get(channel_url).await.ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+
+    let html = response.text().await.ok()?;
+    extract_og_image_url(&html)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1061,6 +1113,8 @@ pub fn filter_entries(
 mod tests {
     use super::*;
 
+    use yt_dlp::model::playlist::Playlist;
+
     fn template_data() -> OutputTemplateData {
         OutputTemplateData {
             source_name: "F1 Channel".to_string(),
@@ -1108,6 +1162,66 @@ mod tests {
         assert_eq!(
             YtdlpClient::detect_platform("https://example.com/video"),
             "generic"
+        );
+    }
+
+    fn sample_playlist() -> Playlist {
+        Playlist {
+            id: "playlist-1".to_string(),
+            title: "Sample".to_string(),
+            description: None,
+            uploader: Some("Uploader".to_string()),
+            uploader_id: Some("UC1234567890".to_string()),
+            uploader_url: Some("https://www.youtube.com/@uploader".to_string()),
+            entries: vec![],
+            video_count: Some(0),
+            url: Some("https://www.youtube.com/@uploader/videos".to_string()),
+        }
+    }
+
+    #[test]
+    fn test_youtube_channel_url_prefers_uploader_url() {
+        let playlist = sample_playlist();
+        let channel_url = youtube_channel_url(
+            &playlist,
+            "https://www.youtube.com/@fallback/videos",
+            Some("UCIGNORED"),
+        );
+
+        assert_eq!(
+            channel_url,
+            Some("https://www.youtube.com/@uploader".to_string())
+        );
+    }
+
+    #[test]
+    fn test_youtube_channel_url_falls_back_to_channel_id() {
+        let mut playlist = sample_playlist();
+        playlist.uploader_url = None;
+
+        let channel_url = youtube_channel_url(&playlist, "https://example.com", Some("UCABC123"));
+
+        assert_eq!(
+            channel_url,
+            Some("https://www.youtube.com/channel/UCABC123".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_og_image_url_double_quotes() {
+        let html = r#"<html><head><meta property="og:image" content="https://cdn.example/avatar.jpg"></head></html>"#;
+        assert_eq!(
+            extract_og_image_url(html),
+            Some("https://cdn.example/avatar.jpg".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_og_image_url_single_quotes() {
+        let html = r"<html><head><meta property='og:image' content='https://cdn.example/avatar2.jpg'></head></html>";
+        assert_eq!(
+            extract_og_image_url(html),
+            Some("https://cdn.example/avatar2.jpg".to_string())
         );
     }
 

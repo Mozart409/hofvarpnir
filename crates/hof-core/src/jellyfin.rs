@@ -38,6 +38,8 @@ pub struct JellyfinMetadata {
     pub poster_url: Option<String>,
     /// URL to download fanart image from.
     pub fanart_url: Option<String>,
+    /// Source URL (channel/playlist page), used to resolve platform-specific artwork.
+    pub source_url: Option<String>,
     /// When the show was added to the library.
     pub date_added: DateTime<Utc>,
 }
@@ -52,7 +54,8 @@ impl JellyfinMetadata {
             platform_id: source.channel_id.clone(),
             platform: platform.to_string(),
             poster_url: source.channel_thumbnail_url.clone(),
-            fanart_url: source.channel_thumbnail_url.clone(), // Use same as poster for now
+            fanart_url: None,
+            source_url: Some(source.url.clone()),
             date_added: source.created_at,
         }
     }
@@ -174,9 +177,23 @@ pub async fn generate_metadata(
         .wrap_err("Failed to write tvshow.nfo")?;
     info!(path = %nfo_path.display(), "Generated tvshow.nfo");
 
+    let (resolved_avatar_url, resolved_banner_url) = if metadata.platform == "youtube" {
+        if let Some(source_url) = &metadata.source_url {
+            resolve_youtube_channel_artwork(http_client, source_url).await
+        } else {
+            (None, None)
+        }
+    } else {
+        (None, None)
+    };
+
     // Download poster
     let poster_path = output_dir.join(POSTER_JPG);
-    if let Some(url) = &metadata.poster_url {
+    let poster_url = metadata
+        .poster_url
+        .as_ref()
+        .or(resolved_avatar_url.as_ref());
+    if let Some(url) = poster_url {
         if let Err(e) = download_image(http_client, url, &poster_path).await {
             warn!(error = %e, url = %url, "Failed to download poster image");
         }
@@ -186,7 +203,11 @@ pub async fn generate_metadata(
 
     // Download fanart (or copy poster as fallback)
     let fanart_path = output_dir.join(FANART_JPG);
-    if let Some(url) = &metadata.fanart_url {
+    let fanart_url = metadata
+        .fanart_url
+        .as_ref()
+        .or(resolved_banner_url.as_ref());
+    if let Some(url) = fanart_url {
         if let Err(e) = download_image(http_client, url, &fanart_path).await {
             warn!(error = %e, url = %url, "Failed to download fanart image");
             // Try to copy poster as fallback
@@ -204,9 +225,19 @@ pub async fn generate_metadata(
         debug!("Copied poster to fanart (no fanart URL)");
     }
 
-    // Create banner from poster as fallback
+    // Download banner (or copy poster as fallback)
     let banner_path = output_dir.join(BANNER_JPG);
-    if poster_path.exists() && !banner_path.exists() {
+    if let Some(url) = resolved_banner_url.as_ref() {
+        if let Err(e) = download_image(http_client, url, &banner_path).await {
+            warn!(error = %e, url = %url, "Failed to download banner image");
+            if poster_path.exists() {
+                fs::copy(&poster_path, &banner_path)
+                    .await
+                    .wrap_err("Failed to copy poster to banner")?;
+                debug!("Copied poster to banner as fallback");
+            }
+        }
+    } else if poster_path.exists() {
         fs::copy(&poster_path, &banner_path)
             .await
             .wrap_err("Failed to copy poster to banner")?;
@@ -249,6 +280,85 @@ async fn download_image(http_client: &Client, url: &str, output_path: &Path) -> 
     Ok(())
 }
 
+fn extract_yt3_image_urls(html: &str) -> Vec<String> {
+    const PREFIX: &str = "https://yt3.googleusercontent.com/";
+    let mut out = Vec::new();
+    let mut start_at = 0;
+
+    while let Some(rel_idx) = html[start_at..].find(PREFIX) {
+        let url_start = start_at + rel_idx;
+        let mut url_end = html.len();
+
+        for sep in ['"', '\'', '<', '>', ' ', '\\'] {
+            if let Some(rel_end) = html[url_start..].find(sep) {
+                let candidate_end = url_start + rel_end;
+                if candidate_end < url_end {
+                    url_end = candidate_end;
+                }
+            }
+        }
+
+        if url_end > url_start {
+            let candidate = html[url_start..url_end].replace("\\u0026", "&");
+            out.push(candidate);
+        }
+
+        start_at = url_start.saturating_add(PREFIX.len());
+        if start_at >= html.len() {
+            break;
+        }
+    }
+
+    out.sort();
+    out.dedup();
+    out
+}
+
+fn pick_youtube_avatar_url(urls: &[String]) -> Option<String> {
+    urls.iter()
+        .find(|url| url.contains("-no-rj") && !url.contains("-no-nd-rj"))
+        .cloned()
+}
+
+fn pick_youtube_banner_url(urls: &[String]) -> Option<String> {
+    urls.iter()
+        .find(|url| url.contains("-no-nd-rj") || url.contains("fcrop64="))
+        .cloned()
+}
+
+#[instrument(skip(http_client), fields(url = %source_url))]
+async fn resolve_youtube_channel_artwork(
+    http_client: &Client,
+    source_url: &str,
+) -> (Option<String>, Option<String>) {
+    let response = match http_client.get(source_url).send().await {
+        Ok(r) => r,
+        Err(e) => {
+            warn!(error = %e, "Failed to fetch source URL for channel artwork");
+            return (None, None);
+        }
+    };
+
+    if !response.status().is_success() {
+        warn!(status = %response.status(), "Source URL returned non-success status");
+        return (None, None);
+    }
+
+    let html = match response.text().await {
+        Ok(text) => text,
+        Err(e) => {
+            warn!(error = %e, "Failed reading source HTML for channel artwork");
+            return (None, None);
+        }
+    };
+
+    let urls = extract_yt3_image_urls(&html);
+    (
+        pick_youtube_avatar_url(&urls),
+        pick_youtube_banner_url(&urls),
+    )
+}
+
 /// Check if metadata needs to be regenerated.
 ///
 /// Returns true if:
@@ -287,6 +397,7 @@ mod tests {
             platform: "youtube".to_string(),
             poster_url: None,
             fanart_url: None,
+            source_url: None,
             date_added: Utc.with_ymd_and_hms(2026, 3, 18, 12, 0, 0).unwrap(),
         }
     }
@@ -313,6 +424,7 @@ mod tests {
             platform: "youtube".to_string(),
             poster_url: None,
             fanart_url: None,
+            source_url: None,
             date_added: Utc::now(),
         };
         let base_path = Path::new("/data");
@@ -386,5 +498,17 @@ mod tests {
 
         let content = std::fs::read_to_string(&nfo_path).unwrap();
         assert!(content.contains("<title>Test Channel</title>"));
+    }
+
+    #[test]
+    fn test_pick_youtube_banner_url() {
+        let urls = vec![
+            "https://yt3.googleusercontent.com/avatar=s900-c-k-c0x00ffffff-no-rj".to_string(),
+            "https://yt3.googleusercontent.com/banner=w1060-fcrop64=1,00005a57ffffa5a8-k-c0xffffffff-no-nd-rj"
+                .to_string(),
+        ];
+
+        let picked = pick_youtube_banner_url(&urls);
+        assert!(picked.is_some_and(|url| url.contains("-no-nd-rj")));
     }
 }
