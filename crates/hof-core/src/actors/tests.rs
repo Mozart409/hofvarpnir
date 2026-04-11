@@ -382,7 +382,7 @@ mod cleanup_tests {
 mod video_filter_tests {
     use chrono::{NaiveDate, Utc};
 
-    use crate::domain::profile::{Profile, Quality};
+    use crate::domain::profile::{OutputPreset, Profile, Quality};
     use crate::domain::source::{Source, SourceType};
     use crate::ytdlp::VideoMetadata;
     use ulid::Ulid;
@@ -393,6 +393,7 @@ mod video_filter_tests {
             user_id: Ulid::new(),
             name: "Test Profile".to_string(),
             quality: Quality::Q1080p,
+            output_preset: OutputPreset::Browser,
             naming_template: "{title}.{ext}".to_string(),
             output_dir: "/downloads".to_string(),
             include_livestreams,

@@ -6,6 +6,7 @@
 //! - Video downloading with progress callbacks
 //! - Quality selection based on profile settings
 
+use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -19,9 +20,11 @@ use yt_dlp::extractor::ExtractorConfig;
 use yt_dlp::extractor::VideoExtractor;
 use yt_dlp::model::Video as YtVideo;
 use yt_dlp::model::playlist::{Playlist, PlaylistEntry as YtPlaylistEntry};
-use yt_dlp::model::selector::{AudioQuality, VideoQuality};
+use yt_dlp::model::selector::{
+    AudioCodecPreference, AudioQuality, VideoCodecPreference, VideoQuality,
+};
 
-use crate::domain::profile::Quality;
+use crate::domain::profile::{OutputPreset, Quality};
 use crate::domain::video::DownloadProgress;
 
 /// Errors that can occur during yt-dlp operations.
@@ -39,9 +42,37 @@ pub enum YtdlpError {
     #[error("Failed to fetch playlist info: {0}")]
     PlaylistError(String),
 
-    /// Failed to download video.
-    #[error("Failed to download video: {0}")]
-    DownloadError(String),
+    /// Preferred preset/quality could not be satisfied after fallback exhaustion.
+    #[error(
+        "Failed to download video: format fallback exhausted for preset {preset:?} and quality {quality:?} (last_stage={last_stage:?}): {detail}"
+    )]
+    FormatUnavailable {
+        preset: OutputPreset,
+        quality: Quality,
+        last_stage: Option<FallbackStage>,
+        detail: String,
+    },
+
+    /// Defensive error when preset-to-selector mapping is invalid.
+    #[error(
+        "Failed to download video: invalid format preset for preset {preset:?} and quality {quality:?}: {detail}"
+    )]
+    FormatInvalidPreset {
+        preset: OutputPreset,
+        quality: Quality,
+        detail: String,
+    },
+
+    /// yt-dlp execution failed after format selection.
+    #[error(
+        "Failed to download video: execution failed for preset {preset:?} and quality {quality:?} (stage={stage:?}): {detail}"
+    )]
+    DownloadExecutionFailed {
+        preset: OutputPreset,
+        quality: Quality,
+        stage: Option<FallbackStage>,
+        detail: String,
+    },
 
     /// Video not found or unavailable.
     #[error("Video unavailable: {0}")]
@@ -50,6 +81,40 @@ pub enum YtdlpError {
     /// Rate limited by the platform.
     #[error("Rate limited (HTTP 429): {0}")]
     RateLimited(String),
+}
+
+impl YtdlpError {
+    pub const DOWNLOAD_FORMAT_UNAVAILABLE: &str = "DOWNLOAD_FORMAT_UNAVAILABLE";
+    pub const DOWNLOAD_FORMAT_INVALID_PRESET: &str = "DOWNLOAD_FORMAT_INVALID_PRESET";
+    pub const DOWNLOAD_EXECUTION_FAILED: &str = "DOWNLOAD_EXECUTION_FAILED";
+
+    #[must_use]
+    pub const fn machine_code(&self) -> Option<&'static str> {
+        match self {
+            Self::FormatUnavailable { .. } => Some(Self::DOWNLOAD_FORMAT_UNAVAILABLE),
+            Self::FormatInvalidPreset { .. } => Some(Self::DOWNLOAD_FORMAT_INVALID_PRESET),
+            Self::DownloadExecutionFailed { .. } => Some(Self::DOWNLOAD_EXECUTION_FAILED),
+            Self::InitializationError(_)
+            | Self::MetadataError(_)
+            | Self::PlaylistError(_)
+            | Self::VideoUnavailable(_)
+            | Self::RateLimited(_) => None,
+        }
+    }
+
+    #[must_use]
+    pub const fn fallback_stage(&self) -> Option<FallbackStage> {
+        match self {
+            Self::FormatUnavailable { last_stage, .. } => *last_stage,
+            Self::DownloadExecutionFailed { stage, .. } => *stage,
+            Self::InitializationError(_)
+            | Self::MetadataError(_)
+            | Self::PlaylistError(_)
+            | Self::FormatInvalidPreset { .. }
+            | Self::VideoUnavailable(_)
+            | Self::RateLimited(_) => None,
+        }
+    }
 }
 
 impl From<yt_dlp::error::Error> for YtdlpError {
@@ -175,14 +240,17 @@ pub struct IndexResult {
     pub channel_id: Option<String>,
     /// Channel/uploader name.
     pub channel_name: Option<String>,
-    /// URL to the best thumbnail from the first video (used for poster).
+    /// URL to the source thumbnail/avatar (used for poster).
     pub thumbnail_url: Option<String>,
 }
 
 impl IndexResult {
     fn from_playlist(playlist: &Playlist, platform: &str) -> Self {
-        // Try to get thumbnail from first entry
-        let thumbnail_url = playlist.entries.first().and_then(|e| e.thumbnail.clone());
+        let thumbnail_url = if platform == "youtube" {
+            None
+        } else {
+            playlist.entries.first().and_then(|e| e.thumbnail.clone())
+        };
 
         Self {
             platform: platform.to_string(),
@@ -212,9 +280,50 @@ pub struct DownloadRequest<'a> {
     pub output_dir: &'a Path,
     pub naming_template: &'a str,
     pub template_data: &'a OutputTemplateData,
-    pub quality: &'a Quality,
+    pub format_policy: &'a FormatPolicy,
     pub video_id: Ulid,
     pub progress_tx: Option<mpsc::Sender<DownloadProgress>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FallbackStage {
+    PreferredCodecPair,
+    PreferredVideoCodec,
+    AnyCodec,
+}
+
+#[derive(Debug, Clone)]
+pub struct FormatPolicy {
+    pub quality: Quality,
+    pub preset: OutputPreset,
+    pub audio_quality: AudioQuality,
+    pub video_codec: VideoCodecPreference,
+    pub audio_codec: AudioCodecPreference,
+    pub container_ext: &'static str,
+}
+
+impl FormatPolicy {
+    #[must_use]
+    pub fn from(quality: &Quality, preset: &OutputPreset) -> Self {
+        let (video_codec, audio_codec, container_ext) = match preset {
+            OutputPreset::Auto => (VideoCodecPreference::Any, AudioCodecPreference::Any, "mkv"),
+            OutputPreset::Browser => (VideoCodecPreference::AVC1, AudioCodecPreference::AAC, "mp4"),
+            OutputPreset::Tv => (
+                VideoCodecPreference::Custom("hevc".to_string()),
+                AudioCodecPreference::AAC,
+                "mp4",
+            ),
+        };
+
+        Self {
+            quality: quality.clone(),
+            preset: preset.clone(),
+            audio_quality: AudioQuality::Best,
+            video_codec,
+            audio_codec,
+            container_ext,
+        }
+    }
 }
 
 /// Context values used to render advanced output templates.
@@ -344,14 +453,14 @@ impl YtdlpClient {
 
         let mut result = IndexResult::from_playlist(&playlist, &platform);
 
-        // For YouTube channels, if no thumbnail from playlist, try fetching first video's metadata
+        // For YouTube, resolve the channel avatar instead of using a video's thumbnail.
         if platform == "youtube"
             && result.thumbnail_url.is_none()
-            && let Some(first_entry) = playlist.entries.first()
-            && let Ok(video) = extractor.fetch_video(&first_entry.url).await
-            && let Some(thumbnail) = video.thumbnail
+            && let Some(channel_url) =
+                youtube_channel_url(&playlist, url, result.channel_id.as_deref())
+            && let Some(thumbnail) = fetch_youtube_channel_thumbnail(&channel_url).await
         {
-            debug!(thumbnail = %thumbnail, "Found thumbnail from first video");
+            debug!(thumbnail = %thumbnail, channel_url = %channel_url, "Resolved YouTube channel thumbnail");
             result.thumbnail_url = Some(thumbnail);
         }
 
@@ -367,7 +476,8 @@ impl YtdlpClient {
     /// # Errors
     ///
     /// Returns an error if the download fails.
-    #[instrument(skip(self, request), fields(url = %request.url, quality = ?request.quality))]
+    #[allow(clippy::too_many_lines)]
+    #[instrument(skip(self, request), fields(url = %request.url, policy = ?request.format_policy))]
     pub async fn download_video(
         &self,
         request: DownloadRequest<'_>,
@@ -393,27 +503,45 @@ impl YtdlpClient {
             resolved_title,
             &platform_video_id,
             request.template_data,
+            request.format_policy.container_ext,
+            !matches!(request.format_policy.quality, Quality::AudioOnly),
         );
         let output_path = request.output_dir.join(output_relative_path);
 
         if let Some(parent) = output_path.parent() {
             tokio::fs::create_dir_all(parent).await.map_err(|e| {
-                YtdlpError::DownloadError(format!("Failed to create output subdirectory: {e}"))
+                YtdlpError::DownloadExecutionFailed {
+                    preset: request.format_policy.preset.clone(),
+                    quality: request.format_policy.quality.clone(),
+                    stage: None,
+                    detail: format!("Failed to create output subdirectory: {e}"),
+                }
             })?;
         }
 
-        // Build download with quality settings
-        let video_quality = quality_to_yt_quality(request.quality);
+        let attempts = fallback_attempts(request.format_policy);
+        let (result_path, selected_stage) =
+            execute_fallback_attempts(&attempts, request.format_policy, |attempt| {
+                let video_quality = attempt.video_quality;
+                let video_codec = attempt.video_codec.clone();
+                let audio_codec = attempt.audio_codec.clone();
+                let video_ref = video.clone();
+                let output_path_ref = output_path.clone();
+                async move {
+                    self.downloader
+                        .download(&video_ref, &output_path_ref)
+                        .video_quality(video_quality)
+                        .audio_quality(request.format_policy.audio_quality)
+                        .video_codec(video_codec)
+                        .audio_codec(audio_codec)
+                        .execute()
+                        .await
+                        .map_err(|err| err.to_string())
+                }
+            })
+            .await?;
 
-        // Use the fluent download builder
-        let result_path = self
-            .downloader
-            .download(&video, &output_path)
-            .video_quality(video_quality)
-            .audio_quality(AudioQuality::Best)
-            .execute()
-            .await
-            .map_err(|e| YtdlpError::DownloadError(e.to_string()))?;
+        debug!(stage = ?selected_stage, "Selected format fallback stage");
 
         // Get file size
         let file_size = tokio::fs::metadata(&result_path)
@@ -462,7 +590,12 @@ impl YtdlpClient {
         // Create output directory if needed
         tokio::fs::create_dir_all(request.output_dir)
             .await
-            .map_err(|e| YtdlpError::DownloadError(format!("Failed to create output dir: {e}")))?;
+            .map_err(|e| YtdlpError::DownloadExecutionFailed {
+                preset: request.format_policy.preset.clone(),
+                quality: request.format_policy.quality.clone(),
+                stage: None,
+                detail: format!("Failed to create output dir: {e}"),
+            })?;
 
         self.download_video(request).await
     }
@@ -501,17 +634,218 @@ impl YtdlpClient {
     }
 }
 
-/// Convert our Quality enum to yt-dlp's `VideoQuality`.
-const fn quality_to_yt_quality(quality: &Quality) -> VideoQuality {
+fn youtube_channel_url(
+    playlist: &Playlist,
+    source_url: &str,
+    channel_id: Option<&str>,
+) -> Option<String> {
+    playlist
+        .uploader_url
+        .clone()
+        .or_else(|| channel_id.map(|id| format!("https://www.youtube.com/channel/{id}")))
+        .or_else(|| {
+            let looks_like_channel = source_url.contains("youtube.com/@")
+                || source_url.contains("youtube.com/channel/")
+                || source_url.contains("youtube.com/c/")
+                || source_url.contains("youtube.com/user/");
+            looks_like_channel.then(|| source_url.to_string())
+        })
+}
+
+fn extract_og_image_url(html: &str) -> Option<String> {
+    const DOUBLE_QUOTE_MARKER: &str = r#"<meta property="og:image" content=""#;
+    const SINGLE_QUOTE_MARKER: &str = r"<meta property='og:image' content='";
+
+    if let Some(start) = html.find(DOUBLE_QUOTE_MARKER) {
+        let rest = &html[start + DOUBLE_QUOTE_MARKER.len()..];
+        if let Some(end) = rest.find('"') {
+            return Some(rest[..end].to_string());
+        }
+    }
+
+    if let Some(start) = html.find(SINGLE_QUOTE_MARKER) {
+        let rest = &html[start + SINGLE_QUOTE_MARKER.len()..];
+        if let Some(end) = rest.find('\'') {
+            return Some(rest[..end].to_string());
+        }
+    }
+
+    None
+}
+
+async fn fetch_youtube_channel_thumbnail(channel_url: &str) -> Option<String> {
+    let response = reqwest::get(channel_url).await.ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+
+    let html = response.text().await.ok()?;
+    extract_og_image_url(&html)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FallbackAttempt {
+    stage: FallbackStage,
+    video_quality: VideoQuality,
+    video_codec: VideoCodecPreference,
+    audio_codec: AudioCodecPreference,
+}
+
+fn fallback_attempts(policy: &FormatPolicy) -> Vec<FallbackAttempt> {
+    let quality_levels = quality_fallback_chain(&policy.quality);
+    let mut attempts = Vec::new();
+
+    for video_quality in quality_levels {
+        if policy.preset == OutputPreset::Auto {
+            attempts.push(FallbackAttempt {
+                stage: FallbackStage::AnyCodec,
+                video_quality,
+                video_codec: VideoCodecPreference::Any,
+                audio_codec: AudioCodecPreference::Any,
+            });
+            continue;
+        }
+
+        attempts.push(FallbackAttempt {
+            stage: FallbackStage::PreferredCodecPair,
+            video_quality,
+            video_codec: policy.video_codec.clone(),
+            audio_codec: policy.audio_codec.clone(),
+        });
+        attempts.push(FallbackAttempt {
+            stage: FallbackStage::PreferredVideoCodec,
+            video_quality,
+            video_codec: policy.video_codec.clone(),
+            audio_codec: AudioCodecPreference::Any,
+        });
+        attempts.push(FallbackAttempt {
+            stage: FallbackStage::AnyCodec,
+            video_quality,
+            video_codec: VideoCodecPreference::Any,
+            audio_codec: AudioCodecPreference::Any,
+        });
+    }
+
+    let mut deduped = Vec::new();
+    for attempt in attempts {
+        if !deduped.contains(&attempt) {
+            deduped.push(attempt);
+        }
+    }
+
+    deduped
+}
+
+async fn execute_fallback_attempts<F, Fut>(
+    attempts: &[FallbackAttempt],
+    policy: &FormatPolicy,
+    mut execute: F,
+) -> Result<(PathBuf, FallbackStage), YtdlpError>
+where
+    F: FnMut(&FallbackAttempt) -> Fut,
+    Fut: Future<Output = Result<PathBuf, String>>,
+{
+    let mut last_error = None;
+    let mut last_stage = None;
+
+    for attempt in attempts {
+        last_stage = Some(attempt.stage);
+        debug!(
+            stage = ?attempt.stage,
+            video_quality = ?attempt.video_quality,
+            video_codec = ?attempt.video_codec,
+            audio_codec = ?attempt.audio_codec,
+            preset = ?policy.preset,
+            quality = ?policy.quality,
+            "Attempting format selection"
+        );
+
+        match execute(attempt).await {
+            Ok(path) => return Ok((path, attempt.stage)),
+            Err(err) => {
+                last_error = Some(err);
+                debug!(
+                    stage = ?attempt.stage,
+                    error = last_error.as_deref(),
+                    "Format selection attempt failed"
+                );
+            }
+        }
+    }
+
+    let detail = last_error.unwrap_or_else(|| "no compatible format found".to_string());
+    Err(YtdlpError::FormatUnavailable {
+        preset: policy.preset.clone(),
+        quality: policy.quality.clone(),
+        last_stage,
+        detail,
+    })
+}
+
+fn quality_fallback_chain(quality: &Quality) -> Vec<VideoQuality> {
     match quality {
-        Quality::Best => VideoQuality::Best,
-        Quality::Q4320p => VideoQuality::CustomHeight(4320),
-        Quality::Q2160p => VideoQuality::CustomHeight(2160),
-        Quality::Q1440p => VideoQuality::CustomHeight(1440),
-        Quality::Q1080p => VideoQuality::CustomHeight(1080),
-        Quality::Q720p => VideoQuality::CustomHeight(720),
-        Quality::Q480p => VideoQuality::CustomHeight(480),
-        Quality::AudioOnly => VideoQuality::Worst, // Audio-only handled differently
+        Quality::Best => vec![
+            VideoQuality::Best,
+            VideoQuality::High,
+            VideoQuality::Medium,
+            VideoQuality::Low,
+            VideoQuality::Worst,
+        ],
+        Quality::Q4320p => vec![
+            VideoQuality::CustomHeight(4320),
+            VideoQuality::CustomHeight(2160),
+            VideoQuality::CustomHeight(1440),
+            VideoQuality::CustomHeight(1080),
+            VideoQuality::CustomHeight(720),
+            VideoQuality::CustomHeight(480),
+            VideoQuality::High,
+            VideoQuality::Medium,
+            VideoQuality::Low,
+            VideoQuality::Worst,
+        ],
+        Quality::Q2160p => vec![
+            VideoQuality::CustomHeight(2160),
+            VideoQuality::CustomHeight(1440),
+            VideoQuality::CustomHeight(1080),
+            VideoQuality::CustomHeight(720),
+            VideoQuality::CustomHeight(480),
+            VideoQuality::High,
+            VideoQuality::Medium,
+            VideoQuality::Low,
+            VideoQuality::Worst,
+        ],
+        Quality::Q1440p => vec![
+            VideoQuality::CustomHeight(1440),
+            VideoQuality::CustomHeight(1080),
+            VideoQuality::CustomHeight(720),
+            VideoQuality::CustomHeight(480),
+            VideoQuality::High,
+            VideoQuality::Medium,
+            VideoQuality::Low,
+            VideoQuality::Worst,
+        ],
+        Quality::Q1080p => vec![
+            VideoQuality::CustomHeight(1080),
+            VideoQuality::CustomHeight(720),
+            VideoQuality::CustomHeight(480),
+            VideoQuality::High,
+            VideoQuality::Medium,
+            VideoQuality::Low,
+            VideoQuality::Worst,
+        ],
+        Quality::Q720p => vec![
+            VideoQuality::CustomHeight(720),
+            VideoQuality::CustomHeight(480),
+            VideoQuality::Medium,
+            VideoQuality::Low,
+            VideoQuality::Worst,
+        ],
+        Quality::Q480p => vec![
+            VideoQuality::CustomHeight(480),
+            VideoQuality::Low,
+            VideoQuality::Worst,
+        ],
+        Quality::AudioOnly => vec![VideoQuality::Worst],
     }
 }
 
@@ -520,14 +854,17 @@ const fn quality_to_yt_quality(quality: &Quality) -> VideoQuality {
 /// Supported placeholders:
 /// - `{title}` / `{{ title }}` -> video title (sanitized)
 /// - `{id}` / `{{ id }}` -> platform video ID (sanitized)
-/// - `{ext}` / `%(ext)s` -> final container extension (`mkv`)
+/// - `{ext}` / `%(ext)s` -> final container extension (when forced)
 /// - `{{ source_custom_name/or default }}` -> source display name
 /// - `{{ season_by_year__episode_by_date_and_index }}` -> `SYYYYEYYYYMMDD-III`
+#[allow(clippy::literal_string_with_formatting_args)]
 fn render_output_relative_path(
     template: &str,
     title: &str,
     platform_video_id: &str,
     template_data: &OutputTemplateData,
+    container_ext: &str,
+    force_container_ext: bool,
 ) -> PathBuf {
     let safe_title = sanitize_filename_component(title);
     let safe_id = sanitize_filename_component(platform_video_id);
@@ -542,10 +879,15 @@ fn render_output_relative_path(
 
     // Double-brace placeholders MUST be replaced before single-brace ones,
     // otherwise `{{ext}}` is partially matched by `{ext}` leaving residual braces.
-    #[allow(clippy::literal_string_with_formatting_args)]
+    let ext = if force_container_ext {
+        container_ext
+    } else {
+        ""
+    };
+
     let mut rendered = template
-        .replace("{{ ext }}", "mkv")
-        .replace("{{ext}}", "mkv")
+        .replace("{{ ext }}", ext)
+        .replace("{{ext}}", ext)
         .replace("{{ title }}", &safe_title)
         .replace("{{title}}", &safe_title)
         .replace("{{ id }}", &safe_id)
@@ -567,11 +909,15 @@ fn render_output_relative_path(
         .replace("{title}", &safe_title)
         .replace("{id}", &safe_id)
         .replace("{year}", &year)
-        .replace("{ext}", "mkv")
-        .replace("%(ext)s", "mkv");
+        .replace("{ext}", ext)
+        .replace("%(ext)s", ext);
 
     if rendered.trim().is_empty() {
-        rendered = format!("{safe_title}-{safe_id}.mkv");
+        rendered = if force_container_ext {
+            format!("{safe_title}-{safe_id}.{container_ext}")
+        } else {
+            format!("{safe_title}-{safe_id}")
+        };
     }
 
     let rendered = rendered.replace('\\', "/");
@@ -584,7 +930,11 @@ fn render_output_relative_path(
         .collect();
 
     if segments.is_empty() {
-        segments.push(format!("{safe_title}-{safe_id}.mkv"));
+        segments.push(if force_container_ext {
+            format!("{safe_title}-{safe_id}.{container_ext}")
+        } else {
+            format!("{safe_title}-{safe_id}")
+        });
     }
 
     // SAFETY: segments is guaranteed non-empty - we push a fallback above if it was empty
@@ -592,15 +942,27 @@ fn render_output_relative_path(
         unreachable!("segments is guaranteed to contain at least one segment")
     };
 
-    let is_mkv_extension = Path::new(last_segment)
-        .extension()
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("mkv"));
-    if !is_mkv_extension {
-        last_segment.push_str(".mkv");
-    }
+    if force_container_ext {
+        let has_container_extension = Path::new(last_segment)
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case(container_ext));
+        if !has_container_extension {
+            last_segment.push('.');
+            last_segment.push_str(container_ext);
+        }
 
-    while last_segment.ends_with(".mkv.mkv") {
-        last_segment.truncate(last_segment.len().saturating_sub(4));
+        let duplicate = format!(".{container_ext}.{container_ext}");
+        while last_segment
+            .to_ascii_lowercase()
+            .ends_with(&duplicate.to_ascii_lowercase())
+        {
+            last_segment.truncate(last_segment.len().saturating_sub(container_ext.len() + 1));
+        }
+    } else {
+        *last_segment = last_segment.trim_end_matches('.').to_string();
+        if last_segment.is_empty() {
+            *last_segment = format!("{safe_title}-{safe_id}");
+        }
     }
 
     segments
@@ -751,6 +1113,8 @@ pub fn filter_entries(
 mod tests {
     use super::*;
 
+    use yt_dlp::model::playlist::Playlist;
+
     fn template_data() -> OutputTemplateData {
         OutputTemplateData {
             source_name: "F1 Channel".to_string(),
@@ -801,6 +1165,66 @@ mod tests {
         );
     }
 
+    fn sample_playlist() -> Playlist {
+        Playlist {
+            id: "playlist-1".to_string(),
+            title: "Sample".to_string(),
+            description: None,
+            uploader: Some("Uploader".to_string()),
+            uploader_id: Some("UC1234567890".to_string()),
+            uploader_url: Some("https://www.youtube.com/@uploader".to_string()),
+            entries: vec![],
+            video_count: Some(0),
+            url: Some("https://www.youtube.com/@uploader/videos".to_string()),
+        }
+    }
+
+    #[test]
+    fn test_youtube_channel_url_prefers_uploader_url() {
+        let playlist = sample_playlist();
+        let channel_url = youtube_channel_url(
+            &playlist,
+            "https://www.youtube.com/@fallback/videos",
+            Some("UCIGNORED"),
+        );
+
+        assert_eq!(
+            channel_url,
+            Some("https://www.youtube.com/@uploader".to_string())
+        );
+    }
+
+    #[test]
+    fn test_youtube_channel_url_falls_back_to_channel_id() {
+        let mut playlist = sample_playlist();
+        playlist.uploader_url = None;
+
+        let channel_url = youtube_channel_url(&playlist, "https://example.com", Some("UCABC123"));
+
+        assert_eq!(
+            channel_url,
+            Some("https://www.youtube.com/channel/UCABC123".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_og_image_url_double_quotes() {
+        let html = r#"<html><head><meta property="og:image" content="https://cdn.example/avatar.jpg"></head></html>"#;
+        assert_eq!(
+            extract_og_image_url(html),
+            Some("https://cdn.example/avatar.jpg".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_og_image_url_single_quotes() {
+        let html = r"<html><head><meta property='og:image' content='https://cdn.example/avatar2.jpg'></head></html>";
+        assert_eq!(
+            extract_og_image_url(html),
+            Some("https://cdn.example/avatar2.jpg".to_string())
+        );
+    }
+
     #[test]
     fn test_render_output_filename_default_template() {
         let output = render_output_relative_path(
@@ -808,6 +1232,8 @@ mod tests {
             "Great Race",
             "Hx4xrg6wVNI",
             &template_data(),
+            "mkv",
+            true,
         );
         assert_eq!(output, PathBuf::from("Great Race-Hx4xrg6wVNI.mkv"));
     }
@@ -819,14 +1245,22 @@ mod tests {
             "F1 overtakes",
             "Hx4xrg6wVNI",
             &template_data(),
+            "mkv",
+            true,
         );
         assert_eq!(output, PathBuf::from("F1 overtakes-Hx4xrg6wVNI.mkv"));
     }
 
     #[test]
     fn test_render_output_filename_sanitizes_path_chars() {
-        let output =
-            render_output_relative_path("../{title}/{id}", "a/b:c*?", "id/1", &template_data());
+        let output = render_output_relative_path(
+            "../{title}/{id}",
+            "a/b:c*?",
+            "id/1",
+            &template_data(),
+            "mkv",
+            true,
+        );
         let output_str = output.to_string_lossy();
         assert!(!output_str.contains(".."));
         assert!(!output_str.contains('\\'));
@@ -844,6 +1278,8 @@ mod tests {
             "F1 Overtake Breakdown",
             "Hx4xrg6wVNI",
             &template_data(),
+            "mkv",
+            true,
         );
 
         assert_eq!(
@@ -859,6 +1295,8 @@ mod tests {
             "This shot in the F1 movie could've been a lot better",
             "abc123",
             &template_data(),
+            "mkv",
+            true,
         );
 
         assert_eq!(
@@ -868,15 +1306,80 @@ mod tests {
     }
 
     #[test]
-    fn test_quality_conversion() {
-        assert!(matches!(
-            quality_to_yt_quality(&Quality::Best),
-            VideoQuality::Best
-        ));
-        assert!(matches!(
-            quality_to_yt_quality(&Quality::Q1080p),
-            VideoQuality::CustomHeight(1080)
-        ));
+    fn test_format_policy_browser_defaults() {
+        let policy = FormatPolicy::from(&Quality::Q1080p, &OutputPreset::Browser);
+
+        assert_eq!(policy.preset, OutputPreset::Browser);
+        assert!(matches!(policy.video_codec, VideoCodecPreference::AVC1));
+        assert!(matches!(policy.audio_codec, AudioCodecPreference::AAC));
+        assert_eq!(policy.container_ext, "mp4");
+    }
+
+    #[test]
+    fn test_quality_fallback_chain_orders_descending() {
+        let chain = quality_fallback_chain(&Quality::Q1080p);
+        assert_eq!(chain.first(), Some(&VideoQuality::CustomHeight(1080)));
+        assert_eq!(chain.last(), Some(&VideoQuality::Worst));
+    }
+
+    #[test]
+    fn test_fallback_attempts_include_all_stages_for_browser() {
+        let policy = FormatPolicy::from(&Quality::Q480p, &OutputPreset::Browser);
+        let attempts = fallback_attempts(&policy);
+
+        assert!(
+            attempts
+                .iter()
+                .any(|attempt| attempt.stage == FallbackStage::PreferredCodecPair)
+        );
+        assert!(
+            attempts
+                .iter()
+                .any(|attempt| attempt.stage == FallbackStage::PreferredVideoCodec)
+        );
+        assert!(
+            attempts
+                .iter()
+                .any(|attempt| attempt.stage == FallbackStage::AnyCodec)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_fallback_recovers_when_preferred_codec_unavailable() {
+        let policy = FormatPolicy::from(&Quality::Q1080p, &OutputPreset::Browser);
+        let attempts = fallback_attempts(&policy);
+
+        let result = execute_fallback_attempts(&attempts, &policy, |attempt| {
+            let stage = attempt.stage;
+            async move {
+                if stage == FallbackStage::PreferredCodecPair {
+                    return Err("preferred codec not available".to_string());
+                }
+                Ok(PathBuf::from("/tmp/fallback-success.mp4"))
+            }
+        })
+        .await;
+
+        let (_, selected_stage) = result.expect("fallback should succeed");
+        assert_eq!(selected_stage, FallbackStage::PreferredVideoCodec);
+    }
+
+    #[tokio::test]
+    async fn test_fallback_exhaustion_returns_machine_readable_error_code() {
+        let policy = FormatPolicy::from(&Quality::Q1080p, &OutputPreset::Browser);
+        let attempts = fallback_attempts(&policy);
+
+        let error = execute_fallback_attempts(&attempts, &policy, |_attempt| async {
+            Err("no compatible format".to_string())
+        })
+        .await
+        .expect_err("fallback exhaustion should fail");
+
+        assert_eq!(
+            error.machine_code(),
+            Some(YtdlpError::DOWNLOAD_FORMAT_UNAVAILABLE)
+        );
+        assert_eq!(error.fallback_stage(), Some(FallbackStage::AnyCodec));
     }
 
     #[test]
@@ -950,6 +1453,8 @@ mod tests {
             "Monaco GP Highlights",
             "abc123",
             &template_data(),
+            "mkv",
+            true,
         );
 
         assert_eq!(
@@ -970,5 +1475,66 @@ mod tests {
         let template = "../{{ title }}.{{ ext }}";
         let error = validate_output_template(template).expect_err("template should fail");
         assert!(error.contains("path traversal"));
+    }
+
+    #[test]
+    fn test_machine_error_code_for_format_unavailable() {
+        let error = YtdlpError::FormatUnavailable {
+            preset: OutputPreset::Browser,
+            quality: Quality::Q1080p,
+            last_stage: Some(FallbackStage::AnyCodec),
+            detail: "no compatible format found".to_string(),
+        };
+
+        assert_eq!(
+            error.machine_code(),
+            Some(YtdlpError::DOWNLOAD_FORMAT_UNAVAILABLE)
+        );
+        assert_eq!(error.fallback_stage(), Some(FallbackStage::AnyCodec));
+    }
+
+    #[test]
+    fn test_machine_error_code_for_download_execution_failed() {
+        let error = YtdlpError::DownloadExecutionFailed {
+            preset: OutputPreset::Tv,
+            quality: Quality::Best,
+            stage: Some(FallbackStage::PreferredCodecPair),
+            detail: "yt-dlp exited with status 1".to_string(),
+        };
+
+        assert_eq!(
+            error.machine_code(),
+            Some(YtdlpError::DOWNLOAD_EXECUTION_FAILED)
+        );
+        assert_eq!(
+            error.fallback_stage(),
+            Some(FallbackStage::PreferredCodecPair)
+        );
+    }
+
+    #[test]
+    fn test_render_output_filename_uses_mp4_when_requested() {
+        let output = render_output_relative_path(
+            "{title}-{id}.{ext}",
+            "Great Race",
+            "Hx4xrg6wVNI",
+            &template_data(),
+            "mp4",
+            true,
+        );
+        assert_eq!(output, PathBuf::from("Great Race-Hx4xrg6wVNI.mp4"));
+    }
+
+    #[test]
+    fn test_render_output_filename_audio_only_does_not_force_extension() {
+        let output = render_output_relative_path(
+            "{title}-{id}.{ext}",
+            "Great Race",
+            "Hx4xrg6wVNI",
+            &template_data(),
+            "mp4",
+            false,
+        );
+        assert_eq!(output, PathBuf::from("Great Race-Hx4xrg6wVNI"));
     }
 }

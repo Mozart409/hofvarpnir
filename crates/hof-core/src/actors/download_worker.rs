@@ -21,9 +21,12 @@ use tracing::{debug, error, info, instrument, warn};
 use ulid::Ulid;
 
 use crate::db;
-use crate::domain::profile::Quality;
+use crate::domain::profile::{OutputPreset, Quality};
 use crate::domain::video::{DownloadProgress, Video};
-use crate::ytdlp::{DownloadRequest, DownloadResult, OutputTemplateData, YtdlpClient, YtdlpError};
+use crate::ytdlp::{
+    DownloadRequest, DownloadResult, FallbackStage, FormatPolicy, OutputTemplateData, YtdlpClient,
+    YtdlpError,
+};
 
 const INCOMPLETE_DIR_NAME: &str = "incomplete";
 const COMPLETED_DIR_NAME: &str = "completed";
@@ -35,6 +38,8 @@ pub struct DownloadConfig {
     pub timeout: Duration,
     /// Quality setting for the download.
     pub quality: Quality,
+    /// Output preset used to resolve codec/container preferences.
+    pub output_preset: OutputPreset,
     /// Output directory for the downloaded file.
     pub output_dir: PathBuf,
     /// Naming template for the output file.
@@ -58,6 +63,10 @@ pub enum DownloadOutcome {
     Failed {
         video_id: Ulid,
         error: String,
+        error_code: Option<&'static str>,
+        preset: OutputPreset,
+        quality: Quality,
+        fallback_stage: Option<FallbackStage>,
         is_rate_limited: bool,
     },
 }
@@ -148,7 +157,7 @@ impl Message<StartDownload> for DownloadWorker {
         ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
         let start = Instant::now();
-        let outcome = self.execute_download().await;
+        let outcome = Box::pin(self.execute_download()).await;
         histogram!(crate::metrics::DOWNLOAD_DURATION_SECONDS).record(start.elapsed().as_secs_f64());
 
         // Stop the actor after the download completes
@@ -170,6 +179,10 @@ impl DownloadWorker {
             return DownloadOutcome::Failed {
                 video_id,
                 error: format!("Database error: {e}"),
+                error_code: Some(YtdlpError::DOWNLOAD_EXECUTION_FAILED),
+                preset: self.config.output_preset.clone(),
+                quality: self.config.quality.clone(),
+                fallback_stage: None,
                 is_rate_limited: false,
             };
         }
@@ -182,12 +195,13 @@ impl DownloadWorker {
 
         // Execute download with timeout
         let incomplete_dir = self.incomplete_dir();
+        let format_policy = FormatPolicy::from(&self.config.quality, &self.config.output_preset);
         let download_future = self.ytdlp.download_video_to_dir(DownloadRequest {
             url: &url,
             output_dir: &incomplete_dir,
             naming_template: &self.config.naming_template,
             template_data: &template_data,
-            quality: &self.config.quality,
+            format_policy: &format_policy,
             video_id,
             progress_tx: Some(self.progress_tx.clone()),
         });
@@ -203,6 +217,10 @@ impl DownloadWorker {
                 DownloadOutcome::Failed {
                     video_id,
                     error,
+                    error_code: Some(YtdlpError::DOWNLOAD_EXECUTION_FAILED),
+                    preset: self.config.output_preset.clone(),
+                    quality: self.config.quality.clone(),
+                    fallback_stage: None,
                     is_rate_limited: false,
                 }
             }
@@ -265,6 +283,10 @@ impl DownloadWorker {
                 return DownloadOutcome::Failed {
                     video_id,
                     error: message,
+                    error_code: Some(YtdlpError::DOWNLOAD_EXECUTION_FAILED),
+                    preset: self.config.output_preset.clone(),
+                    quality: self.config.quality.clone(),
+                    fallback_stage: None,
                     is_rate_limited: false,
                 };
             }
@@ -386,11 +408,29 @@ impl DownloadWorker {
         let video_id = self.video.id;
         let is_rate_limited = matches!(error, YtdlpError::RateLimited(_));
         let error_str = error.to_string();
+        let error_code = error.machine_code();
+        let fallback_stage = error.fallback_stage();
+        let preset = self.config.output_preset.clone();
+        let quality = self.config.quality.clone();
 
         if is_rate_limited {
-            warn!(error = %error_str, "Download rate limited");
+            warn!(
+                error = %error_str,
+                error_code,
+                preset = ?preset,
+                quality = ?quality,
+                fallback_stage = ?fallback_stage,
+                "Download rate limited"
+            );
         } else {
-            error!(error = %error_str, "Download failed");
+            error!(
+                error = %error_str,
+                error_code,
+                preset = ?preset,
+                quality = ?quality,
+                fallback_stage = ?fallback_stage,
+                "Download failed"
+            );
         }
 
         // Note: The supervisor will handle retry scheduling and database updates
@@ -399,6 +439,10 @@ impl DownloadWorker {
         DownloadOutcome::Failed {
             video_id,
             error: error_str,
+            error_code,
+            preset,
+            quality,
+            fallback_stage,
             is_rate_limited,
         }
     }

@@ -16,7 +16,7 @@ use utoipa::ToSchema;
 
 use hof_core::{
     db::{self, CreateProfile, UpdateProfile},
-    domain::profile::{Profile, Quality},
+    domain::profile::{OutputPreset, Profile, Quality},
     ytdlp::validate_output_template,
 };
 
@@ -50,6 +50,7 @@ pub struct ProfileResponse {
     pub user_id: String,
     pub name: String,
     pub quality: Quality,
+    pub output_preset: OutputPreset,
     pub naming_template: String,
     pub output_dir: String,
     pub include_livestreams: bool,
@@ -67,6 +68,7 @@ impl From<Profile> for ProfileResponse {
             user_id: p.user_id.to_string(),
             name: p.name,
             quality: p.quality,
+            output_preset: p.output_preset,
             naming_template: p.naming_template,
             output_dir: p.output_dir,
             include_livestreams: p.include_livestreams,
@@ -88,6 +90,8 @@ pub struct CreateProfileRequest {
     pub name: String,
     /// Download quality preset.
     pub quality: Quality,
+    /// Output preset for codec/container strategy.
+    pub output_preset: Option<OutputPreset>,
     /// Naming template for downloaded files (e.g., "{title}-{id}.{ext}").
     pub naming_template: String,
     /// Output directory for downloads.
@@ -117,6 +121,8 @@ pub struct UpdateProfileRequest {
     pub name: Option<String>,
     /// Download quality preset.
     pub quality: Option<Quality>,
+    /// Output preset for codec/container strategy.
+    pub output_preset: Option<OutputPreset>,
     /// Naming template for downloaded files.
     pub naming_template: Option<String>,
     /// Output directory for downloads.
@@ -243,6 +249,7 @@ pub async fn create_profile(
         user_id,
         name: &req.name,
         quality: req.quality,
+        output_preset: req.output_preset.unwrap_or(OutputPreset::Browser),
         naming_template: req.naming_template.trim(),
         output_dir: &req.output_dir,
         include_livestreams: req.include_livestreams,
@@ -372,6 +379,7 @@ pub async fn update_profile(
     let data = UpdateProfile {
         name: req.name.as_deref(),
         quality: req.quality,
+        output_preset: req.output_preset,
         naming_template: validated_naming_template.as_deref(),
         output_dir: req.output_dir.as_deref(),
         include_livestreams: req.include_livestreams,

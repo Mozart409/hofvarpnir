@@ -21,5 +21,6 @@ pub mod ytdlp;
 
 // Re-export commonly used types
 pub use config::Config;
+pub use db::ActivityBroadcaster;
 pub use startup::{ActorSystem, initialize, shutdown};
 pub use telemetry::{RequestSpan, TelemetryGuard, UlidRequestId, init_tracing};

@@ -1,5 +1,6 @@
 //! Maud page templates and htmx partial endpoints.
 
+use std::collections::HashMap;
 use std::convert::Infallible;
 use std::time::Duration;
 
@@ -14,7 +15,7 @@ use axum::{
     routing::{get, post},
 };
 use chrono::{NaiveDate, Utc};
-use futures::stream::{Stream, StreamExt};
+use futures::stream::{Stream, StreamExt, unfold};
 use hof_api::AppState;
 use hof_core::{
     actors::{
@@ -26,16 +27,17 @@ use hof_core::{
     db::{self, CreateProfile, CreateSource, UpdateProfile, UpdateSource},
     domain::{
         activity::{ActivityEventType, ActivitySeverity},
-        profile::{Profile, Quality},
+        profile::{OutputPreset, Profile, Quality},
         source::{Source, SourceType},
         system::IssueSeverity,
-        video::{DownloadProgress, VideoStatus},
+        video::{DownloadProgress, Video, VideoStatus},
     },
     ytdlp::validate_output_template,
 };
 use maud::{DOCTYPE, Markup, PreEscaped, Render, html};
 use rust_embed::Embed;
 use serde::{Deserialize, Serialize};
+use tokio::sync::broadcast;
 use tokio_stream::wrappers::BroadcastStream;
 use tower_sessions::Session;
 use ulid::Ulid;
@@ -46,6 +48,34 @@ use crate::auth::AuthUser;
 #[derive(Embed)]
 #[folder = "assets/"]
 struct Assets;
+
+// ============================================================================
+// SSE Utilities
+// ============================================================================
+
+/// Coalesce window for SSE debouncing: rapid bursts collapse into one push.
+const SSE_COALESCE_WINDOW: Duration = Duration::from_millis(500);
+
+/// Wrap a `broadcast::Receiver<()>` into a debounced `Stream`.
+///
+/// On the first signal, starts a coalesce window. Any signals that arrive
+/// during the window are drained and discarded. One item is yielded after the
+/// window expires. Returns `None` (ends the stream) only when the channel is
+/// closed (no more senders).
+fn debounced_broadcast(rx: broadcast::Receiver<()>) -> impl Stream<Item = ()> {
+    use tokio::sync::broadcast::error::RecvError;
+    unfold(rx, |mut rx| async move {
+        // Wait for the first signal (or detect channel closure).
+        match rx.recv().await {
+            Ok(()) | Err(RecvError::Lagged(_)) => {}
+            Err(RecvError::Closed) => return None,
+        }
+        // Coalesce additional signals within the window.
+        tokio::time::sleep(SSE_COALESCE_WINDOW).await;
+        while rx.try_recv().is_ok() {}
+        Some(((), rx))
+    })
+}
 
 /// Serve embedded static assets.
 async fn serve_asset(Path(path): Path<String>) -> Response {
@@ -109,6 +139,24 @@ impl From<QualityForm> for Quality {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "lowercase")]
+enum OutputPresetForm {
+    Auto,
+    Browser,
+    Tv,
+}
+
+impl From<OutputPresetForm> for OutputPreset {
+    fn from(value: OutputPresetForm) -> Self {
+        match value {
+            OutputPresetForm::Auto => Self::Auto,
+            OutputPresetForm::Browser => Self::Browser,
+            OutputPresetForm::Tv => Self::Tv,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "lowercase")]
 enum SourceTypeForm {
     Channel,
     Playlist,
@@ -127,6 +175,7 @@ impl From<SourceTypeForm> for SourceType {
 pub struct ProfileForm {
     name: String,
     quality: QualityForm,
+    output_preset: OutputPresetForm,
     naming_template: String,
     output_dir: String,
     include_livestreams: Option<String>,
@@ -192,10 +241,12 @@ async fn take_flash(session: &Session) -> Option<FlashMessage> {
 // Downloads Query
 // ============================================================================
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct DownloadsQuery {
     status: Option<String>,
     search: Option<String>,
+    page: Option<i64>,
+    per_page: Option<i64>,
 }
 
 pub fn router(state: AppState) -> Router {
@@ -220,9 +271,14 @@ pub fn router(state: AppState) -> Router {
         .route("/downloads/{id}/retry", post(retry_download))
         .route("/downloads/{id}/cancel", post(cancel_download))
         .route("/downloads/{id}/delete", post(delete_download))
+        .route("/web/downloads/list", get(downloads_list_partial))
         .route("/web/downloads/progress", get(download_progress_sse))
+        .route("/web/downloads/events", get(downloads_events_sse))
         .route("/web/system-banner", get(system_banner))
+        .route("/web/dashboard/events", get(dashboard_events_sse))
         .route("/activity", get(activity_page))
+        .route("/web/activity/list", get(activity_list_partial))
+        .route("/web/activity/events", get(activity_events_sse))
         .route("/schedule", get(schedule_page))
         .route("/schedule/cleanup", post(trigger_cleanup))
         // Static assets (embedded at compile time)
@@ -580,38 +636,263 @@ async fn dashboard_page(
         NavItem::Dashboard,
         flash,
         html! {
-            div class="grid gap-4 md:grid-cols-2 xl:grid-cols-4" {
-                (metric_card("Profiles", profiles.len(), "Active download configurations"))
-                (metric_card("Sources", sources.len(), "Channels and playlists being tracked"))
-                (metric_card("Pending", pending, "Queued for download"))
-                (metric_card("In Progress", downloading, "Currently downloading"))
-            }
-            div class="mt-4 grid gap-4 md:grid-cols-2" {
-                (metric_card("Completed", completed, "Successfully archived videos"))
-                (metric_card("Failed", failed, "Need retry or manual check"))
-            }
-            section class="mt-8 rounded-2xl border border-slate-200 dark:border-slate-700 bg-white/80 dark:bg-slate-800/80 p-6 shadow-sm" {
-                h2 class="text-lg font-semibold text-slate-900 dark:text-slate-100" { "Recent Downloads" }
-                @if recent.is_empty() {
-                    p class="mt-3 text-sm text-slate-500 dark:text-slate-400" { "No downloads found yet." }
-                } @else {
-                    ul class="mt-4 space-y-3" {
-                        @for video in recent {
-                            li class="flex items-center justify-between gap-3 rounded-xl border border-slate-100 dark:border-slate-700 bg-slate-50/80 dark:bg-slate-800/80 px-3 py-2" {
-                                div class="min-w-0" {
-                                    p class="truncate text-sm font-medium text-slate-900 dark:text-slate-100" { (video.title) }
-                                    p class="text-xs text-slate-500 dark:text-slate-400" { (video.platform) " / " (video.platform_video_id) }
-                                }
-                                (status_badge(&video.status))
-                            }
-                        }
-                    }
+            div
+                hx-ext="sse"
+                sse-connect="/web/dashboard/events"
+            {
+                div id="dashboard-metrics" sse-swap="dashboard-update" hx-swap="innerHTML" {
+                    (dashboard_metrics_markup(
+                        profiles.len(),
+                        sources.len(),
+                        pending,
+                        downloading,
+                        completed,
+                        failed,
+                        &recent,
+                    ))
                 }
             }
         },
     );
 
     (StatusCode::OK, page)
+}
+
+fn dashboard_metrics_markup(
+    profiles: usize,
+    sources: usize,
+    pending: usize,
+    downloading: usize,
+    completed: usize,
+    failed: usize,
+    recent: &[&Video],
+) -> Markup {
+    html! {
+        div class="grid gap-4 md:grid-cols-2 xl:grid-cols-4" {
+            (metric_card("Profiles", profiles, "Active download configurations"))
+            (metric_card("Sources", sources, "Channels and playlists being tracked"))
+            (metric_card("Pending", pending, "Queued for download"))
+            (metric_card("In Progress", downloading, "Currently downloading"))
+        }
+        div class="mt-4 grid gap-4 md:grid-cols-2" {
+            (metric_card("Completed", completed, "Successfully archived videos"))
+            (metric_card("Failed", failed, "Need retry or manual check"))
+        }
+        section class="mt-8 rounded-2xl border border-slate-200 dark:border-slate-700 bg-white/80 dark:bg-slate-800/80 p-6 shadow-sm" {
+            h2 class="text-lg font-semibold text-slate-900 dark:text-slate-100" { "Recent Downloads" }
+            @if recent.is_empty() {
+                p class="mt-3 text-sm text-slate-500 dark:text-slate-400" { "No downloads found yet." }
+            } @else {
+                ul class="mt-4 space-y-3" {
+                    @for video in recent {
+                        li class="flex items-center justify-between gap-3 rounded-xl border border-slate-100 dark:border-slate-700 bg-slate-50/80 dark:bg-slate-800/80 px-3 py-2" {
+                            div class="min-w-0" {
+                                p class="truncate text-sm font-medium text-slate-900 dark:text-slate-100" { (video.title) }
+                                p class="text-xs text-slate-500 dark:text-slate-400" { (video.platform) " / " (video.platform_video_id) }
+                            }
+                            (status_badge(&video.status))
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+async fn dashboard_events_sse(
+    _auth: AuthUser,
+    State(state): State<AppState>,
+) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    let rx = state.broadcaster.subscribe_invalidate();
+
+    let stream = debounced_broadcast(rx).filter_map(move |()| {
+        let pool = state.pool.clone();
+        async move {
+            let (profiles_result, sources_result, videos_result) = tokio::join!(
+                db::list_profiles(&pool),
+                db::list_sources(&pool),
+                db::list_videos(&pool, None)
+            );
+            let profiles = profiles_result.ok()?;
+            let sources = sources_result.ok()?;
+            let videos = videos_result.ok()?;
+
+            let pending = videos
+                .iter()
+                .filter(|v| v.status == VideoStatus::Pending)
+                .count();
+            let downloading = videos
+                .iter()
+                .filter(|v| v.status == VideoStatus::Downloading)
+                .count();
+            let completed = videos
+                .iter()
+                .filter(|v| v.status == VideoStatus::Completed)
+                .count();
+            let failed = videos
+                .iter()
+                .filter(|v| {
+                    matches!(
+                        v.status,
+                        VideoStatus::Failed | VideoStatus::PermanentlyFailed
+                    )
+                })
+                .count();
+
+            let recent = videos.iter().take(8).collect::<Vec<_>>();
+            let fragment = dashboard_metrics_markup(
+                profiles.len(),
+                sources.len(),
+                pending,
+                downloading,
+                completed,
+                failed,
+                &recent,
+            )
+            .into_string();
+
+            Some(Ok(Event::default()
+                .event("dashboard-update")
+                .data(fragment)))
+        }
+    });
+
+    Sse::new(stream).keep_alive(
+        KeepAlive::new()
+            .interval(Duration::from_secs(15))
+            .text("keep-alive"),
+    )
+}
+
+async fn downloads_events_sse(
+    _auth: AuthUser,
+    State(state): State<AppState>,
+    axum::extract::Query(query): axum::extract::Query<DownloadsQuery>,
+) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    let rx = state.broadcaster.subscribe_invalidate();
+
+    let stream = debounced_broadcast(rx).filter_map(move |()| {
+        let pool = state.pool.clone();
+        let query = query.clone();
+        async move {
+            let page_num = query.page.unwrap_or(1).max(1);
+            let per_page = parse_downloads_page_size(query.per_page);
+            let offset = (page_num - 1) * per_page;
+            let search_query = query
+                .search
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty());
+            let status_filter = parse_download_status(query.status.as_deref());
+
+            let (videos_result, count_result, source_names_result) = tokio::join!(
+                db::list_videos_paginated(
+                    &pool,
+                    status_filter.clone(),
+                    search_query,
+                    per_page,
+                    offset
+                ),
+                db::count_videos(&pool, status_filter, search_query),
+                db::get_source_names_for_videos(&pool),
+            );
+
+            let videos = match videos_result {
+                Ok(data) => data,
+                Err(error) => {
+                    tracing::warn!(%error, "failed to render downloads SSE fragment");
+                    return None;
+                }
+            };
+            let total = count_result.unwrap_or(0);
+            let total_pages = if total == 0 {
+                1
+            } else {
+                (total + per_page - 1) / per_page
+            };
+            let source_names = source_names_result.unwrap_or_default();
+
+            let fragment = downloads_list_markup(
+                &videos,
+                &source_names,
+                page_num,
+                total_pages,
+                total,
+                query.status.as_deref(),
+                search_query,
+                per_page,
+            )
+            .into_string();
+
+            Some(Ok(Event::default()
+                .event("downloads-update")
+                .data(fragment)))
+        }
+    });
+
+    Sse::new(stream).keep_alive(
+        KeepAlive::new()
+            .interval(Duration::from_secs(15))
+            .text("keep-alive"),
+    )
+}
+
+async fn activity_events_sse(
+    _auth: AuthUser,
+    State(state): State<AppState>,
+    axum::extract::Query(query): axum::extract::Query<ActivityQuery>,
+) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    let rx = state.broadcaster.subscribe_activity();
+
+    let stream = debounced_broadcast(rx).filter_map(move |()| {
+        let pool = state.pool.clone();
+        let query = query.clone();
+        async move {
+            let page_num = query.page.unwrap_or(1).max(1);
+            let per_page = parse_activity_page_size(query.per_page);
+            let offset = (page_num - 1) * per_page;
+            let severity_filter = parse_activity_severity(query.severity.as_deref());
+
+            let (events_result, count_result) = tokio::join!(
+                db::list_activity_events(
+                    &pool,
+                    per_page,
+                    offset,
+                    severity_filter.clone(),
+                    None,
+                    None
+                ),
+                db::count_activity_events(&pool, severity_filter, None, None)
+            );
+
+            let events = match events_result {
+                Ok(data) => data,
+                Err(error) => {
+                    tracing::warn!(%error, "failed to render activity SSE fragment");
+                    return None;
+                }
+            };
+            let total = count_result.unwrap_or(0);
+            let total_pages = if total == 0 {
+                1
+            } else {
+                (total + per_page - 1) / per_page
+            };
+            let current_severity = normalized_activity_severity(query.severity.as_deref());
+
+            let fragment =
+                activity_content_markup(&events, page_num, total_pages, current_severity, per_page)
+                    .into_string();
+
+            Some(Ok(Event::default().event("activity-update").data(fragment)))
+        }
+    });
+
+    Sse::new(stream).keep_alive(
+        KeepAlive::new()
+            .interval(Duration::from_secs(15))
+            .text("keep-alive"),
+    )
 }
 
 async fn profiles_page(
@@ -645,6 +926,14 @@ async fn profiles_page(
                         select class="mt-1 w-full rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 px-3 py-2 text-sm text-slate-900 dark:text-slate-100 shadow-sm" name="quality" id="quality" required {
                             @for quality in quality_options() {
                                 option value=(quality.value) { (quality.label) }
+                            }
+                        }
+                    }
+                    div {
+                        label class="block text-sm font-medium text-slate-700 dark:text-slate-300" for="output_preset" { "Output Preset" }
+                        select class="mt-1 w-full rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 px-3 py-2 text-sm text-slate-900 dark:text-slate-100 shadow-sm" name="output_preset" id="output_preset" required {
+                            @for preset in output_preset_options() {
+                                option value=(preset.value) selected[(preset.value == "browser")] { (preset.label) }
                             }
                         }
                     }
@@ -710,6 +999,7 @@ async fn create_profile(
         user_id: auth.user_id,
         name: form.name.trim(),
         quality: form.quality.into(),
+        output_preset: form.output_preset.into(),
         naming_template,
         output_dir: form.output_dir.trim(),
         include_livestreams: form.include_livestreams.is_some(),
@@ -720,16 +1010,18 @@ async fn create_profile(
 
     match db::create_profile(&state.pool, create).await {
         Ok(profile) => {
-            db::log_activity(
-                &state.pool,
-                ActivityEventType::ProfileCreated,
-                ActivitySeverity::Info,
-                &format!("Created profile \"{}\"", profile.name),
-                None,
-                None,
-                Some(profile.id),
-            )
-            .await;
+            state
+                .broadcaster
+                .log_and_broadcast(
+                    &state.pool,
+                    ActivityEventType::ProfileCreated,
+                    ActivitySeverity::Info,
+                    &format!("Created profile \"{}\"", profile.name),
+                    None,
+                    None,
+                    Some(profile.id),
+                )
+                .await;
             set_flash(
                 &session,
                 "success",
@@ -780,6 +1072,7 @@ async fn update_profile(
     let update = UpdateProfile {
         name: Some(form.name.trim()),
         quality: Some(form.quality.into()),
+        output_preset: Some(form.output_preset.into()),
         naming_template: Some(naming_template),
         output_dir: Some(form.output_dir.trim()),
         include_livestreams: Some(form.include_livestreams.is_some()),
@@ -790,6 +1083,7 @@ async fn update_profile(
 
     match db::update_profile(&state.pool, profile_id, update).await {
         Ok(_) => {
+            state.broadcaster.invalidate();
             set_flash(&session, "success", "Profile updated").await;
             Redirect::to("/profiles").into_response()
         }
@@ -823,16 +1117,18 @@ async fn delete_profile(
 
     match db::delete_profile(&state.pool, profile_id).await {
         Ok(()) => {
-            db::log_activity(
-                &state.pool,
-                ActivityEventType::ProfileDeleted,
-                ActivitySeverity::Info,
-                &format!("Deleted profile {profile_id}"),
-                None,
-                None,
-                Some(profile_id),
-            )
-            .await;
+            state
+                .broadcaster
+                .log_and_broadcast(
+                    &state.pool,
+                    ActivityEventType::ProfileDeleted,
+                    ActivitySeverity::Info,
+                    &format!("Deleted profile {profile_id}"),
+                    None,
+                    None,
+                    Some(profile_id),
+                )
+                .await;
             set_flash(&session, "success", "Profile deleted").await;
             Redirect::to("/profiles").into_response()
         }
@@ -997,16 +1293,18 @@ async fn create_source(
     match db::create_source(&state.pool, create).await {
         Ok(source) => {
             let name = source.display_name();
-            db::log_activity(
-                &state.pool,
-                ActivityEventType::SourceCreated,
-                ActivitySeverity::Info,
-                &format!("Added source \"{name}\""),
-                Some(source.id),
-                None,
-                Some(profile_id),
-            )
-            .await;
+            state
+                .broadcaster
+                .log_and_broadcast(
+                    &state.pool,
+                    ActivityEventType::SourceCreated,
+                    ActivitySeverity::Info,
+                    &format!("Added source \"{name}\""),
+                    Some(source.id),
+                    None,
+                    Some(profile_id),
+                )
+                .await;
             set_flash(&session, "success", &format!("Source \"{name}\" added")).await;
             Redirect::to("/sources").into_response()
         }
@@ -1069,6 +1367,7 @@ async fn update_source(
 
     match db::update_source(&state.pool, source_id, update).await {
         Ok(_) => {
+            state.broadcaster.invalidate();
             set_flash(&session, "success", "Source updated").await;
             Redirect::to("/sources").into_response()
         }
@@ -1102,16 +1401,18 @@ async fn delete_source(
 
     match db::delete_source(&state.pool, source_id).await {
         Ok(()) => {
-            db::log_activity(
-                &state.pool,
-                ActivityEventType::SourceDeleted,
-                ActivitySeverity::Info,
-                &format!("Deleted source {source_id}"),
-                Some(source_id),
-                None,
-                None,
-            )
-            .await;
+            state
+                .broadcaster
+                .log_and_broadcast(
+                    &state.pool,
+                    ActivityEventType::SourceDeleted,
+                    ActivitySeverity::Info,
+                    &format!("Deleted source {source_id}"),
+                    Some(source_id),
+                    None,
+                    None,
+                )
+                .await;
             set_flash(&session, "success", "Source deleted").await;
             Redirect::to("/sources").into_response()
         }
@@ -1164,16 +1465,18 @@ async fn toggle_source_enabled(
         Ok(()) => {
             let status = if new_enabled { "enabled" } else { "disabled" };
             let name = source.display_name();
-            db::log_activity(
-                &state.pool,
-                ActivityEventType::SourceUpdated,
-                ActivitySeverity::Info,
-                &format!("Source \"{name}\" {status}"),
-                Some(source_id),
-                None,
-                Some(source.profile_id),
-            )
-            .await;
+            state
+                .broadcaster
+                .log_and_broadcast(
+                    &state.pool,
+                    ActivityEventType::SourceUpdated,
+                    ActivitySeverity::Info,
+                    &format!("Source \"{name}\" {status}"),
+                    Some(source_id),
+                    None,
+                    Some(source.profile_id),
+                )
+                .await;
             set_flash(&session, "success", &format!("Source {status}")).await;
             Redirect::to("/sources").into_response()
         }
@@ -1385,24 +1688,31 @@ async fn downloads_page(
     axum::extract::Query(query): axum::extract::Query<DownloadsQuery>,
 ) -> impl IntoResponse {
     let flash = take_flash(&session).await;
+    let page_num = query.page.unwrap_or(1).max(1);
+    let per_page = parse_downloads_page_size(query.per_page);
+    let offset = (page_num - 1) * per_page;
+    let search_query = query
+        .search
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
 
-    let status_filter = query.status.as_deref().and_then(|s| match s {
-        "pending" => Some(VideoStatus::Pending),
-        "downloading" => Some(VideoStatus::Downloading),
-        "completed" => Some(VideoStatus::Completed),
-        "failed" => Some(VideoStatus::Failed),
-        "skipped" => Some(VideoStatus::Skipped),
-        "cleaned" => Some(VideoStatus::Cleaned),
-        "permanently_failed" => Some(VideoStatus::PermanentlyFailed),
-        _ => None,
-    });
+    let status_filter = parse_download_status(query.status.as_deref());
+    let current_status = normalized_download_status(query.status.as_deref());
 
-    let (videos_result, source_names_result) = tokio::join!(
-        db::list_videos(&state.pool, status_filter),
+    let (videos_result, count_result, source_names_result) = tokio::join!(
+        db::list_videos_paginated(
+            &state.pool,
+            status_filter.clone(),
+            search_query,
+            per_page,
+            offset
+        ),
+        db::count_videos(&state.pool, status_filter, search_query),
         db::get_source_names_for_videos(&state.pool),
     );
 
-    let mut videos = match videos_result {
+    let videos = match videos_result {
         Ok(data) => data,
         Err(error) => {
             tracing::error!(%error, "failed to load downloads page");
@@ -1413,15 +1723,15 @@ async fn downloads_page(
         }
     };
 
+    let total = count_result.unwrap_or(0);
+    let total_pages = if total == 0 {
+        1
+    } else {
+        (total + per_page - 1) / per_page
+    };
     let source_names = source_names_result.unwrap_or_default();
 
-    // In-memory title search
-    if let Some(ref search) = query.search {
-        let q = search.to_lowercase();
-        videos.retain(|v| v.title.to_lowercase().contains(&q));
-    }
-
-    let current_status = query.status.as_deref().unwrap_or("all");
+    let list_url = downloads_list_url(query.status.as_deref(), search_query, page_num, per_page);
 
     let page = layout_with_flash(
         "Downloads",
@@ -1451,30 +1761,50 @@ async fn downloads_page(
             section class="mt-8 rounded-2xl border border-slate-200 dark:border-slate-700 bg-white/80 dark:bg-slate-800/80 p-6 shadow-sm" {
                 div class="flex flex-wrap items-center gap-4" {
                     nav class="flex flex-wrap gap-1" {
-                        (download_status_filter_link("all", "All", current_status, query.search.as_deref()))
-                        (download_status_filter_link("pending", "Pending", current_status, query.search.as_deref()))
-                        (download_status_filter_link("downloading", "Downloading", current_status, query.search.as_deref()))
-                        (download_status_filter_link("completed", "Completed", current_status, query.search.as_deref()))
-                        (download_status_filter_link("failed", "Failed", current_status, query.search.as_deref()))
-                        (download_status_filter_link("cleaned", "Cleaned", current_status, query.search.as_deref()))
-                        (download_status_filter_link("permanently_failed", "Perm. Failed", current_status, query.search.as_deref()))
-                        (download_status_filter_link("skipped", "Skipped", current_status, query.search.as_deref()))
+                        (download_status_filter_link("all", "All", current_status, search_query, per_page))
+                        (download_status_filter_link("pending", "Pending", current_status, search_query, per_page))
+                        (download_status_filter_link("downloading", "Downloading", current_status, search_query, per_page))
+                        (download_status_filter_link("completed", "Completed", current_status, search_query, per_page))
+                        (download_status_filter_link("failed", "Failed", current_status, search_query, per_page))
+                        (download_status_filter_link("cleaned", "Cleaned", current_status, search_query, per_page))
+                        (download_status_filter_link("permanently_failed", "Perm. Failed", current_status, search_query, per_page))
+                        (download_status_filter_link("skipped", "Skipped", current_status, search_query, per_page))
                     }
-                    form method="get" action="/downloads" class="flex gap-2" {
+                    form
+                        method="get"
+                        action="/downloads"
+                        class="flex gap-2"
+                        hx-get="/web/downloads/list"
+                        hx-target="#downloads-list"
+                        hx-push-url="true"
+                    {
                         @if let Some(ref status) = query.status {
                             input type="hidden" name="status" value=(status);
+                        }
+                        input type="hidden" name="page" value="1";
+                        select
+                            name="per_page"
+                            class="rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 px-2 py-1.5 text-sm text-slate-900 dark:text-slate-100"
+                        {
+                            (page_size_option(25, per_page))
+                            (page_size_option(50, per_page))
+                            (page_size_option(100, per_page))
                         }
                         input
                             type="text"
                             name="search"
                             placeholder="Search by title..."
-                            value=(query.search.as_deref().unwrap_or(""))
+                            value=(search_query.unwrap_or(""))
                             class="rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 px-3 py-1.5 text-sm text-slate-900 dark:text-slate-100";
                         button type="submit"
                             class="rounded-lg bg-slate-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-slate-700"
                         { "Search" }
-                        @if query.search.is_some() || query.status.is_some() {
-                            a href="/downloads"
+                        @if search_query.is_some() || query.status.is_some() {
+                            a
+                                href=(downloads_page_url(None, None, 1, per_page))
+                                hx-get=(downloads_list_url(None, None, 1, per_page))
+                                hx-target="#downloads-list"
+                                hx-push-url="true"
                                 class="rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 px-3 py-1.5 text-sm font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-600"
                             { "Clear" }
                         }
@@ -1482,91 +1812,90 @@ async fn downloads_page(
                 }
             }
 
-            section class="mt-4 rounded-2xl border border-slate-200 dark:border-slate-700 bg-white/80 dark:bg-slate-800/80 p-6 shadow-sm" {
-                h2 class="text-lg font-semibold text-slate-900 dark:text-slate-100" {
-                    "Downloads"
-                    span class="ml-2 text-sm font-normal text-slate-500 dark:text-slate-400" {
-                        "(" (videos.len()) " results)"
-                    }
-                }
-                @if videos.is_empty() {
-                    p class="mt-3 text-sm text-slate-500 dark:text-slate-400" { "No downloads match your filters." }
-                } @else {
-                    div class="mt-4 overflow-x-auto" {
-                        table class="min-w-full divide-y divide-slate-200 text-sm" {
-                            thead class="bg-slate-50 dark:bg-slate-800" {
-                                tr {
-                                    th class="px-3 py-2 text-left font-semibold text-slate-700 dark:text-slate-300" { "Title" }
-                                    th class="px-3 py-2 text-left font-semibold text-slate-700 dark:text-slate-300" { "Source" }
-                                    th class="px-3 py-2 text-left font-semibold text-slate-700 dark:text-slate-300" { "Platform" }
-                                    th class="px-3 py-2 text-left font-semibold text-slate-700 dark:text-slate-300" { "Status" }
-                                    th class="px-3 py-2 text-left font-semibold text-slate-700 dark:text-slate-300" { "Attempts" }
-                                    th class="px-3 py-2 text-left font-semibold text-slate-700 dark:text-slate-300" { "Actions" }
-                                }
-                            }
-                            tbody class="divide-y divide-slate-100 dark:divide-slate-700 bg-white dark:bg-slate-900" {
-                                @for video in &videos {
-                                    tr {
-                                        td class="max-w-lg px-3 py-2 text-slate-900 dark:text-slate-100" {
-                                            p class="truncate font-medium" { (video.title) }
-                                            p class="truncate text-xs text-slate-500 dark:text-slate-400" { (video.id.to_string()) }
-                                        }
-                                        td class="max-w-xs px-3 py-2 text-slate-600 dark:text-slate-400" {
-                                            p class="truncate" {
-                                                @if let Some(name) = source_names.get(&video.id) {
-                                                    (name)
-                                                } @else {
-                                                    span class="text-slate-400 dark:text-slate-500 italic" { "—" }
-                                                }
-                                            }
-                                        }
-                                        td class="px-3 py-2 text-slate-600 dark:text-slate-400" { (video.platform) }
-                                        td class="px-3 py-2" { (status_badge(&video.status)) }
-                                        td class="px-3 py-2 text-slate-600 dark:text-slate-400" { (video.attempts) }
-                                        td class="px-3 py-2" {
-                                            div class="flex gap-2" {
-                                                @if matches!(video.status, VideoStatus::Failed | VideoStatus::PermanentlyFailed | VideoStatus::Cleaned) {
-                                                    form method="post" action=(format!("/downloads/{}/retry", video.id)) {
-                                                        button class="rounded-lg border border-sky-200 dark:border-sky-800 bg-sky-50 dark:bg-sky-900/50 px-3 py-1.5 text-xs font-medium text-sky-700 dark:text-sky-300 hover:bg-sky-100 dark:hover:bg-sky-900" type="submit" {
-                                                            "Retry"
-                                                        }
-                                                    }
-                                                }
-                                                @if matches!(video.status, VideoStatus::Pending | VideoStatus::Downloading) {
-                                                    form method="post" action=(format!("/downloads/{}/cancel", video.id)) {
-                                                        button
-                                                            class="rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/50 px-3 py-1.5 text-xs font-medium text-amber-700 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-900"
-                                                            type="submit"
-                                                            onclick="return confirm('Cancel this download?')"
-                                                        {
-                                                            "Cancel"
-                                                        }
-                                                    }
-                                                }
-                                                @if video.status == VideoStatus::Completed {
-                                                    form method="post" action=(format!("/downloads/{}/delete", video.id)) {
-                                                        button
-                                                            class="rounded-lg border border-rose-200 dark:border-rose-800 bg-rose-50 dark:bg-rose-900/50 px-3 py-1.5 text-xs font-medium text-rose-700 dark:text-rose-300 hover:bg-rose-100 dark:hover:bg-rose-900"
-                                                            type="submit"
-                                                            onclick="return confirm('Delete this video? The file will be removed from disk.')"
-                                                        {
-                                                            "Delete"
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
+            div
+                hx-ext="sse"
+                sse-connect=(downloads_events_url(query.status.as_deref(), search_query, page_num, per_page))
+            {
+                div
+                    id="downloads-list"
+                    sse-swap="downloads-update"
+                    hx-swap="innerHTML"
+                    hx-get=(list_url)
+                    hx-trigger="load"
+                    hx-target="this"
+                {
+                    (downloads_list_markup(
+                        &videos,
+                        &source_names,
+                        page_num,
+                        total_pages,
+                        total,
+                        query.status.as_deref(),
+                        search_query,
+                        per_page,
+                    ))
                 }
             }
         },
     );
 
     (StatusCode::OK, page)
+}
+
+async fn downloads_list_partial(
+    _auth: AuthUser,
+    State(state): State<AppState>,
+    axum::extract::Query(query): axum::extract::Query<DownloadsQuery>,
+) -> impl IntoResponse {
+    let page_num = query.page.unwrap_or(1).max(1);
+    let per_page = parse_downloads_page_size(query.per_page);
+    let offset = (page_num - 1) * per_page;
+    let search_query = query
+        .search
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let status_filter = parse_download_status(query.status.as_deref());
+
+    let (videos_result, count_result, source_names_result) = tokio::join!(
+        db::list_videos_paginated(
+            &state.pool,
+            status_filter.clone(),
+            search_query,
+            per_page,
+            offset
+        ),
+        db::count_videos(&state.pool, status_filter, search_query),
+        db::get_source_names_for_videos(&state.pool),
+    );
+
+    let videos = match videos_result {
+        Ok(data) => data,
+        Err(error) => {
+            tracing::error!(%error, "failed to load downloads partial");
+            return error_page("Failed to load downloads page").into_response();
+        }
+    };
+
+    let total = count_result.unwrap_or(0);
+    let total_pages = if total == 0 {
+        1
+    } else {
+        (total + per_page - 1) / per_page
+    };
+    let source_names = source_names_result.unwrap_or_default();
+
+    downloads_list_markup(
+        &videos,
+        &source_names,
+        page_num,
+        total_pages,
+        total,
+        query.status.as_deref(),
+        search_query,
+        per_page,
+    )
+    .into_response()
 }
 
 #[allow(clippy::too_many_lines)]
@@ -1685,6 +2014,7 @@ async fn retry_download(
         .await
     {
         Ok(()) => {
+            state.broadcaster.invalidate();
             set_flash(&session, "info", "Download re-queued").await;
             Redirect::to("/downloads").into_response()
         }
@@ -1743,6 +2073,7 @@ async fn cancel_download(
 
     match cancel_result {
         Ok(()) => {
+            state.broadcaster.invalidate();
             set_flash(&session, "info", "Download cancelled").await;
             Redirect::to("/downloads").into_response()
         }
@@ -1822,16 +2153,18 @@ async fn delete_download(
     #[allow(clippy::cast_precision_loss)]
     let size_mb = video.file_size_bytes.unwrap_or(0) as f64 / 1_048_576.0;
     let title = &video.title;
-    db::log_activity(
-        &state.pool,
-        ActivityEventType::VideoCleaned,
-        ActivitySeverity::Info,
-        &format!("Manually deleted \"{title}\" ({size_mb:.1} MB freed)"),
-        None,
-        Some(video_id),
-        None,
-    )
-    .await;
+    state
+        .broadcaster
+        .log_and_broadcast(
+            &state.pool,
+            ActivityEventType::VideoCleaned,
+            ActivitySeverity::Info,
+            &format!("Manually deleted \"{title}\" ({size_mb:.1} MB freed)"),
+            None,
+            Some(video_id),
+            None,
+        )
+        .await;
 
     set_flash(
         &session,
@@ -1921,10 +2254,11 @@ async fn system_banner(State(state): State<AppState>) -> impl IntoResponse {
 // Activity Page
 // ============================================================================
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct ActivityQuery {
     severity: Option<String>,
     page: Option<i64>,
+    per_page: Option<i64>,
 }
 
 async fn activity_page(
@@ -1933,16 +2267,10 @@ async fn activity_page(
     axum::extract::Query(query): axum::extract::Query<ActivityQuery>,
 ) -> impl IntoResponse {
     let page_num = query.page.unwrap_or(1).max(1);
-    let per_page: i64 = 50;
+    let per_page = parse_activity_page_size(query.per_page);
     let offset = (page_num - 1) * per_page;
 
-    let severity_filter = query.severity.as_deref().and_then(|s| match s {
-        "info" => Some(ActivitySeverity::Info),
-        "success" => Some(ActivitySeverity::Success),
-        "warning" => Some(ActivitySeverity::Warning),
-        "error" => Some(ActivitySeverity::Error),
-        _ => None,
-    });
+    let severity_filter = parse_activity_severity(query.severity.as_deref());
 
     let (events_result, count_result) = tokio::join!(
         db::list_activity_events(
@@ -1970,58 +2298,32 @@ async fn activity_page(
     let total = count_result.unwrap_or(0);
     let total_pages = (total + per_page - 1) / per_page;
 
-    let current_severity = query.severity.as_deref().unwrap_or("all");
+    let current_severity = normalized_activity_severity(query.severity.as_deref());
+    let list_url = activity_list_url(query.severity.as_deref(), page_num, per_page);
+    let events_url = activity_events_url(query.severity.as_deref(), page_num, per_page);
 
     let page = layout(
         "Activity",
         NavItem::Activity,
         html! {
             section class="rounded-2xl border border-slate-200 dark:border-slate-700 bg-white/80 dark:bg-slate-800/80 p-6 shadow-sm" {
-                div class="flex flex-wrap items-center justify-between gap-3" {
-                    h2 class="text-lg font-semibold text-slate-900 dark:text-slate-100" { "Activity Log" }
-                    nav class="flex gap-1" {
-                        (severity_filter_link("all", "All", current_severity))
-                        (severity_filter_link("info", "Info", current_severity))
-                        (severity_filter_link("success", "Success", current_severity))
-                        (severity_filter_link("warning", "Warning", current_severity))
-                        (severity_filter_link("error", "Error", current_severity))
-                    }
-                }
-
-                @if events.is_empty() {
-                    p class="mt-4 rounded-lg border border-dashed border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-800 px-4 py-8 text-center text-sm text-slate-500 dark:text-slate-400" {
-                        "No activity events recorded yet."
-                    }
-                } @else {
-                    div class="mt-4 space-y-2" {
-                        @for event in &events {
-                            (activity_event_row(event))
-                        }
-                    }
-
-                    // Pagination
-                    @if total_pages > 1 {
-                        nav class="mt-6 flex items-center justify-center gap-2" {
-                            @if page_num > 1 {
-                                a
-                                    class="rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 px-3 py-1.5 text-sm text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-600"
-                                    href=(format!("/activity?severity={}&page={}", current_severity, page_num - 1))
-                                {
-                                    "Previous"
-                                }
-                            }
-                            span class="text-sm text-slate-500 dark:text-slate-400" {
-                                (format!("Page {} of {}", page_num, total_pages))
-                            }
-                            @if page_num < total_pages {
-                                a
-                                    class="rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 px-3 py-1.5 text-sm text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-600"
-                                    href=(format!("/activity?severity={}&page={}", current_severity, page_num + 1))
-                                {
-                                    "Next"
-                                }
-                            }
-                        }
+                h2 class="text-lg font-semibold text-slate-900 dark:text-slate-100" { "Activity Log" }
+                div hx-ext="sse" sse-connect=(events_url) {
+                    div
+                        id="activity-content"
+                        sse-swap="activity-update"
+                        hx-swap="innerHTML"
+                        hx-get=(list_url)
+                        hx-trigger="load"
+                        hx-target="this"
+                    {
+                        (activity_content_markup(
+                            &events,
+                            page_num,
+                            total_pages,
+                            current_severity,
+                            per_page,
+                        ))
                     }
                 }
             }
@@ -2031,11 +2333,54 @@ async fn activity_page(
     (StatusCode::OK, page)
 }
 
+async fn activity_list_partial(
+    _auth: AuthUser,
+    State(state): State<AppState>,
+    axum::extract::Query(query): axum::extract::Query<ActivityQuery>,
+) -> impl IntoResponse {
+    let page_num = query.page.unwrap_or(1).max(1);
+    let per_page = parse_activity_page_size(query.per_page);
+    let offset = (page_num - 1) * per_page;
+    let severity_filter = parse_activity_severity(query.severity.as_deref());
+
+    let (events_result, count_result) = tokio::join!(
+        db::list_activity_events(
+            &state.pool,
+            per_page,
+            offset,
+            severity_filter.clone(),
+            None,
+            None
+        ),
+        db::count_activity_events(&state.pool, severity_filter, None, None)
+    );
+
+    let events = match events_result {
+        Ok(data) => data,
+        Err(error) => {
+            tracing::error!(%error, "failed to load activity partial");
+            return error_page("Failed to load activity log").into_response();
+        }
+    };
+
+    let total = count_result.unwrap_or(0);
+    let total_pages = if total == 0 {
+        1
+    } else {
+        (total + per_page - 1) / per_page
+    };
+    let current_severity = normalized_activity_severity(query.severity.as_deref());
+
+    activity_content_markup(&events, page_num, total_pages, current_severity, per_page)
+        .into_response()
+}
+
 fn download_status_filter_link(
     value: &str,
     label: &str,
     current: &str,
     search: Option<&str>,
+    per_page: i64,
 ) -> Markup {
     let active = value == current;
     let classes = if active {
@@ -2043,38 +2388,429 @@ fn download_status_filter_link(
     } else {
         "rounded-full bg-slate-100 dark:bg-slate-700 px-3 py-1 text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-600"
     };
-    let mut href = if value == "all" {
-        "/downloads".to_string()
-    } else {
-        format!("/downloads?status={value}")
-    };
-    if let Some(q) = search.filter(|q| !q.is_empty()) {
-        let sep = if href.contains('?') { '&' } else { '?' };
-        href.push(sep);
-        href.push_str("search=");
-        href.push_str(q);
-    }
+    let status = if value == "all" { None } else { Some(value) };
+    let href = downloads_page_url(status, search, 1, per_page);
+    let hx_get = downloads_list_url(status, search, 1, per_page);
 
     html! {
-        a class=(classes) href=(href) { (label) }
+        a
+            class=(classes)
+            href=(href)
+            hx-get=(hx_get)
+            hx-target="#downloads-list"
+            hx-push-url="true"
+        {
+            (label)
+        }
     }
 }
 
-fn severity_filter_link(value: &str, label: &str, current: &str) -> Markup {
+fn severity_filter_link(value: &str, label: &str, current: &str, per_page: i64) -> Markup {
     let active = value == current;
     let classes = if active {
         "rounded-full bg-slate-900 dark:bg-slate-100 px-3 py-1 text-xs font-medium text-white dark:text-slate-900"
     } else {
         "rounded-full bg-slate-100 dark:bg-slate-700 px-3 py-1 text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-600"
     };
-    let href = if value == "all" {
-        "/activity".to_string()
+    let severity = if value == "all" { None } else { Some(value) };
+    let href = activity_page_url(severity, 1, per_page);
+    let hx_get = activity_list_url(severity, 1, per_page);
+
+    html! {
+        a
+            class=(classes)
+            href=(href)
+            hx-get=(hx_get)
+            hx-target="#activity-content"
+            hx-push-url="true"
+        {
+            (label)
+        }
+    }
+}
+
+fn activity_page_size_link(size: i64, current_size: i64, severity: Option<&str>) -> Markup {
+    let active = size == current_size;
+    let classes = if active {
+        "rounded-full bg-slate-900 dark:bg-slate-100 px-2.5 py-1 text-xs font-medium text-white dark:text-slate-900"
     } else {
-        format!("/activity?severity={value}")
+        "rounded-full bg-slate-100 dark:bg-slate-700 px-2.5 py-1 text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-600"
+    };
+    let href = activity_page_url(severity, 1, size);
+    let hx_get = activity_list_url(severity, 1, size);
+
+    html! {
+        a
+            class=(classes)
+            href=(href)
+            hx-get=(hx_get)
+            hx-target="#activity-content"
+            hx-push-url="true"
+        {
+            (size)
+        }
+    }
+}
+
+fn page_size_option(size: i64, current_size: i64) -> Markup {
+    if size == current_size {
+        html! {
+            option value=(size) selected { (size) " / page" }
+        }
+    } else {
+        html! {
+            option value=(size) { (size) " / page" }
+        }
+    }
+}
+
+const fn parse_downloads_page_size(value: Option<i64>) -> i64 {
+    match value {
+        Some(size) if matches!(size, 25 | 50 | 100) => size,
+        _ => 25,
+    }
+}
+
+const fn parse_activity_page_size(value: Option<i64>) -> i64 {
+    match value {
+        Some(size) if matches!(size, 25 | 50 | 100) => size,
+        _ => 50,
+    }
+}
+
+fn parse_download_status(status: Option<&str>) -> Option<VideoStatus> {
+    status.and_then(|s| match s {
+        "pending" => Some(VideoStatus::Pending),
+        "downloading" => Some(VideoStatus::Downloading),
+        "completed" => Some(VideoStatus::Completed),
+        "failed" => Some(VideoStatus::Failed),
+        "skipped" => Some(VideoStatus::Skipped),
+        "cleaned" => Some(VideoStatus::Cleaned),
+        "permanently_failed" => Some(VideoStatus::PermanentlyFailed),
+        _ => None,
+    })
+}
+
+fn normalized_download_status(status: Option<&str>) -> &str {
+    match status {
+        Some(
+            value @ ("pending" | "downloading" | "completed" | "failed" | "skipped" | "cleaned"
+            | "permanently_failed"),
+        ) => value,
+        _ => "all",
+    }
+}
+
+fn parse_activity_severity(value: Option<&str>) -> Option<ActivitySeverity> {
+    value.and_then(|severity| match severity {
+        "info" => Some(ActivitySeverity::Info),
+        "success" => Some(ActivitySeverity::Success),
+        "warning" => Some(ActivitySeverity::Warning),
+        "error" => Some(ActivitySeverity::Error),
+        _ => None,
+    })
+}
+
+fn normalized_activity_severity(value: Option<&str>) -> &str {
+    match value {
+        Some(severity @ ("info" | "success" | "warning" | "error")) => severity,
+        _ => "all",
+    }
+}
+
+fn downloads_page_url(
+    status: Option<&str>,
+    search: Option<&str>,
+    page: i64,
+    per_page: i64,
+) -> String {
+    downloads_url("/downloads", status, search, page, per_page)
+}
+
+fn downloads_list_url(
+    status: Option<&str>,
+    search: Option<&str>,
+    page: i64,
+    per_page: i64,
+) -> String {
+    downloads_url("/web/downloads/list", status, search, page, per_page)
+}
+
+fn downloads_events_url(
+    status: Option<&str>,
+    search: Option<&str>,
+    page: i64,
+    per_page: i64,
+) -> String {
+    downloads_url("/web/downloads/events", status, search, page, per_page)
+}
+
+fn downloads_url(
+    base: &str,
+    status: Option<&str>,
+    search: Option<&str>,
+    page: i64,
+    per_page: i64,
+) -> String {
+    let mut params = Vec::new();
+
+    if let Some(value) = status.filter(|value| *value != "all") {
+        params.push(format!("status={value}"));
+    }
+    if let Some(value) = search.filter(|value| !value.is_empty()) {
+        params.push(format!("search={value}"));
+    }
+    if page > 1 {
+        params.push(format!("page={page}"));
+    }
+    if per_page != 25 {
+        params.push(format!("per_page={per_page}"));
+    }
+
+    if params.is_empty() {
+        base.to_string()
+    } else {
+        format!("{base}?{}", params.join("&"))
+    }
+}
+
+fn activity_page_url(severity: Option<&str>, page: i64, per_page: i64) -> String {
+    activity_url("/activity", severity, page, per_page)
+}
+
+fn activity_list_url(severity: Option<&str>, page: i64, per_page: i64) -> String {
+    activity_url("/web/activity/list", severity, page, per_page)
+}
+
+fn activity_events_url(severity: Option<&str>, page: i64, per_page: i64) -> String {
+    activity_url("/web/activity/events", severity, page, per_page)
+}
+
+fn activity_url(base: &str, severity: Option<&str>, page: i64, per_page: i64) -> String {
+    let mut params = Vec::new();
+
+    if let Some(value) = severity.filter(|value| *value != "all") {
+        params.push(format!("severity={value}"));
+    }
+    if page > 1 {
+        params.push(format!("page={page}"));
+    }
+    if per_page != 50 {
+        params.push(format!("per_page={per_page}"));
+    }
+
+    if params.is_empty() {
+        base.to_string()
+    } else {
+        format!("{base}?{}", params.join("&"))
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_lines)]
+fn downloads_list_markup(
+    videos: &[Video],
+    source_names: &HashMap<Ulid, String>,
+    page_num: i64,
+    total_pages: i64,
+    total: i64,
+    status: Option<&str>,
+    search: Option<&str>,
+    per_page: i64,
+) -> Markup {
+    let current_status = normalized_download_status(status);
+    let status_param = if current_status == "all" {
+        None
+    } else {
+        Some(current_status)
     };
 
     html! {
-        a class=(classes) href=(href) { (label) }
+        section class="mt-4 rounded-2xl border border-slate-200 dark:border-slate-700 bg-white/80 dark:bg-slate-800/80 p-6 shadow-sm" {
+            h2 class="text-lg font-semibold text-slate-900 dark:text-slate-100" {
+                "Downloads"
+                span class="ml-2 text-sm font-normal text-slate-500 dark:text-slate-400" {
+                    "(" (total) " results)"
+                }
+            }
+            @if videos.is_empty() {
+                p class="mt-3 text-sm text-slate-500 dark:text-slate-400" { "No downloads match your filters." }
+            } @else {
+                div class="mt-4 overflow-x-auto" {
+                    table class="min-w-full divide-y divide-slate-200 text-sm" {
+                        thead class="bg-slate-50 dark:bg-slate-800" {
+                            tr {
+                                th class="px-3 py-2 text-left font-semibold text-slate-700 dark:text-slate-300" { "Title" }
+                                th class="px-3 py-2 text-left font-semibold text-slate-700 dark:text-slate-300" { "Source" }
+                                th class="px-3 py-2 text-left font-semibold text-slate-700 dark:text-slate-300" { "Platform" }
+                                th class="px-3 py-2 text-left font-semibold text-slate-700 dark:text-slate-300" { "Status" }
+                                th class="px-3 py-2 text-left font-semibold text-slate-700 dark:text-slate-300" { "Attempts" }
+                                th class="px-3 py-2 text-left font-semibold text-slate-700 dark:text-slate-300" { "Actions" }
+                            }
+                        }
+                        tbody class="divide-y divide-slate-100 dark:divide-slate-700 bg-white dark:bg-slate-900" {
+                            @for video in videos {
+                                tr {
+                                    td class="max-w-lg px-3 py-2 text-slate-900 dark:text-slate-100" {
+                                        p class="truncate font-medium" { (video.title) }
+                                        p class="truncate text-xs text-slate-500 dark:text-slate-400" { (video.id.to_string()) }
+                                    }
+                                    td class="max-w-xs px-3 py-2 text-slate-600 dark:text-slate-400" {
+                                        p class="truncate" {
+                                            @if let Some(name) = source_names.get(&video.id) {
+                                                (name)
+                                            } @else {
+                                                span class="text-slate-400 dark:text-slate-500 italic" { "—" }
+                                            }
+                                        }
+                                    }
+                                    td class="px-3 py-2 text-slate-600 dark:text-slate-400" { (video.platform) }
+                                    td class="px-3 py-2" { (status_badge(&video.status)) }
+                                    td class="px-3 py-2 text-slate-600 dark:text-slate-400" { (video.attempts) }
+                                    td class="px-3 py-2" {
+                                        div class="flex gap-2" {
+                                            @if matches!(video.status, VideoStatus::Failed | VideoStatus::PermanentlyFailed | VideoStatus::Cleaned) {
+                                                form method="post" action=(format!("/downloads/{}/retry", video.id)) {
+                                                    button class="rounded-lg border border-sky-200 dark:border-sky-800 bg-sky-50 dark:bg-sky-900/50 px-3 py-1.5 text-xs font-medium text-sky-700 dark:text-sky-300 hover:bg-sky-100 dark:hover:bg-sky-900" type="submit" {
+                                                        "Retry"
+                                                    }
+                                                }
+                                            }
+                                            @if matches!(video.status, VideoStatus::Pending | VideoStatus::Downloading) {
+                                                form method="post" action=(format!("/downloads/{}/cancel", video.id)) {
+                                                    button
+                                                        class="rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/50 px-3 py-1.5 text-xs font-medium text-amber-700 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-900"
+                                                        type="submit"
+                                                        onclick="return confirm('Cancel this download?')"
+                                                    {
+                                                        "Cancel"
+                                                    }
+                                                }
+                                            }
+                                            @if video.status == VideoStatus::Completed {
+                                                form method="post" action=(format!("/downloads/{}/delete", video.id)) {
+                                                    button
+                                                        class="rounded-lg border border-rose-200 dark:border-rose-800 bg-rose-50 dark:bg-rose-900/50 px-3 py-1.5 text-xs font-medium text-rose-700 dark:text-rose-300 hover:bg-rose-100 dark:hover:bg-rose-900"
+                                                        type="submit"
+                                                        onclick="return confirm('Delete this video? The file will be removed from disk.')"
+                                                    {
+                                                        "Delete"
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            @if total_pages > 1 {
+                nav class="mt-6 flex items-center justify-center gap-2" {
+                    @if page_num > 1 {
+                        a
+                            class="rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 px-3 py-1.5 text-sm text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-600"
+                            href=(downloads_page_url(status_param, search, page_num - 1, per_page))
+                            hx-get=(downloads_list_url(status_param, search, page_num - 1, per_page))
+                            hx-target="#downloads-list"
+                            hx-push-url="true"
+                        {
+                            "Previous"
+                        }
+                    }
+                    span class="text-sm text-slate-500 dark:text-slate-400" {
+                        (format!("Page {} of {}", page_num, total_pages))
+                    }
+                    @if page_num < total_pages {
+                        a
+                            class="rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 px-3 py-1.5 text-sm text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-600"
+                            href=(downloads_page_url(status_param, search, page_num + 1, per_page))
+                            hx-get=(downloads_list_url(status_param, search, page_num + 1, per_page))
+                            hx-target="#downloads-list"
+                            hx-push-url="true"
+                        {
+                            "Next"
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn activity_content_markup(
+    events: &[hof_core::domain::activity::ActivityEvent],
+    page_num: i64,
+    total_pages: i64,
+    current_severity: &str,
+    per_page: i64,
+) -> Markup {
+    let severity_param = if current_severity == "all" {
+        None
+    } else {
+        Some(current_severity)
+    };
+
+    html! {
+        div class="mt-3 flex flex-wrap items-center gap-3" {
+            nav class="flex gap-1" {
+                (severity_filter_link("all", "All", current_severity, per_page))
+                (severity_filter_link("info", "Info", current_severity, per_page))
+                (severity_filter_link("success", "Success", current_severity, per_page))
+                (severity_filter_link("warning", "Warning", current_severity, per_page))
+                (severity_filter_link("error", "Error", current_severity, per_page))
+            }
+            nav class="flex items-center gap-1" {
+                span class="px-2 text-xs font-medium text-slate-500 dark:text-slate-400" { "Rows" }
+                (activity_page_size_link(25, per_page, severity_param))
+                (activity_page_size_link(50, per_page, severity_param))
+                (activity_page_size_link(100, per_page, severity_param))
+            }
+        }
+
+        @if events.is_empty() {
+            p class="mt-4 rounded-lg border border-dashed border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-800 px-4 py-8 text-center text-sm text-slate-500 dark:text-slate-400" {
+                "No activity events recorded yet."
+            }
+        } @else {
+            div class="mt-4 space-y-2" {
+                @for event in events {
+                    (activity_event_row(event))
+                }
+            }
+
+            @if total_pages > 1 {
+                nav class="mt-6 flex items-center justify-center gap-2" {
+                    @if page_num > 1 {
+                        a
+                            class="rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 px-3 py-1.5 text-sm text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-600"
+                            href=(activity_page_url(severity_param, page_num - 1, per_page))
+                            hx-get=(activity_list_url(severity_param, page_num - 1, per_page))
+                            hx-target="#activity-content"
+                            hx-push-url="true"
+                        {
+                            "Previous"
+                        }
+                    }
+                    span class="text-sm text-slate-500 dark:text-slate-400" {
+                        (format!("Page {} of {}", page_num, total_pages))
+                    }
+                    @if page_num < total_pages {
+                        a
+                            class="rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 px-3 py-1.5 text-sm text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-600"
+                            href=(activity_page_url(severity_param, page_num + 1, per_page))
+                            hx-get=(activity_list_url(severity_param, page_num + 1, per_page))
+                            hx-target="#activity-content"
+                            hx-push-url="true"
+                        {
+                            "Next"
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -2554,6 +3290,14 @@ fn profile_editor(profile: &Profile) -> Markup {
                         }
                     }
                 }
+                div {
+                    label class="block text-sm font-medium text-slate-700 dark:text-slate-300" { "Output Preset" }
+                    select class="mt-1 w-full rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 px-3 py-2 text-sm text-slate-900 dark:text-slate-100 shadow-sm" name="output_preset" required {
+                        @for preset in output_preset_options() {
+                            option value=(preset.value) selected[(preset.value == output_preset_value(&profile.output_preset))] { (preset.label) }
+                        }
+                    }
+                }
                 (input_text("Name", "name", "", true, &profile.name))
                 (input_text("Naming Template", "naming_template", "", true, &profile.naming_template))
                 (input_text("Output Directory", "output_dir", "", true, &profile.output_dir))
@@ -2844,6 +3588,28 @@ struct QualityOption {
     label: &'static str,
 }
 
+const fn output_preset_options() -> &'static [OutputPresetOption] {
+    &[
+        OutputPresetOption {
+            value: "auto",
+            label: "Auto (best quality)",
+        },
+        OutputPresetOption {
+            value: "browser",
+            label: "Browser (Jellyfin/web direct-play)",
+        },
+        OutputPresetOption {
+            value: "tv",
+            label: "TV (smart TV direct-play)",
+        },
+    ]
+}
+
+struct OutputPresetOption {
+    value: &'static str,
+    label: &'static str,
+}
+
 const fn quality_label(quality: &Quality) -> &'static str {
     match quality {
         Quality::Best => "Best",
@@ -2867,6 +3633,14 @@ const fn quality_value(quality: &Quality) -> &'static str {
         Quality::Q720p => "720p",
         Quality::Q480p => "480p",
         Quality::AudioOnly => "audio_only",
+    }
+}
+
+const fn output_preset_value(output_preset: &OutputPreset) -> &'static str {
+    match output_preset {
+        OutputPreset::Auto => "auto",
+        OutputPreset::Browser => "browser",
+        OutputPreset::Tv => "tv",
     }
 }
 

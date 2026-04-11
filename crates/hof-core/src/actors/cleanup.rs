@@ -18,6 +18,7 @@ use ulid::Ulid;
 use chrono::{DateTime, Utc};
 
 use crate::db;
+use crate::db::ActivityBroadcaster;
 use crate::domain::activity::{ActivityEventType, ActivitySeverity};
 use crate::domain::video::{Video, VideoStatus};
 
@@ -39,6 +40,8 @@ pub struct CleanupActor {
     running: bool,
     /// Timestamp of the last cleanup run.
     last_run_at: Option<DateTime<Utc>>,
+    /// Broadcaster for real-time SSE notifications.
+    broadcaster: ActivityBroadcaster,
 }
 
 impl std::fmt::Debug for CleanupActor {
@@ -58,6 +61,7 @@ pub struct CleanupActorArgs {
     pub global_retention_days: Option<u32>,
     /// Optional custom cleanup interval.
     pub cleanup_interval: Option<Duration>,
+    pub broadcaster: ActivityBroadcaster,
 }
 
 impl Actor for CleanupActor {
@@ -83,6 +87,7 @@ impl Actor for CleanupActor {
             cleanup_interval,
             running: false,
             last_run_at: None,
+            broadcaster: args.broadcaster,
         };
 
         // Start the cleanup loop.
@@ -397,16 +402,17 @@ impl CleanupActor {
         #[allow(clippy::cast_precision_loss)]
         let size_mb = bytes as f64 / 1_048_576.0;
         let message = format!("Cleaned \"{}\" ({size_mb:.1} MB freed)", video.title);
-        db::log_activity(
-            &self.pool,
-            ActivityEventType::VideoCleaned,
-            ActivitySeverity::Info,
-            &message,
-            None,
-            Some(video.id),
-            None,
-        )
-        .await;
+        self.broadcaster
+            .log_and_broadcast(
+                &self.pool,
+                ActivityEventType::VideoCleaned,
+                ActivitySeverity::Info,
+                &message,
+                None,
+                Some(video.id),
+                None,
+            )
+            .await;
 
         Ok(bytes)
     }
