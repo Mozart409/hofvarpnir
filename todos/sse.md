@@ -71,26 +71,24 @@ Same pattern: query params from the connection URL drive the re-render.
 
 ## Implementation Steps
 
-### Phase 1: Broadcast Infrastructure
+### Phase 1: Broadcast Infrastructure ✅
 
-**1.1 — Add `activity_tx` and `invalidate_tx` to `AppState`**
+**1.1 — Add `activity_tx` and `invalidate_tx` to `AppState`** ✅
 - File: `crates/hof-api/src/lib.rs`
-- Add two new `broadcast::Sender` fields and constructor params.
+- Added `ActivityBroadcaster` struct and `broadcaster` field to `AppState`.
 
-**1.2 — Create channels in `main.rs`**
+**1.2 — Create channels in `main.rs`** ✅
 - File: `crates/hof-web/src/main.rs`
-- Create `broadcast::channel` for activity and invalidate alongside the existing progress channel.
-- Pass both to `AppState::new`.
+- `ActivityBroadcaster` is created in `startup::initialize` and exposed on `ActorSystem`; `main.rs` clones it into `AppState`.
 
-**1.3 — Wrap `log_activity` to broadcast**
+**1.3 — Wrap `log_activity` to broadcast** ✅
 - File: `crates/hof-core/src/db/activity.rs`
-- Preferred approach: add a new `ActivityBroadcaster` struct (holds both `activity_tx` and `invalidate_tx`) that gets passed through `AppState` and into actors. `log_activity` stays as-is (pure DB), and a new `log_and_broadcast_activity` function calls `log_activity` + sends on both channels.
+- `ActivityBroadcaster` struct with `activity_tx: broadcast::Sender<()>` and `invalidate_tx: broadcast::Sender<()>` (capacity 256 each).
+- `log_and_broadcast()` method: calls `log_activity` then sends on both channels (errors ignored).
+- All 8 actor-side `db::log_activity` calls replaced with `self.broadcaster.log_and_broadcast()`.
 
-**1.4 — Publish invalidation signals**
-- Anywhere a profile, source, or video is created/updated/deleted, send `()` on `invalidate_tx`.
-- Call sites in `crates/hof-web/src/pages.rs`: profile CRUD handlers, source CRUD handlers, download retry/cancel/delete handlers.
-- Call sites in actors: `download_supervisor.rs` (status transitions), `scheduler.rs` (new videos discovered), `cleanup.rs` (videos cleaned).
-- The `log_and_broadcast_activity` function also sends on `invalidate_tx` automatically, so any activity event implicitly invalidates the dashboard.
+**1.4 — Publish invalidation signals** ✅
+- Web handlers in `pages.rs`: all 6 `db::log_activity` calls replaced with `state.broadcaster.log_and_broadcast()`; `invalidate()` added to `update_profile`, `update_source`, `retry_download`, `cancel_download` success paths.
 
 ### Phase 2: SSE Endpoints
 

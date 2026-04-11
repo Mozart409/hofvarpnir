@@ -22,6 +22,7 @@ use crate::actors::jellyfin_metadata::{JellyfinMetadataActor, JellyfinMetadataAc
 use crate::actors::scheduler::{SchedulerActor, SchedulerArgs};
 use crate::config::Config;
 use crate::db;
+use crate::db::ActivityBroadcaster;
 use crate::domain::system::SystemIssue;
 use crate::domain::video::DownloadProgress;
 use crate::ytdlp::YtdlpClient;
@@ -42,6 +43,8 @@ pub struct ActorSystem {
     pub progress_rx: mpsc::Receiver<DownloadProgress>,
     /// Issues detected during startup (non-fatal warnings/errors).
     pub startup_issues: Vec<SystemIssue>,
+    /// Broadcaster for real-time SSE notifications.
+    pub broadcaster: ActivityBroadcaster,
 }
 
 /// Initialize the actor system and perform crash recovery.
@@ -104,11 +107,25 @@ pub async fn initialize(pool: PgPool, config: &Config) -> Result<ActorSystem> {
     // Phase 3: Create progress channel
     let (progress_tx, progress_rx) = mpsc::channel(1000);
 
+    // Create broadcaster for SSE real-time notifications
+    let broadcaster = ActivityBroadcaster::new();
+
     // Phase 4: Start actors
-    let supervisor = start_supervisor(pool.clone(), ytdlp.clone(), config, progress_tx);
-    let scheduler = start_scheduler(pool.clone(), ytdlp.clone(), supervisor.clone());
-    let cleanup = start_cleanup(pool.clone(), config);
-    let jellyfin_metadata = start_jellyfin_metadata(pool.clone());
+    let supervisor = start_supervisor(
+        pool.clone(),
+        ytdlp.clone(),
+        config,
+        progress_tx,
+        broadcaster.clone(),
+    );
+    let scheduler = start_scheduler(
+        pool.clone(),
+        ytdlp.clone(),
+        supervisor.clone(),
+        broadcaster.clone(),
+    );
+    let cleanup = start_cleanup(pool.clone(), config, broadcaster.clone());
+    let jellyfin_metadata = start_jellyfin_metadata(pool.clone(), broadcaster.clone());
 
     // Phase 4.5: Kick pending/retry-eligible downloads after startup recovery.
     // This ensures videos reset from `downloading` -> `pending` are resumed
@@ -147,6 +164,7 @@ pub async fn initialize(pool: PgPool, config: &Config) -> Result<ActorSystem> {
         jellyfin_metadata,
         progress_rx,
         startup_issues,
+        broadcaster,
     })
 }
 
@@ -221,12 +239,14 @@ fn start_supervisor(
     ytdlp: Arc<YtdlpClient>,
     config: &Config,
     progress_tx: mpsc::Sender<DownloadProgress>,
+    broadcaster: ActivityBroadcaster,
 ) -> ActorRef<DownloadSupervisor> {
     let args = DownloadSupervisorArgs {
         pool,
         ytdlp,
         config: config.download.clone(),
         progress_tx,
+        broadcaster,
     };
 
     let supervisor = DownloadSupervisor::spawn(args);
@@ -240,12 +260,14 @@ fn start_scheduler(
     pool: PgPool,
     ytdlp: Arc<YtdlpClient>,
     supervisor: ActorRef<DownloadSupervisor>,
+    broadcaster: ActivityBroadcaster,
 ) -> ActorRef<SchedulerActor> {
     let args = SchedulerArgs {
         pool,
         ytdlp,
         supervisor,
         check_interval: None, // Use default
+        broadcaster,
     };
 
     let scheduler = SchedulerActor::spawn(args);
@@ -255,11 +277,16 @@ fn start_scheduler(
 }
 
 /// Start the cleanup actor.
-fn start_cleanup(pool: PgPool, config: &Config) -> ActorRef<CleanupActor> {
+fn start_cleanup(
+    pool: PgPool,
+    config: &Config,
+    broadcaster: ActivityBroadcaster,
+) -> ActorRef<CleanupActor> {
     let args = CleanupActorArgs {
         pool,
         global_retention_days: config.storage.retention_days,
         cleanup_interval: None, // Use default
+        broadcaster,
     };
 
     let cleanup = CleanupActor::spawn(args);
@@ -269,10 +296,14 @@ fn start_cleanup(pool: PgPool, config: &Config) -> ActorRef<CleanupActor> {
 }
 
 /// Start the Jellyfin metadata actor.
-fn start_jellyfin_metadata(pool: PgPool) -> ActorRef<JellyfinMetadataActor> {
+fn start_jellyfin_metadata(
+    pool: PgPool,
+    broadcaster: ActivityBroadcaster,
+) -> ActorRef<JellyfinMetadataActor> {
     let args = JellyfinMetadataActorArgs {
         pool,
         check_interval: None, // Use default (24 hours)
+        broadcaster,
     };
 
     let jellyfin_metadata = JellyfinMetadataActor::spawn(args);

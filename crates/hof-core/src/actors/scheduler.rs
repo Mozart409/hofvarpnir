@@ -14,6 +14,7 @@ use tracing::{debug, error, info, instrument, warn};
 use ulid::Ulid;
 
 use crate::db;
+use crate::db::ActivityBroadcaster;
 use crate::domain::activity::{ActivityEventType, ActivitySeverity};
 use crate::domain::source::Source;
 use crate::ytdlp::YtdlpClient;
@@ -46,6 +47,8 @@ pub struct SchedulerActor {
     active_indexers: HashMap<Ulid, ActorRef<SourceIndexerActor>>,
     /// Whether the scheduler is running.
     running: bool,
+    /// Broadcaster for real-time SSE notifications.
+    broadcaster: ActivityBroadcaster,
 }
 
 impl std::fmt::Debug for SchedulerActor {
@@ -64,6 +67,7 @@ pub struct SchedulerArgs {
     pub supervisor: ActorRef<DownloadSupervisor>,
     /// Optional custom check interval.
     pub check_interval: Option<Duration>,
+    pub broadcaster: ActivityBroadcaster,
 }
 
 impl Actor for SchedulerActor {
@@ -88,6 +92,7 @@ impl Actor for SchedulerActor {
             last_indexed: HashMap::new(),
             active_indexers: HashMap::new(),
             running: false,
+            broadcaster: args.broadcaster,
         };
 
         // Start the scheduling loop.
@@ -350,16 +355,17 @@ impl Message<IndexingCompleted> for SchedulerActor {
                 msg.result.filtered_out,
                 msg.result.filtered_summary()
             );
-            db::log_activity(
-                &self.pool,
-                ActivityEventType::SourceIndexed,
-                ActivitySeverity::Success,
-                &message,
-                Some(msg.source_id),
-                None,
-                None,
-            )
-            .await;
+            self.broadcaster
+                .log_and_broadcast(
+                    &self.pool,
+                    ActivityEventType::SourceIndexed,
+                    ActivitySeverity::Success,
+                    &message,
+                    Some(msg.source_id),
+                    None,
+                    None,
+                )
+                .await;
         } else {
             for err in &msg.result.errors {
                 warn!(source_id = %msg.source_id, error = %err, "Indexing error");
@@ -369,16 +375,17 @@ impl Message<IndexingCompleted> for SchedulerActor {
                 msg.result.errors.len(),
                 msg.result.errors.first().unwrap_or(&String::new())
             );
-            db::log_activity(
-                &self.pool,
-                ActivityEventType::SourceError,
-                ActivitySeverity::Error,
-                &message,
-                Some(msg.source_id),
-                None,
-                None,
-            )
-            .await;
+            self.broadcaster
+                .log_and_broadcast(
+                    &self.pool,
+                    ActivityEventType::SourceError,
+                    ActivitySeverity::Error,
+                    &message,
+                    Some(msg.source_id),
+                    None,
+                    None,
+                )
+                .await;
         }
     }
 }

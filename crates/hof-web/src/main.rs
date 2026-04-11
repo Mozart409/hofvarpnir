@@ -61,6 +61,7 @@ async fn main() -> Result<()> {
         actor_system.cleanup.clone(),
         progress_tx,
         std::mem::take(&mut actor_system.startup_issues),
+        actor_system.broadcaster.clone(),
     );
 
     // Create session layer

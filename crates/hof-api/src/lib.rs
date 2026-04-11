@@ -18,6 +18,7 @@ use hof_core::actors::cleanup::CleanupActor;
 use hof_core::actors::download_supervisor::DownloadSupervisor;
 use hof_core::actors::jellyfin_metadata::JellyfinMetadataActor;
 use hof_core::actors::scheduler::SchedulerActor;
+use hof_core::db::ActivityBroadcaster;
 use hof_core::domain::system::SystemIssue;
 use hof_core::domain::video::DownloadProgress;
 use kameo::actor::ActorRef;
@@ -45,11 +46,14 @@ pub struct AppState {
     pub progress_tx: broadcast::Sender<DownloadProgress>,
     /// Issues detected during startup (non-fatal warnings/errors).
     pub startup_issues: Arc<[SystemIssue]>,
+    /// Broadcaster for real-time SSE notifications (activity + invalidation).
+    pub broadcaster: ActivityBroadcaster,
 }
 
 impl AppState {
     /// Create a new `AppState`.
     #[must_use]
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         pool: PgPool,
         supervisor: ActorRef<DownloadSupervisor>,
@@ -58,6 +62,7 @@ impl AppState {
         cleanup: ActorRef<CleanupActor>,
         progress_tx: broadcast::Sender<DownloadProgress>,
         startup_issues: Vec<SystemIssue>,
+        broadcaster: ActivityBroadcaster,
     ) -> Self {
         Self {
             pool,
@@ -67,6 +72,7 @@ impl AppState {
             cleanup,
             progress_tx,
             startup_issues: startup_issues.into(),
+            broadcaster,
         }
     }
 }
