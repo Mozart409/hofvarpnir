@@ -15,7 +15,7 @@ use axum::{
     routing::{get, post},
 };
 use chrono::{NaiveDate, Utc};
-use futures::stream::{Stream, StreamExt};
+use futures::stream::{Stream, StreamExt, unfold};
 use hof_api::AppState;
 use hof_core::{
     actors::{
@@ -37,6 +37,7 @@ use hof_core::{
 use maud::{DOCTYPE, Markup, PreEscaped, Render, html};
 use rust_embed::Embed;
 use serde::{Deserialize, Serialize};
+use tokio::sync::broadcast;
 use tokio_stream::wrappers::BroadcastStream;
 use tower_sessions::Session;
 use ulid::Ulid;
@@ -47,6 +48,34 @@ use crate::auth::AuthUser;
 #[derive(Embed)]
 #[folder = "assets/"]
 struct Assets;
+
+// ============================================================================
+// SSE Utilities
+// ============================================================================
+
+/// Coalesce window for SSE debouncing: rapid bursts collapse into one push.
+const SSE_COALESCE_WINDOW: Duration = Duration::from_millis(500);
+
+/// Wrap a `broadcast::Receiver<()>` into a debounced `Stream`.
+///
+/// On the first signal, starts a coalesce window. Any signals that arrive
+/// during the window are drained and discarded. One item is yielded after the
+/// window expires. Returns `None` (ends the stream) only when the channel is
+/// closed (no more senders).
+fn debounced_broadcast(rx: broadcast::Receiver<()>) -> impl Stream<Item = ()> {
+    use tokio::sync::broadcast::error::RecvError;
+    unfold(rx, |mut rx| async move {
+        // Wait for the first signal (or detect channel closure).
+        match rx.recv().await {
+            Ok(()) | Err(RecvError::Lagged(_)) => {}
+            Err(RecvError::Closed) => return None,
+        }
+        // Coalesce additional signals within the window.
+        tokio::time::sleep(SSE_COALESCE_WINDOW).await;
+        while rx.try_recv().is_ok() {}
+        Some(((), rx))
+    })
+}
 
 /// Serve embedded static assets.
 async fn serve_asset(Path(path): Path<String>) -> Response {
@@ -212,7 +241,7 @@ async fn take_flash(session: &Session) -> Option<FlashMessage> {
 // Downloads Query
 // ============================================================================
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct DownloadsQuery {
     status: Option<String>,
     search: Option<String>,
@@ -244,9 +273,12 @@ pub fn router(state: AppState) -> Router {
         .route("/downloads/{id}/delete", post(delete_download))
         .route("/web/downloads/list", get(downloads_list_partial))
         .route("/web/downloads/progress", get(download_progress_sse))
+        .route("/web/downloads/events", get(downloads_events_sse))
         .route("/web/system-banner", get(system_banner))
+        .route("/web/dashboard/events", get(dashboard_events_sse))
         .route("/activity", get(activity_page))
         .route("/web/activity/list", get(activity_list_partial))
+        .route("/web/activity/events", get(activity_events_sse))
         .route("/schedule", get(schedule_page))
         .route("/schedule/cleanup", post(trigger_cleanup))
         // Static assets (embedded at compile time)
@@ -604,38 +636,263 @@ async fn dashboard_page(
         NavItem::Dashboard,
         flash,
         html! {
-            div class="grid gap-4 md:grid-cols-2 xl:grid-cols-4" {
-                (metric_card("Profiles", profiles.len(), "Active download configurations"))
-                (metric_card("Sources", sources.len(), "Channels and playlists being tracked"))
-                (metric_card("Pending", pending, "Queued for download"))
-                (metric_card("In Progress", downloading, "Currently downloading"))
-            }
-            div class="mt-4 grid gap-4 md:grid-cols-2" {
-                (metric_card("Completed", completed, "Successfully archived videos"))
-                (metric_card("Failed", failed, "Need retry or manual check"))
-            }
-            section class="mt-8 rounded-2xl border border-slate-200 dark:border-slate-700 bg-white/80 dark:bg-slate-800/80 p-6 shadow-sm" {
-                h2 class="text-lg font-semibold text-slate-900 dark:text-slate-100" { "Recent Downloads" }
-                @if recent.is_empty() {
-                    p class="mt-3 text-sm text-slate-500 dark:text-slate-400" { "No downloads found yet." }
-                } @else {
-                    ul class="mt-4 space-y-3" {
-                        @for video in recent {
-                            li class="flex items-center justify-between gap-3 rounded-xl border border-slate-100 dark:border-slate-700 bg-slate-50/80 dark:bg-slate-800/80 px-3 py-2" {
-                                div class="min-w-0" {
-                                    p class="truncate text-sm font-medium text-slate-900 dark:text-slate-100" { (video.title) }
-                                    p class="text-xs text-slate-500 dark:text-slate-400" { (video.platform) " / " (video.platform_video_id) }
-                                }
-                                (status_badge(&video.status))
-                            }
-                        }
-                    }
+            div
+                hx-ext="sse"
+                sse-connect="/web/dashboard/events"
+            {
+                div id="dashboard-metrics" sse-swap="dashboard-update" hx-swap="innerHTML" {
+                    (dashboard_metrics_markup(
+                        profiles.len(),
+                        sources.len(),
+                        pending,
+                        downloading,
+                        completed,
+                        failed,
+                        &recent,
+                    ))
                 }
             }
         },
     );
 
     (StatusCode::OK, page)
+}
+
+fn dashboard_metrics_markup(
+    profiles: usize,
+    sources: usize,
+    pending: usize,
+    downloading: usize,
+    completed: usize,
+    failed: usize,
+    recent: &[&Video],
+) -> Markup {
+    html! {
+        div class="grid gap-4 md:grid-cols-2 xl:grid-cols-4" {
+            (metric_card("Profiles", profiles, "Active download configurations"))
+            (metric_card("Sources", sources, "Channels and playlists being tracked"))
+            (metric_card("Pending", pending, "Queued for download"))
+            (metric_card("In Progress", downloading, "Currently downloading"))
+        }
+        div class="mt-4 grid gap-4 md:grid-cols-2" {
+            (metric_card("Completed", completed, "Successfully archived videos"))
+            (metric_card("Failed", failed, "Need retry or manual check"))
+        }
+        section class="mt-8 rounded-2xl border border-slate-200 dark:border-slate-700 bg-white/80 dark:bg-slate-800/80 p-6 shadow-sm" {
+            h2 class="text-lg font-semibold text-slate-900 dark:text-slate-100" { "Recent Downloads" }
+            @if recent.is_empty() {
+                p class="mt-3 text-sm text-slate-500 dark:text-slate-400" { "No downloads found yet." }
+            } @else {
+                ul class="mt-4 space-y-3" {
+                    @for video in recent {
+                        li class="flex items-center justify-between gap-3 rounded-xl border border-slate-100 dark:border-slate-700 bg-slate-50/80 dark:bg-slate-800/80 px-3 py-2" {
+                            div class="min-w-0" {
+                                p class="truncate text-sm font-medium text-slate-900 dark:text-slate-100" { (video.title) }
+                                p class="text-xs text-slate-500 dark:text-slate-400" { (video.platform) " / " (video.platform_video_id) }
+                            }
+                            (status_badge(&video.status))
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+async fn dashboard_events_sse(
+    _auth: AuthUser,
+    State(state): State<AppState>,
+) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    let rx = state.broadcaster.subscribe_invalidate();
+
+    let stream = debounced_broadcast(rx).filter_map(move |()| {
+        let pool = state.pool.clone();
+        async move {
+            let (profiles_result, sources_result, videos_result) = tokio::join!(
+                db::list_profiles(&pool),
+                db::list_sources(&pool),
+                db::list_videos(&pool, None)
+            );
+            let profiles = profiles_result.ok()?;
+            let sources = sources_result.ok()?;
+            let videos = videos_result.ok()?;
+
+            let pending = videos
+                .iter()
+                .filter(|v| v.status == VideoStatus::Pending)
+                .count();
+            let downloading = videos
+                .iter()
+                .filter(|v| v.status == VideoStatus::Downloading)
+                .count();
+            let completed = videos
+                .iter()
+                .filter(|v| v.status == VideoStatus::Completed)
+                .count();
+            let failed = videos
+                .iter()
+                .filter(|v| {
+                    matches!(
+                        v.status,
+                        VideoStatus::Failed | VideoStatus::PermanentlyFailed
+                    )
+                })
+                .count();
+
+            let recent = videos.iter().take(8).collect::<Vec<_>>();
+            let fragment = dashboard_metrics_markup(
+                profiles.len(),
+                sources.len(),
+                pending,
+                downloading,
+                completed,
+                failed,
+                &recent,
+            )
+            .into_string();
+
+            Some(Ok(Event::default()
+                .event("dashboard-update")
+                .data(fragment)))
+        }
+    });
+
+    Sse::new(stream).keep_alive(
+        KeepAlive::new()
+            .interval(Duration::from_secs(15))
+            .text("keep-alive"),
+    )
+}
+
+async fn downloads_events_sse(
+    _auth: AuthUser,
+    State(state): State<AppState>,
+    axum::extract::Query(query): axum::extract::Query<DownloadsQuery>,
+) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    let rx = state.broadcaster.subscribe_invalidate();
+
+    let stream = debounced_broadcast(rx).filter_map(move |()| {
+        let pool = state.pool.clone();
+        let query = query.clone();
+        async move {
+            let page_num = query.page.unwrap_or(1).max(1);
+            let per_page = parse_downloads_page_size(query.per_page);
+            let offset = (page_num - 1) * per_page;
+            let search_query = query
+                .search
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty());
+            let status_filter = parse_download_status(query.status.as_deref());
+
+            let (videos_result, count_result, source_names_result) = tokio::join!(
+                db::list_videos_paginated(
+                    &pool,
+                    status_filter.clone(),
+                    search_query,
+                    per_page,
+                    offset
+                ),
+                db::count_videos(&pool, status_filter, search_query),
+                db::get_source_names_for_videos(&pool),
+            );
+
+            let videos = match videos_result {
+                Ok(data) => data,
+                Err(error) => {
+                    tracing::warn!(%error, "failed to render downloads SSE fragment");
+                    return None;
+                }
+            };
+            let total = count_result.unwrap_or(0);
+            let total_pages = if total == 0 {
+                1
+            } else {
+                (total + per_page - 1) / per_page
+            };
+            let source_names = source_names_result.unwrap_or_default();
+
+            let fragment = downloads_list_markup(
+                &videos,
+                &source_names,
+                page_num,
+                total_pages,
+                total,
+                query.status.as_deref(),
+                search_query,
+                per_page,
+            )
+            .into_string();
+
+            Some(Ok(Event::default()
+                .event("downloads-update")
+                .data(fragment)))
+        }
+    });
+
+    Sse::new(stream).keep_alive(
+        KeepAlive::new()
+            .interval(Duration::from_secs(15))
+            .text("keep-alive"),
+    )
+}
+
+async fn activity_events_sse(
+    _auth: AuthUser,
+    State(state): State<AppState>,
+    axum::extract::Query(query): axum::extract::Query<ActivityQuery>,
+) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    let rx = state.broadcaster.subscribe_activity();
+
+    let stream = debounced_broadcast(rx).filter_map(move |()| {
+        let pool = state.pool.clone();
+        let query = query.clone();
+        async move {
+            let page_num = query.page.unwrap_or(1).max(1);
+            let per_page = parse_activity_page_size(query.per_page);
+            let offset = (page_num - 1) * per_page;
+            let severity_filter = parse_activity_severity(query.severity.as_deref());
+
+            let (events_result, count_result) = tokio::join!(
+                db::list_activity_events(
+                    &pool,
+                    per_page,
+                    offset,
+                    severity_filter.clone(),
+                    None,
+                    None
+                ),
+                db::count_activity_events(&pool, severity_filter, None, None)
+            );
+
+            let events = match events_result {
+                Ok(data) => data,
+                Err(error) => {
+                    tracing::warn!(%error, "failed to render activity SSE fragment");
+                    return None;
+                }
+            };
+            let total = count_result.unwrap_or(0);
+            let total_pages = if total == 0 {
+                1
+            } else {
+                (total + per_page - 1) / per_page
+            };
+            let current_severity = normalized_activity_severity(query.severity.as_deref());
+
+            let fragment =
+                activity_content_markup(&events, page_num, total_pages, current_severity, per_page)
+                    .into_string();
+
+            Some(Ok(Event::default().event("activity-update").data(fragment)))
+        }
+    });
+
+    Sse::new(stream).keep_alive(
+        KeepAlive::new()
+            .interval(Duration::from_secs(15))
+            .text("keep-alive"),
+    )
 }
 
 async fn profiles_page(
@@ -1556,22 +1813,28 @@ async fn downloads_page(
             }
 
             div
-                id="downloads-list"
-                hx-get=(list_url)
-                hx-trigger="load"
-                hx-target="this"
-                hx-swap="innerHTML"
+                hx-ext="sse"
+                sse-connect=(downloads_events_url(query.status.as_deref(), search_query, page_num, per_page))
             {
-                (downloads_list_markup(
-                    &videos,
-                    &source_names,
-                    page_num,
-                    total_pages,
-                    total,
-                    query.status.as_deref(),
-                    search_query,
-                    per_page,
-                ))
+                div
+                    id="downloads-list"
+                    sse-swap="downloads-update"
+                    hx-swap="innerHTML"
+                    hx-get=(list_url)
+                    hx-trigger="load"
+                    hx-target="this"
+                {
+                    (downloads_list_markup(
+                        &videos,
+                        &source_names,
+                        page_num,
+                        total_pages,
+                        total,
+                        query.status.as_deref(),
+                        search_query,
+                        per_page,
+                    ))
+                }
             }
         },
     );
@@ -1991,7 +2254,7 @@ async fn system_banner(State(state): State<AppState>) -> impl IntoResponse {
 // Activity Page
 // ============================================================================
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct ActivityQuery {
     severity: Option<String>,
     page: Option<i64>,
@@ -2037,6 +2300,7 @@ async fn activity_page(
 
     let current_severity = normalized_activity_severity(query.severity.as_deref());
     let list_url = activity_list_url(query.severity.as_deref(), page_num, per_page);
+    let events_url = activity_events_url(query.severity.as_deref(), page_num, per_page);
 
     let page = layout(
         "Activity",
@@ -2044,20 +2308,23 @@ async fn activity_page(
         html! {
             section class="rounded-2xl border border-slate-200 dark:border-slate-700 bg-white/80 dark:bg-slate-800/80 p-6 shadow-sm" {
                 h2 class="text-lg font-semibold text-slate-900 dark:text-slate-100" { "Activity Log" }
-                div
-                    id="activity-content"
-                    hx-get=(list_url)
-                    hx-trigger="load"
-                    hx-target="this"
-                    hx-swap="innerHTML"
-                {
-                    (activity_content_markup(
-                        &events,
-                        page_num,
-                        total_pages,
-                        current_severity,
-                        per_page,
-                    ))
+                div hx-ext="sse" sse-connect=(events_url) {
+                    div
+                        id="activity-content"
+                        sse-swap="activity-update"
+                        hx-swap="innerHTML"
+                        hx-get=(list_url)
+                        hx-trigger="load"
+                        hx-target="this"
+                    {
+                        (activity_content_markup(
+                            &events,
+                            page_num,
+                            total_pages,
+                            current_severity,
+                            per_page,
+                        ))
+                    }
                 }
             }
         },
@@ -2269,6 +2536,15 @@ fn downloads_list_url(
     downloads_url("/web/downloads/list", status, search, page, per_page)
 }
 
+fn downloads_events_url(
+    status: Option<&str>,
+    search: Option<&str>,
+    page: i64,
+    per_page: i64,
+) -> String {
+    downloads_url("/web/downloads/events", status, search, page, per_page)
+}
+
 fn downloads_url(
     base: &str,
     status: Option<&str>,
@@ -2304,6 +2580,10 @@ fn activity_page_url(severity: Option<&str>, page: i64, per_page: i64) -> String
 
 fn activity_list_url(severity: Option<&str>, page: i64, per_page: i64) -> String {
     activity_url("/web/activity/list", severity, page, per_page)
+}
+
+fn activity_events_url(severity: Option<&str>, page: i64, per_page: i64) -> String {
+    activity_url("/web/activity/events", severity, page, per_page)
 }
 
 fn activity_url(base: &str, severity: Option<&str>, page: i64, per_page: i64) -> String {

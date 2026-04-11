@@ -90,58 +90,60 @@ Same pattern: query params from the connection URL drive the re-render.
 **1.4 — Publish invalidation signals** ✅
 - Web handlers in `pages.rs`: all 6 `db::log_activity` calls replaced with `state.broadcaster.log_and_broadcast()`; `invalidate()` added to `update_profile`, `update_source`, `retry_download`, `cancel_download` success paths.
 
-### Phase 2: SSE Endpoints
+### Phase 2: SSE Endpoints ✅
 
-**2.1 — Dashboard SSE (`/web/dashboard/events`)**
+**2.1 — Dashboard SSE (`/web/dashboard/events`)** ✅
 - File: `crates/hof-web/src/pages.rs`
 - New handler `dashboard_events_sse` subscribes to `invalidate_tx`.
 - On each (debounced) signal: query profiles count, sources count, video status counts, recent 8 videos.
 - Render the metric cards grid + recent downloads table into an HTML fragment.
 - Send as `Event::default().event("dashboard-update").data(fragment)`.
-- Extract the dashboard metrics + recent table rendering into a reusable function (shared with `dashboard_page`).
+- Extracted `dashboard_metrics_markup()` shared with `dashboard_page`.
 
-**2.2 — Downloads SSE (`/web/downloads/events`)**
+**2.2 — Downloads SSE (`/web/downloads/events`)** ✅
 - File: `crates/hof-web/src/pages.rs`
 - New handler `downloads_events_sse` accepts `DownloadsQuery` and subscribes to `invalidate_tx`.
 - On each (debounced) signal: re-run the same query as `downloads_list_partial` with the query params from the SSE connection URL.
 - Send as `Event::default().event("downloads-update").data(fragment)`.
 
-**2.3 — Activity SSE (`/web/activity/events`)**
+**2.3 — Activity SSE (`/web/activity/events`)** ✅
 - File: `crates/hof-web/src/pages.rs`
 - New handler `activity_events_sse` accepts `ActivityQuery` and subscribes to `activity_tx`.
 - On each (debounced) signal: re-run the same query as `activity_list_partial` with the query params.
 - Send as `Event::default().event("activity-update").data(fragment)`.
 
-**2.4 — Register routes**
+**2.4 — Register routes** ✅
 - File: `crates/hof-web/src/pages.rs` (`router` fn)
-- Add:
+- Added:
   - `.route("/web/dashboard/events", get(dashboard_events_sse))`
   - `.route("/web/downloads/events", get(downloads_events_sse))`
   - `.route("/web/activity/events", get(activity_events_sse))`
 
-### Phase 3: htmx Page Updates
+### Phase 3: htmx Page Updates ✅
 
-**3.1 — Dashboard page markup**
-- Wrap metric cards + recent downloads in an SSE-connected container.
-- Extract the inner content into a function so both the initial render and the SSE handler share it.
-- Use named event `dashboard-update` with `sse-swap`.
+**3.1 — Dashboard page markup** ✅
+- Wrapped metric cards + recent downloads in an SSE-connected container.
+- Extracted content into `dashboard_metrics_markup()` shared with the SSE handler.
+- Named event `dashboard-update` with `sse-swap` on `#dashboard-metrics`.
 
-**3.2 — Downloads page markup**
-- Add SSE connection to the downloads list container.
-- The SSE connect URL includes current filter/search/page query params.
+**3.2 — Downloads page markup** ✅
+- Added SSE connection wrapping the `#downloads-list` container.
+- SSE connect URL (`/web/downloads/events?...`) includes current filter/search/page query params via `downloads_events_url()`.
 - Named event `downloads-update` replaces the list content.
-- Existing progress SSE stays untouched.
+- Existing progress SSE (`/web/downloads/progress`) stays untouched.
 
-**3.3 — Activity page markup**
-- Add SSE connection to the activity content container.
-- The SSE connect URL includes current severity/page query params.
+**3.3 — Activity page markup** ✅
+- Added SSE connection wrapping the `#activity-content` container.
+- SSE connect URL (`/web/activity/events?...`) includes current severity/page query params via `activity_events_url()`.
 - Named event `activity-update` replaces the content.
 
-### Phase 4: Debounce Utility
+### Phase 4: Debounce Utility ✅
 
-**4.1 — Implement debounced broadcast stream**
-- Create a helper function that takes a `broadcast::Receiver<T>` and returns a `Stream` that coalesces rapid events within a fixed 500ms window.
-- Implementation: `tokio::time::sleep` + drain loop. On first event, start timer. When timer fires, yield one item (discarding duplicates).
+**4.1 — Implement debounced broadcast stream** ✅
+- `debounced_broadcast(rx: broadcast::Receiver<()>) -> impl Stream<Item = ()>` in `pages.rs`.
+- Uses `futures::stream::unfold` — no new dependencies.
+- On first signal, starts 500ms coalesce window (`SSE_COALESCE_WINDOW`). Drains any additional signals then yields one item.
+- Returns `None` (ends stream) only when the channel is closed.
 - All three SSE handlers use this wrapper.
 
 ---
