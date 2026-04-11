@@ -753,16 +753,18 @@ async fn create_profile(
 
     match db::create_profile(&state.pool, create).await {
         Ok(profile) => {
-            db::log_activity(
-                &state.pool,
-                ActivityEventType::ProfileCreated,
-                ActivitySeverity::Info,
-                &format!("Created profile \"{}\"", profile.name),
-                None,
-                None,
-                Some(profile.id),
-            )
-            .await;
+            state
+                .broadcaster
+                .log_and_broadcast(
+                    &state.pool,
+                    ActivityEventType::ProfileCreated,
+                    ActivitySeverity::Info,
+                    &format!("Created profile \"{}\"", profile.name),
+                    None,
+                    None,
+                    Some(profile.id),
+                )
+                .await;
             set_flash(
                 &session,
                 "success",
@@ -824,6 +826,7 @@ async fn update_profile(
 
     match db::update_profile(&state.pool, profile_id, update).await {
         Ok(_) => {
+            state.broadcaster.invalidate();
             set_flash(&session, "success", "Profile updated").await;
             Redirect::to("/profiles").into_response()
         }
@@ -857,16 +860,18 @@ async fn delete_profile(
 
     match db::delete_profile(&state.pool, profile_id).await {
         Ok(()) => {
-            db::log_activity(
-                &state.pool,
-                ActivityEventType::ProfileDeleted,
-                ActivitySeverity::Info,
-                &format!("Deleted profile {profile_id}"),
-                None,
-                None,
-                Some(profile_id),
-            )
-            .await;
+            state
+                .broadcaster
+                .log_and_broadcast(
+                    &state.pool,
+                    ActivityEventType::ProfileDeleted,
+                    ActivitySeverity::Info,
+                    &format!("Deleted profile {profile_id}"),
+                    None,
+                    None,
+                    Some(profile_id),
+                )
+                .await;
             set_flash(&session, "success", "Profile deleted").await;
             Redirect::to("/profiles").into_response()
         }
@@ -1031,16 +1036,18 @@ async fn create_source(
     match db::create_source(&state.pool, create).await {
         Ok(source) => {
             let name = source.display_name();
-            db::log_activity(
-                &state.pool,
-                ActivityEventType::SourceCreated,
-                ActivitySeverity::Info,
-                &format!("Added source \"{name}\""),
-                Some(source.id),
-                None,
-                Some(profile_id),
-            )
-            .await;
+            state
+                .broadcaster
+                .log_and_broadcast(
+                    &state.pool,
+                    ActivityEventType::SourceCreated,
+                    ActivitySeverity::Info,
+                    &format!("Added source \"{name}\""),
+                    Some(source.id),
+                    None,
+                    Some(profile_id),
+                )
+                .await;
             set_flash(&session, "success", &format!("Source \"{name}\" added")).await;
             Redirect::to("/sources").into_response()
         }
@@ -1103,6 +1110,7 @@ async fn update_source(
 
     match db::update_source(&state.pool, source_id, update).await {
         Ok(_) => {
+            state.broadcaster.invalidate();
             set_flash(&session, "success", "Source updated").await;
             Redirect::to("/sources").into_response()
         }
@@ -1136,16 +1144,18 @@ async fn delete_source(
 
     match db::delete_source(&state.pool, source_id).await {
         Ok(()) => {
-            db::log_activity(
-                &state.pool,
-                ActivityEventType::SourceDeleted,
-                ActivitySeverity::Info,
-                &format!("Deleted source {source_id}"),
-                Some(source_id),
-                None,
-                None,
-            )
-            .await;
+            state
+                .broadcaster
+                .log_and_broadcast(
+                    &state.pool,
+                    ActivityEventType::SourceDeleted,
+                    ActivitySeverity::Info,
+                    &format!("Deleted source {source_id}"),
+                    Some(source_id),
+                    None,
+                    None,
+                )
+                .await;
             set_flash(&session, "success", "Source deleted").await;
             Redirect::to("/sources").into_response()
         }
@@ -1198,16 +1208,18 @@ async fn toggle_source_enabled(
         Ok(()) => {
             let status = if new_enabled { "enabled" } else { "disabled" };
             let name = source.display_name();
-            db::log_activity(
-                &state.pool,
-                ActivityEventType::SourceUpdated,
-                ActivitySeverity::Info,
-                &format!("Source \"{name}\" {status}"),
-                Some(source_id),
-                None,
-                Some(source.profile_id),
-            )
-            .await;
+            state
+                .broadcaster
+                .log_and_broadcast(
+                    &state.pool,
+                    ActivityEventType::SourceUpdated,
+                    ActivitySeverity::Info,
+                    &format!("Source \"{name}\" {status}"),
+                    Some(source_id),
+                    None,
+                    Some(source.profile_id),
+                )
+                .await;
             set_flash(&session, "success", &format!("Source {status}")).await;
             Redirect::to("/sources").into_response()
         }
@@ -1739,6 +1751,7 @@ async fn retry_download(
         .await
     {
         Ok(()) => {
+            state.broadcaster.invalidate();
             set_flash(&session, "info", "Download re-queued").await;
             Redirect::to("/downloads").into_response()
         }
@@ -1797,6 +1810,7 @@ async fn cancel_download(
 
     match cancel_result {
         Ok(()) => {
+            state.broadcaster.invalidate();
             set_flash(&session, "info", "Download cancelled").await;
             Redirect::to("/downloads").into_response()
         }
@@ -1876,16 +1890,18 @@ async fn delete_download(
     #[allow(clippy::cast_precision_loss)]
     let size_mb = video.file_size_bytes.unwrap_or(0) as f64 / 1_048_576.0;
     let title = &video.title;
-    db::log_activity(
-        &state.pool,
-        ActivityEventType::VideoCleaned,
-        ActivitySeverity::Info,
-        &format!("Manually deleted \"{title}\" ({size_mb:.1} MB freed)"),
-        None,
-        Some(video_id),
-        None,
-    )
-    .await;
+    state
+        .broadcaster
+        .log_and_broadcast(
+            &state.pool,
+            ActivityEventType::VideoCleaned,
+            ActivitySeverity::Info,
+            &format!("Manually deleted \"{title}\" ({size_mb:.1} MB freed)"),
+            None,
+            Some(video_id),
+            None,
+        )
+        .await;
 
     set_flash(
         &session,

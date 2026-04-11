@@ -21,6 +21,7 @@ use ulid::Ulid;
 
 use crate::config::DownloadConfig as AppDownloadConfig;
 use crate::db;
+use crate::db::ActivityBroadcaster;
 use crate::domain::activity::{ActivityEventType, ActivitySeverity};
 use crate::domain::profile::{OutputPreset, Profile, Quality};
 use crate::domain::source::Source;
@@ -74,6 +75,8 @@ pub struct DownloadSupervisor {
     download_timeout: Duration,
     /// Maximum download attempts before marking as permanently failed.
     max_attempts: u32,
+    /// Broadcaster for real-time SSE notifications.
+    broadcaster: ActivityBroadcaster,
 }
 
 impl std::fmt::Debug for DownloadSupervisor {
@@ -91,6 +94,7 @@ pub struct DownloadSupervisorArgs {
     pub ytdlp: Arc<YtdlpClient>,
     pub config: AppDownloadConfig,
     pub progress_tx: mpsc::Sender<DownloadProgress>,
+    pub broadcaster: ActivityBroadcaster,
 }
 
 impl Actor for DownloadSupervisor {
@@ -115,6 +119,7 @@ impl Actor for DownloadSupervisor {
             progress_tx: args.progress_tx,
             download_timeout: args.config.timeout,
             max_attempts: args.config.max_attempts,
+            broadcaster: args.broadcaster,
         };
 
         Ok(supervisor)
@@ -294,16 +299,17 @@ impl Message<DownloadStarting> for DownloadSupervisor {
             Ok(v) => format!("Started downloading \"{}\"", v.title),
             Err(_) => format!("Started downloading video {}", msg.video_id),
         };
-        db::log_activity(
-            &self.pool,
-            ActivityEventType::DownloadStarted,
-            ActivitySeverity::Info,
-            &message,
-            None,
-            Some(msg.video_id),
-            None,
-        )
-        .await;
+        self.broadcaster
+            .log_and_broadcast(
+                &self.pool,
+                ActivityEventType::DownloadStarted,
+                ActivitySeverity::Info,
+                &message,
+                None,
+                Some(msg.video_id),
+                None,
+            )
+            .await;
     }
 }
 
@@ -381,16 +387,17 @@ impl Message<ReportOutcome> for DownloadSupervisor {
                     "Completed \"{}\" ({size_mb:.1} MB)",
                     file_path.file_name().unwrap_or_default().to_string_lossy()
                 );
-                db::log_activity(
-                    &self.pool,
-                    ActivityEventType::DownloadCompleted,
-                    ActivitySeverity::Success,
-                    &message,
-                    None,
-                    Some(video_id),
-                    None,
-                )
-                .await;
+                self.broadcaster
+                    .log_and_broadcast(
+                        &self.pool,
+                        ActivityEventType::DownloadCompleted,
+                        ActivitySeverity::Success,
+                        &message,
+                        None,
+                        Some(video_id),
+                        None,
+                    )
+                    .await;
             }
             DownloadOutcome::Failed {
                 video_id,
@@ -529,16 +536,17 @@ impl Message<CancelDownload> for DownloadSupervisor {
             .await
             .map_err(|e| format!("Failed to update video status: {e}"))?;
 
-        db::log_activity(
-            &self.pool,
-            ActivityEventType::DownloadFailed,
-            ActivitySeverity::Info,
-            &format!("Download cancelled by user for video {}", msg.video_id),
-            None,
-            Some(msg.video_id),
-            None,
-        )
-        .await;
+        self.broadcaster
+            .log_and_broadcast(
+                &self.pool,
+                ActivityEventType::DownloadFailed,
+                ActivitySeverity::Info,
+                &format!("Download cancelled by user for video {}", msg.video_id),
+                None,
+                Some(msg.video_id),
+                None,
+            )
+            .await;
 
         info!(video_id = %msg.video_id, "Download cancelled");
         Ok(())
@@ -625,16 +633,17 @@ impl DownloadSupervisor {
                 "[{code_text}] Permanently failed after {attempts} attempts — preset={:?} quality={:?} stage={:?} — {}",
                 failure.preset, failure.quality, failure.fallback_stage, failure.error
             );
-            db::log_activity(
-                &self.pool,
-                ActivityEventType::DownloadFailed,
-                ActivitySeverity::Error,
-                &message,
-                None,
-                Some(video_id),
-                None,
-            )
-            .await;
+            self.broadcaster
+                .log_and_broadcast(
+                    &self.pool,
+                    ActivityEventType::DownloadFailed,
+                    ActivitySeverity::Error,
+                    &message,
+                    None,
+                    Some(video_id),
+                    None,
+                )
+                .await;
         } else {
             // Schedule retry with exponential backoff
             let reason = if failure.is_rate_limited {
@@ -679,16 +688,17 @@ impl DownloadSupervisor {
                 "[{code_text}] Retry #{attempts} scheduled at {next_retry} — preset={:?} quality={:?} stage={:?} — {}",
                 failure.preset, failure.quality, failure.fallback_stage, failure.error
             );
-            db::log_activity(
-                &self.pool,
-                ActivityEventType::RetryScheduled,
-                ActivitySeverity::Warning,
-                &message,
-                None,
-                Some(video_id),
-                None,
-            )
-            .await;
+            self.broadcaster
+                .log_and_broadcast(
+                    &self.pool,
+                    ActivityEventType::RetryScheduled,
+                    ActivitySeverity::Warning,
+                    &message,
+                    None,
+                    Some(video_id),
+                    None,
+                )
+                .await;
         }
     }
 }

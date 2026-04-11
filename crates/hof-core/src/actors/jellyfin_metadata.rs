@@ -12,6 +12,7 @@ use tracing::{debug, error, info, instrument, warn};
 use ulid::Ulid;
 
 use crate::db;
+use crate::db::ActivityBroadcaster;
 use crate::domain::activity::{ActivityEventType, ActivitySeverity};
 use crate::jellyfin::{self, JellyfinMetadata};
 
@@ -52,6 +53,7 @@ pub struct JellyfinMetadataActor {
     check_interval: Duration,
     is_running: bool,
     last_check_at: Option<chrono::DateTime<Utc>>,
+    broadcaster: ActivityBroadcaster,
 }
 
 impl std::fmt::Debug for JellyfinMetadataActor {
@@ -68,6 +70,7 @@ impl std::fmt::Debug for JellyfinMetadataActor {
 pub struct JellyfinMetadataActorArgs {
     pub pool: PgPool,
     pub check_interval: Option<Duration>,
+    pub broadcaster: ActivityBroadcaster,
 }
 
 impl Actor for JellyfinMetadataActor {
@@ -88,6 +91,7 @@ impl Actor for JellyfinMetadataActor {
             check_interval,
             is_running: false,
             last_check_at: None,
+            broadcaster: args.broadcaster,
         };
 
         // Schedule periodic checks
@@ -264,16 +268,17 @@ impl JellyfinMetadataActor {
             "Generated Jellyfin metadata for \"{}\"",
             source.display_name()
         );
-        db::log_activity(
-            &self.pool,
-            ActivityEventType::MetadataGenerated,
-            ActivitySeverity::Info,
-            &message,
-            Some(source_id),
-            None,
-            None,
-        )
-        .await;
+        self.broadcaster
+            .log_and_broadcast(
+                &self.pool,
+                ActivityEventType::MetadataGenerated,
+                ActivitySeverity::Info,
+                &message,
+                Some(source_id),
+                None,
+                None,
+            )
+            .await;
 
         Ok(())
     }

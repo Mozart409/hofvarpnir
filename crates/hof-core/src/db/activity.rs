@@ -2,12 +2,81 @@
 
 use chrono::{DateTime, Utc};
 use sqlx::postgres::PgPool;
+use tokio::sync::broadcast;
 use ulid::Ulid;
 
 use super::DbError;
 use crate::domain::activity::{
     ActivityEvent, ActivityEventRow, ActivityEventType, ActivitySeverity,
 };
+
+/// Broadcaster for real-time SSE notifications.
+///
+/// Holds channels for broadcasting activity events and generic invalidation
+/// signals. Clone cheaply — senders share the underlying channel.
+#[derive(Clone, Debug)]
+pub struct ActivityBroadcaster {
+    /// Signals that a new activity event was logged.
+    pub activity_tx: broadcast::Sender<()>,
+    /// Signals that any state has changed (profiles, sources, downloads).
+    pub invalidate_tx: broadcast::Sender<()>,
+}
+
+impl ActivityBroadcaster {
+    /// Create a new broadcaster with dedicated channels.
+    #[must_use]
+    pub fn new() -> Self {
+        let (activity_tx, _) = broadcast::channel(256);
+        let (invalidate_tx, _) = broadcast::channel(256);
+        Self {
+            activity_tx,
+            invalidate_tx,
+        }
+    }
+
+    /// Subscribe to activity events.
+    #[must_use]
+    pub fn subscribe_activity(&self) -> broadcast::Receiver<()> {
+        self.activity_tx.subscribe()
+    }
+
+    /// Subscribe to invalidation signals.
+    #[must_use]
+    pub fn subscribe_invalidate(&self) -> broadcast::Receiver<()> {
+        self.invalidate_tx.subscribe()
+    }
+
+    /// Send an invalidation signal (ignores errors when there are no subscribers).
+    pub fn invalidate(&self) {
+        let _ = self.invalidate_tx.send(());
+    }
+
+    /// Log an activity event to the database and broadcast signals on both channels.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn log_and_broadcast(
+        &self,
+        pool: &PgPool,
+        event_type: ActivityEventType,
+        severity: ActivitySeverity,
+        message: &str,
+        source_id: Option<Ulid>,
+        video_id: Option<Ulid>,
+        profile_id: Option<Ulid>,
+    ) {
+        log_activity(
+            pool, event_type, severity, message, source_id, video_id, profile_id,
+        )
+        .await;
+        let _ = self.activity_tx.send(());
+        let _ = self.invalidate_tx.send(());
+    }
+}
+
+impl Default for ActivityBroadcaster {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 /// Data required to create a new activity event.
 #[derive(Debug, Clone)]
