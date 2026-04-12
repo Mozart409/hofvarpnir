@@ -14,7 +14,7 @@ pub mod routes;
 
 use std::sync::Arc;
 
-use axum::{Json, Router, routing::get};
+use axum::{Json, Router, http::StatusCode, response::IntoResponse, routing::get};
 use hof_core::actors::cleanup::CleanupActor;
 use hof_core::actors::download_supervisor::DownloadSupervisor;
 use hof_core::actors::jellyfin_metadata::JellyfinMetadataActor;
@@ -204,7 +204,21 @@ pub fn router(state: AppState) -> (Router, utoipa::openapi::OpenApi) {
     SecurityAddon.modify(&mut api);
     ServerAddon.modify(&mut api);
 
-    (router.with_state(state), api)
+    // Add fallback for unmatched API routes
+    let router = router.fallback(api_not_found).with_state(state);
+
+    (router, api)
+}
+
+/// Handler for API 404 Not Found responses.
+async fn api_not_found() -> impl IntoResponse {
+    (
+        StatusCode::NOT_FOUND,
+        Json(auth::ApiErrorResponse {
+            error: "not_found".to_string(),
+            message: "The requested API endpoint does not exist".to_string(),
+        }),
+    )
 }
 
 /// Build the Scalar `OpenAPI` documentation router.

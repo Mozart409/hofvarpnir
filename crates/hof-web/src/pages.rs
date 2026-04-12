@@ -303,6 +303,8 @@ pub fn router(state: AppState) -> Router {
         .route("/settings/api-keys/{id}/events", get(api_key_events))
         // Static assets (embedded at compile time)
         .route("/assets/{*path}", get(serve_asset))
+        // Fallback for unmatched routes
+        .fallback(not_found)
         .with_state(state)
 }
 
@@ -4368,6 +4370,34 @@ fn error_page(message: &str) -> Markup {
                     a class="inline-flex rounded-lg bg-rose-700 dark:bg-rose-600 px-4 py-2 text-sm font-medium text-white hover:bg-rose-800 dark:hover:bg-rose-700" href="/dashboard" {
                         "Back to dashboard"
                     }
+                }
+            }
+        },
+    )
+}
+
+/// Handler for 404 Not Found responses.
+async fn not_found() -> impl IntoResponse {
+    (StatusCode::NOT_FOUND, not_found_page())
+}
+
+fn not_found_page() -> Markup {
+    auth_layout(
+        "Page Not Found",
+        html! {
+            div class="text-center" {
+                div class="mb-6 text-6xl font-bold text-slate-300 dark:text-slate-600" { "404" }
+                h2 class="text-xl font-semibold text-slate-900 dark:text-slate-100 mb-2" {
+                    "Page Not Found"
+                }
+                p class="text-slate-600 dark:text-slate-400 mb-6" {
+                    "The page you're looking for doesn't exist or has been moved."
+                }
+                a
+                    href="/dashboard"
+                    class="inline-flex rounded-lg bg-slate-900 dark:bg-slate-100 px-4 py-2.5 text-sm font-medium text-white dark:text-slate-900 hover:bg-slate-800 dark:hover:bg-slate-200 transition"
+                {
+                    "Go to Dashboard"
                 }
             }
         },
