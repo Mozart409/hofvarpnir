@@ -808,7 +808,7 @@ pub async fn delete_download(
 /// outages or temporary `YouTube` blocks.
 #[utoipa::path(
     post,
-    path = "/api/v1/downloads/retry",
+    path = "/api/v1/downloads",
     tag = "downloads",
     responses(
         (status = 202, description = "Bulk retry started", body = BulkRetryResponse),
