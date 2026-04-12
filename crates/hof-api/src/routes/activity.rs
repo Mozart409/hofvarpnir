@@ -17,10 +17,16 @@ use utoipa::ToSchema;
 
 use hof_core::{
     db,
-    domain::activity::{ActivityEvent, ActivityEventType, ActivitySeverity, SourceIndexingSummary},
+    domain::{
+        activity::{ActivityEvent, ActivityEventType, ActivitySeverity},
+        api_key::ApiKeyScope,
+    },
 };
 
-use crate::AppState;
+use crate::{
+    AppState,
+    auth::{ApiErrorResponse, Auth},
+};
 
 /// Build the activity router.
 pub fn router() -> Router<AppState> {
@@ -121,13 +127,20 @@ pub struct ErrorResponse {
     responses(
         (status = 200, description = "List of activity events", body = ActivityListResponse),
         (status = 400, description = "Invalid request", body = ErrorResponse),
+        (status = 401, description = "Unauthorized", body = ApiErrorResponse),
+        (status = 403, description = "Forbidden - insufficient scope", body = ApiErrorResponse),
         (status = 500, description = "Internal server error", body = ErrorResponse)
     )
 )]
 pub async fn list_activity(
     State(state): State<AppState>,
+    auth: Auth,
     Query(query): Query<ListActivityQuery>,
 ) -> impl IntoResponse {
+    if let Err(e) = auth.require_scope(ApiKeyScope::Read) {
+        return e.into_response();
+    }
+
     // Validate and cap limit
     let limit = query.limit.clamp(1, 200);
 

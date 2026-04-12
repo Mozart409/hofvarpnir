@@ -18,10 +18,16 @@ use hof_core::{
     actors::jellyfin_metadata::TriggerSourceMetadata,
     actors::scheduler::IndexSource,
     db::{self, CreateSource, UpdateSource},
-    domain::source::{Source, SourceType},
+    domain::{
+        api_key::ApiKeyScope,
+        source::{Source, SourceType},
+    },
 };
 
-use crate::AppState;
+use crate::{
+    AppState,
+    auth::{ApiErrorResponse, Auth},
+};
 
 /// Build the sources router.
 pub fn router() -> Router<AppState> {
@@ -188,13 +194,20 @@ pub struct ErrorResponse {
     responses(
         (status = 200, description = "List of sources", body = Vec<SourceResponse>),
         (status = 400, description = "Invalid request", body = ErrorResponse),
+        (status = 401, description = "Unauthorized", body = ApiErrorResponse),
+        (status = 403, description = "Forbidden - insufficient scope", body = ApiErrorResponse),
         (status = 500, description = "Internal server error", body = ErrorResponse)
     )
 )]
 pub async fn list_sources(
     State(state): State<AppState>,
+    auth: Auth,
     Query(query): Query<ListSourcesQuery>,
 ) -> impl IntoResponse {
+    if let Err(e) = auth.require_scope(ApiKeyScope::Read) {
+        return e.into_response();
+    }
+
     let result = if let Some(profile_id_str) = query.profile_id {
         let Ok(profile_id) = Ulid::from_string(&profile_id_str) else {
             return (
@@ -237,13 +250,20 @@ pub async fn list_sources(
     responses(
         (status = 201, description = "Source created", body = SourceResponse),
         (status = 400, description = "Invalid request", body = ErrorResponse),
+        (status = 401, description = "Unauthorized", body = ApiErrorResponse),
+        (status = 403, description = "Forbidden - insufficient scope", body = ApiErrorResponse),
         (status = 500, description = "Internal server error", body = ErrorResponse)
     )
 )]
 pub async fn create_source(
     State(state): State<AppState>,
+    auth: Auth,
     Json(req): Json<CreateSourceRequest>,
 ) -> impl IntoResponse {
+    if let Err(e) = auth.require_scope(ApiKeyScope::Write) {
+        return e.into_response();
+    }
+
     let Ok(profile_id) = Ulid::from_string(&req.profile_id) else {
         return (
             StatusCode::BAD_REQUEST,
@@ -303,14 +323,21 @@ pub async fn create_source(
     responses(
         (status = 200, description = "Source found", body = SourceResponse),
         (status = 400, description = "Invalid ID format", body = ErrorResponse),
+        (status = 401, description = "Unauthorized", body = ApiErrorResponse),
+        (status = 403, description = "Forbidden - insufficient scope", body = ApiErrorResponse),
         (status = 404, description = "Source not found", body = ErrorResponse),
         (status = 500, description = "Internal server error", body = ErrorResponse)
     )
 )]
 pub async fn get_source(
     State(state): State<AppState>,
+    auth: Auth,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
+    if let Err(e) = auth.require_scope(ApiKeyScope::Read) {
+        return e.into_response();
+    }
+
     let Ok(source_id) = Ulid::from_string(&id) else {
         return (
             StatusCode::BAD_REQUEST,
@@ -358,15 +385,22 @@ pub async fn get_source(
     responses(
         (status = 200, description = "Source updated", body = SourceResponse),
         (status = 400, description = "Invalid request", body = ErrorResponse),
+        (status = 401, description = "Unauthorized", body = ApiErrorResponse),
+        (status = 403, description = "Forbidden - insufficient scope", body = ApiErrorResponse),
         (status = 404, description = "Source not found", body = ErrorResponse),
         (status = 500, description = "Internal server error", body = ErrorResponse)
     )
 )]
 pub async fn update_source(
     State(state): State<AppState>,
+    auth: Auth,
     Path(id): Path<String>,
     Json(req): Json<UpdateSourceRequest>,
 ) -> impl IntoResponse {
+    if let Err(e) = auth.require_scope(ApiKeyScope::Write) {
+        return e.into_response();
+    }
+
     let Ok(source_id) = Ulid::from_string(&id) else {
         return (
             StatusCode::BAD_REQUEST,
@@ -444,14 +478,21 @@ pub async fn update_source(
     responses(
         (status = 204, description = "Source deleted"),
         (status = 400, description = "Invalid ID format", body = ErrorResponse),
+        (status = 401, description = "Unauthorized", body = ApiErrorResponse),
+        (status = 403, description = "Forbidden - insufficient scope", body = ApiErrorResponse),
         (status = 404, description = "Source not found", body = ErrorResponse),
         (status = 500, description = "Internal server error", body = ErrorResponse)
     )
 )]
 pub async fn delete_source(
     State(state): State<AppState>,
+    auth: Auth,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
+    if let Err(e) = auth.require_scope(ApiKeyScope::Delete) {
+        return e.into_response();
+    }
+
     let Ok(source_id) = Ulid::from_string(&id) else {
         return (
             StatusCode::BAD_REQUEST,
@@ -498,6 +539,8 @@ pub async fn delete_source(
     responses(
         (status = 202, description = "Indexing started", body = IndexTriggerResponse),
         (status = 400, description = "Invalid ID format", body = ErrorResponse),
+        (status = 401, description = "Unauthorized", body = ApiErrorResponse),
+        (status = 403, description = "Forbidden - insufficient scope", body = ApiErrorResponse),
         (status = 404, description = "Source not found", body = ErrorResponse),
         (status = 409, description = "Source already being indexed", body = ErrorResponse),
         (status = 500, description = "Internal server error", body = ErrorResponse)
@@ -505,8 +548,13 @@ pub async fn delete_source(
 )]
 pub async fn trigger_index(
     State(state): State<AppState>,
+    auth: Auth,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
+    if let Err(e) = auth.require_scope(ApiKeyScope::Write) {
+        return e.into_response();
+    }
+
     let Ok(source_id) = Ulid::from_string(&id) else {
         return (
             StatusCode::BAD_REQUEST,
@@ -581,14 +629,21 @@ pub async fn trigger_index(
     responses(
         (status = 202, description = "Metadata generation started", body = MetadataTriggerResponse),
         (status = 400, description = "Invalid ID format or missing channel metadata", body = ErrorResponse),
+        (status = 401, description = "Unauthorized", body = ApiErrorResponse),
+        (status = 403, description = "Forbidden - insufficient scope", body = ApiErrorResponse),
         (status = 404, description = "Source not found", body = ErrorResponse),
         (status = 500, description = "Internal server error", body = ErrorResponse)
     )
 )]
 pub async fn trigger_metadata(
     State(state): State<AppState>,
+    auth: Auth,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
+    if let Err(e) = auth.require_scope(ApiKeyScope::Write) {
+        return e.into_response();
+    }
+
     let Ok(source_id) = Ulid::from_string(&id) else {
         return (
             StatusCode::BAD_REQUEST,

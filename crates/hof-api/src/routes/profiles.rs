@@ -16,11 +16,17 @@ use utoipa::ToSchema;
 
 use hof_core::{
     db::{self, CreateProfile, UpdateProfile},
-    domain::profile::{OutputPreset, Profile, Quality},
+    domain::{
+        api_key::ApiKeyScope,
+        profile::{Profile, Quality},
+    },
     ytdlp::validate_output_template,
 };
 
-use crate::AppState;
+use crate::{
+    AppState,
+    auth::{ApiErrorResponse, Auth},
+};
 
 /// Build the profiles router.
 pub fn router() -> Router<AppState> {
@@ -171,13 +177,20 @@ pub struct ErrorResponse {
     ),
     responses(
         (status = 200, description = "List of profiles", body = Vec<ProfileResponse>),
+        (status = 401, description = "Unauthorized", body = ApiErrorResponse),
+        (status = 403, description = "Forbidden - insufficient scope", body = ApiErrorResponse),
         (status = 500, description = "Internal server error", body = ErrorResponse)
     )
 )]
 pub async fn list_profiles(
     State(state): State<AppState>,
+    auth: Auth,
     Query(query): Query<ListProfilesQuery>,
 ) -> impl IntoResponse {
+    if let Err(e) = auth.require_scope(ApiKeyScope::Read) {
+        return e.into_response();
+    }
+
     let result = if let Some(user_id_str) = query.user_id {
         let Ok(user_id) = Ulid::from_string(&user_id_str) else {
             return (
@@ -220,13 +233,20 @@ pub async fn list_profiles(
     responses(
         (status = 201, description = "Profile created", body = ProfileResponse),
         (status = 400, description = "Invalid request", body = ErrorResponse),
+        (status = 401, description = "Unauthorized", body = ApiErrorResponse),
+        (status = 403, description = "Forbidden - insufficient scope", body = ApiErrorResponse),
         (status = 500, description = "Internal server error", body = ErrorResponse)
     )
 )]
 pub async fn create_profile(
     State(state): State<AppState>,
+    auth: Auth,
     Json(req): Json<CreateProfileRequest>,
 ) -> impl IntoResponse {
+    if let Err(e) = auth.require_scope(ApiKeyScope::Write) {
+        return e.into_response();
+    }
+
     let Ok(user_id) = Ulid::from_string(&req.user_id) else {
         return (
             StatusCode::BAD_REQUEST,
@@ -287,14 +307,21 @@ pub async fn create_profile(
     responses(
         (status = 200, description = "Profile found", body = ProfileResponse),
         (status = 400, description = "Invalid ID format", body = ErrorResponse),
+        (status = 401, description = "Unauthorized", body = ApiErrorResponse),
+        (status = 403, description = "Forbidden - insufficient scope", body = ApiErrorResponse),
         (status = 404, description = "Profile not found", body = ErrorResponse),
         (status = 500, description = "Internal server error", body = ErrorResponse)
     )
 )]
 pub async fn get_profile(
     State(state): State<AppState>,
+    auth: Auth,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
+    if let Err(e) = auth.require_scope(ApiKeyScope::Read) {
+        return e.into_response();
+    }
+
     let Ok(profile_id) = Ulid::from_string(&id) else {
         return (
             StatusCode::BAD_REQUEST,
@@ -342,15 +369,22 @@ pub async fn get_profile(
     responses(
         (status = 200, description = "Profile updated", body = ProfileResponse),
         (status = 400, description = "Invalid request", body = ErrorResponse),
+        (status = 401, description = "Unauthorized", body = ApiErrorResponse),
+        (status = 403, description = "Forbidden - insufficient scope", body = ApiErrorResponse),
         (status = 404, description = "Profile not found", body = ErrorResponse),
         (status = 500, description = "Internal server error", body = ErrorResponse)
     )
 )]
 pub async fn update_profile(
     State(state): State<AppState>,
+    auth: Auth,
     Path(id): Path<String>,
     Json(req): Json<UpdateProfileRequest>,
 ) -> impl IntoResponse {
+    if let Err(e) = auth.require_scope(ApiKeyScope::Write) {
+        return e.into_response();
+    }
+
     let Ok(profile_id) = Ulid::from_string(&id) else {
         return (
             StatusCode::BAD_REQUEST,
@@ -424,14 +458,21 @@ pub async fn update_profile(
     responses(
         (status = 204, description = "Profile deleted"),
         (status = 400, description = "Invalid ID format", body = ErrorResponse),
+        (status = 401, description = "Unauthorized", body = ApiErrorResponse),
+        (status = 403, description = "Forbidden - insufficient scope", body = ApiErrorResponse),
         (status = 404, description = "Profile not found", body = ErrorResponse),
         (status = 500, description = "Internal server error", body = ErrorResponse)
     )
 )]
 pub async fn delete_profile(
     State(state): State<AppState>,
+    auth: Auth,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
+    if let Err(e) = auth.require_scope(ApiKeyScope::Delete) {
+        return e.into_response();
+    }
+
     let Ok(profile_id) = Ulid::from_string(&id) else {
         return (
             StatusCode::BAD_REQUEST,
