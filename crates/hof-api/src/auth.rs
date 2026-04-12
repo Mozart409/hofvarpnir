@@ -9,7 +9,7 @@ use axum::{
     http::{StatusCode, header::AUTHORIZATION, request::Parts},
     response::{IntoResponse, Response},
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tower_sessions::Session;
 use ulid::Ulid;
 use utoipa::ToSchema;
@@ -99,7 +99,7 @@ pub enum ApiError {
 }
 
 /// JSON error response body.
-#[derive(Debug, Serialize, ToSchema)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct ApiErrorResponse {
     pub error: String,
     pub message: String,

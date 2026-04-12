@@ -4,6 +4,35 @@
 //! ULID parsing, and error handling for API types.
 
 // ============================================================================
+// Not Found Tests
+// ============================================================================
+
+#[cfg(test)]
+mod not_found_tests {
+    use crate::auth::ApiErrorResponse;
+
+    #[test]
+    fn test_api_error_response_schema() {
+        let response = ApiErrorResponse {
+            error: "not_found".to_string(),
+            message: "The requested API endpoint does not exist".to_string(),
+        };
+
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("\"error\":\"not_found\""));
+        assert!(json.contains("The requested API endpoint does not exist"));
+    }
+
+    #[test]
+    fn test_api_error_response_deserialization() {
+        let json = r#"{"error":"not_found","message":"Resource not found"}"#;
+        let response: ApiErrorResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(response.error, "not_found");
+        assert_eq!(response.message, "Resource not found");
+    }
+}
+
+// ============================================================================
 // Profile Route Tests
 // ============================================================================
 
