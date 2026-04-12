@@ -53,6 +53,25 @@ impl Modify for SecurityAddon {
     }
 }
 
+/// Server URL modifier for `OpenAPI` documentation.
+///
+/// Reads `API_BASE_URL` env var to set the server URL in the `OpenAPI` spec.
+/// Defaults to `http://localhost:8080` if not set.
+struct ServerAddon;
+
+impl Modify for ServerAddon {
+    fn modify(&self, openapi: &mut utoipa::openapi::OpenApi) {
+        let base_url =
+            std::env::var("API_BASE_URL").unwrap_or_else(|_| "http://localhost:8080".to_string());
+        openapi.servers = Some(vec![
+            utoipa::openapi::ServerBuilder::new()
+                .url(&base_url)
+                .description(Some("API Server"))
+                .build(),
+        ]);
+    }
+}
+
 /// Shared application state for API handlers.
 #[derive(Clone)]
 pub struct AppState {
@@ -180,7 +199,7 @@ impl AppState {
         (name = "activity", description = "Activity log endpoints"),
         (name = "system", description = "System status and control endpoints")
     ),
-    modifiers(&SecurityAddon)
+    modifiers(&SecurityAddon, &ServerAddon)
 )]
 pub struct ApiDoc;
 
