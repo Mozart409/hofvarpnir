@@ -86,6 +86,10 @@ css-build:
 test: clear
     cargo test --all-features -- --include-ignored
 
+# E2E API tests (parallel by default)
+e2e: clear mig-run
+    cargo test --package hof-api --test e2e --all-features
+
 # CI simulation
 ci: clear
     SQLX_OFFLINE=true cargo build --release
