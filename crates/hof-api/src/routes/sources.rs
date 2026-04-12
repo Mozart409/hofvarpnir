@@ -3,36 +3,39 @@
 //! Sources represent channels, playlists, or other feeds to monitor.
 
 use axum::{
-    Json, Router,
+    Json,
     extract::{Path, Query, State},
     http::StatusCode,
     response::IntoResponse,
-    routing::{get, post},
 };
 use chrono::{DateTime, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use ulid::Ulid;
 use utoipa::ToSchema;
+use utoipa_axum::{router::OpenApiRouter, routes};
 
 use hof_core::{
     actors::jellyfin_metadata::TriggerSourceMetadata,
     actors::scheduler::IndexSource,
     db::{self, CreateSource, UpdateSource},
-    domain::source::{Source, SourceType},
+    domain::{
+        api_key::ApiKeyScope,
+        source::{Source, SourceType},
+    },
 };
 
-use crate::AppState;
+use crate::{
+    AppState,
+    auth::{ApiErrorResponse, Auth},
+};
 
 /// Build the sources router.
-pub fn router() -> Router<AppState> {
-    Router::new()
-        .route("/", get(list_sources).post(create_source))
-        .route(
-            "/{id}",
-            get(get_source).put(update_source).delete(delete_source),
-        )
-        .route("/{id}/index", post(trigger_index))
-        .route("/{id}/metadata", post(trigger_metadata))
+pub fn router() -> OpenApiRouter<AppState> {
+    OpenApiRouter::new()
+        .routes(routes!(list_sources, create_source))
+        .routes(routes!(get_source, update_source, delete_source))
+        .routes(routes!(trigger_index))
+        .routes(routes!(trigger_metadata))
 }
 
 // ============================================================================
@@ -180,7 +183,7 @@ pub struct ErrorResponse {
 /// Optionally filter by profile ID using the `profile_id` query parameter.
 #[utoipa::path(
     get,
-    path = "/api/v1/sources",
+    path = "",
     tag = "sources",
     params(
         ("profile_id" = Option<String>, Query, description = "Filter by profile ID")
@@ -188,13 +191,20 @@ pub struct ErrorResponse {
     responses(
         (status = 200, description = "List of sources", body = Vec<SourceResponse>),
         (status = 400, description = "Invalid request", body = ErrorResponse),
+        (status = 401, description = "Unauthorized", body = ApiErrorResponse),
+        (status = 403, description = "Forbidden - insufficient scope", body = ApiErrorResponse),
         (status = 500, description = "Internal server error", body = ErrorResponse)
     )
 )]
 pub async fn list_sources(
     State(state): State<AppState>,
+    auth: Auth,
     Query(query): Query<ListSourcesQuery>,
 ) -> impl IntoResponse {
+    if let Err(e) = auth.require_scope(ApiKeyScope::Read) {
+        return e.into_response();
+    }
+
     let result = if let Some(profile_id_str) = query.profile_id {
         let Ok(profile_id) = Ulid::from_string(&profile_id_str) else {
             return (
@@ -231,19 +241,26 @@ pub async fn list_sources(
 /// Create a new source.
 #[utoipa::path(
     post,
-    path = "/api/v1/sources",
+    path = "",
     tag = "sources",
     request_body = CreateSourceRequest,
     responses(
         (status = 201, description = "Source created", body = SourceResponse),
         (status = 400, description = "Invalid request", body = ErrorResponse),
+        (status = 401, description = "Unauthorized", body = ApiErrorResponse),
+        (status = 403, description = "Forbidden - insufficient scope", body = ApiErrorResponse),
         (status = 500, description = "Internal server error", body = ErrorResponse)
     )
 )]
 pub async fn create_source(
     State(state): State<AppState>,
+    auth: Auth,
     Json(req): Json<CreateSourceRequest>,
 ) -> impl IntoResponse {
+    if let Err(e) = auth.require_scope(ApiKeyScope::Write) {
+        return e.into_response();
+    }
+
     let Ok(profile_id) = Ulid::from_string(&req.profile_id) else {
         return (
             StatusCode::BAD_REQUEST,
@@ -295,7 +312,7 @@ pub async fn create_source(
 /// Get a source by ID.
 #[utoipa::path(
     get,
-    path = "/api/v1/sources/{id}",
+    path = "/{id}",
     tag = "sources",
     params(
         ("id" = String, Path, description = "Source ID (ULID)")
@@ -303,14 +320,21 @@ pub async fn create_source(
     responses(
         (status = 200, description = "Source found", body = SourceResponse),
         (status = 400, description = "Invalid ID format", body = ErrorResponse),
+        (status = 401, description = "Unauthorized", body = ApiErrorResponse),
+        (status = 403, description = "Forbidden - insufficient scope", body = ApiErrorResponse),
         (status = 404, description = "Source not found", body = ErrorResponse),
         (status = 500, description = "Internal server error", body = ErrorResponse)
     )
 )]
 pub async fn get_source(
     State(state): State<AppState>,
+    auth: Auth,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
+    if let Err(e) = auth.require_scope(ApiKeyScope::Read) {
+        return e.into_response();
+    }
+
     let Ok(source_id) = Ulid::from_string(&id) else {
         return (
             StatusCode::BAD_REQUEST,
@@ -349,7 +373,7 @@ pub async fn get_source(
 /// Update a source.
 #[utoipa::path(
     put,
-    path = "/api/v1/sources/{id}",
+    path = "/{id}",
     tag = "sources",
     params(
         ("id" = String, Path, description = "Source ID (ULID)")
@@ -358,15 +382,22 @@ pub async fn get_source(
     responses(
         (status = 200, description = "Source updated", body = SourceResponse),
         (status = 400, description = "Invalid request", body = ErrorResponse),
+        (status = 401, description = "Unauthorized", body = ApiErrorResponse),
+        (status = 403, description = "Forbidden - insufficient scope", body = ApiErrorResponse),
         (status = 404, description = "Source not found", body = ErrorResponse),
         (status = 500, description = "Internal server error", body = ErrorResponse)
     )
 )]
 pub async fn update_source(
     State(state): State<AppState>,
+    auth: Auth,
     Path(id): Path<String>,
     Json(req): Json<UpdateSourceRequest>,
 ) -> impl IntoResponse {
+    if let Err(e) = auth.require_scope(ApiKeyScope::Write) {
+        return e.into_response();
+    }
+
     let Ok(source_id) = Ulid::from_string(&id) else {
         return (
             StatusCode::BAD_REQUEST,
@@ -436,7 +467,7 @@ pub async fn update_source(
 /// Delete a source.
 #[utoipa::path(
     delete,
-    path = "/api/v1/sources/{id}",
+    path = "/{id}",
     tag = "sources",
     params(
         ("id" = String, Path, description = "Source ID (ULID)")
@@ -444,14 +475,21 @@ pub async fn update_source(
     responses(
         (status = 204, description = "Source deleted"),
         (status = 400, description = "Invalid ID format", body = ErrorResponse),
+        (status = 401, description = "Unauthorized", body = ApiErrorResponse),
+        (status = 403, description = "Forbidden - insufficient scope", body = ApiErrorResponse),
         (status = 404, description = "Source not found", body = ErrorResponse),
         (status = 500, description = "Internal server error", body = ErrorResponse)
     )
 )]
 pub async fn delete_source(
     State(state): State<AppState>,
+    auth: Auth,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
+    if let Err(e) = auth.require_scope(ApiKeyScope::Delete) {
+        return e.into_response();
+    }
+
     let Ok(source_id) = Ulid::from_string(&id) else {
         return (
             StatusCode::BAD_REQUEST,
@@ -490,7 +528,7 @@ pub async fn delete_source(
 /// bypassing the normal schedule.
 #[utoipa::path(
     post,
-    path = "/api/v1/sources/{id}/index",
+    path = "/{id}/index",
     tag = "sources",
     params(
         ("id" = String, Path, description = "Source ID (ULID)")
@@ -498,6 +536,8 @@ pub async fn delete_source(
     responses(
         (status = 202, description = "Indexing started", body = IndexTriggerResponse),
         (status = 400, description = "Invalid ID format", body = ErrorResponse),
+        (status = 401, description = "Unauthorized", body = ApiErrorResponse),
+        (status = 403, description = "Forbidden - insufficient scope", body = ApiErrorResponse),
         (status = 404, description = "Source not found", body = ErrorResponse),
         (status = 409, description = "Source already being indexed", body = ErrorResponse),
         (status = 500, description = "Internal server error", body = ErrorResponse)
@@ -505,8 +545,13 @@ pub async fn delete_source(
 )]
 pub async fn trigger_index(
     State(state): State<AppState>,
+    auth: Auth,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
+    if let Err(e) = auth.require_scope(ApiKeyScope::Write) {
+        return e.into_response();
+    }
+
     let Ok(source_id) = Ulid::from_string(&id) else {
         return (
             StatusCode::BAD_REQUEST,
@@ -573,7 +618,7 @@ pub async fn trigger_index(
 /// channel metadata (thumbnail URL, channel ID) available for image downloads.
 #[utoipa::path(
     post,
-    path = "/api/v1/sources/{id}/metadata",
+    path = "/{id}/metadata",
     tag = "sources",
     params(
         ("id" = String, Path, description = "Source ID (ULID)")
@@ -581,14 +626,21 @@ pub async fn trigger_index(
     responses(
         (status = 202, description = "Metadata generation started", body = MetadataTriggerResponse),
         (status = 400, description = "Invalid ID format or missing channel metadata", body = ErrorResponse),
+        (status = 401, description = "Unauthorized", body = ApiErrorResponse),
+        (status = 403, description = "Forbidden - insufficient scope", body = ApiErrorResponse),
         (status = 404, description = "Source not found", body = ErrorResponse),
         (status = 500, description = "Internal server error", body = ErrorResponse)
     )
 )]
 pub async fn trigger_metadata(
     State(state): State<AppState>,
+    auth: Auth,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
+    if let Err(e) = auth.require_scope(ApiKeyScope::Write) {
+        return e.into_response();
+    }
+
     let Ok(source_id) = Ulid::from_string(&id) else {
         return (
             StatusCode::BAD_REQUEST,

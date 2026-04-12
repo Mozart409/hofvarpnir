@@ -26,8 +26,10 @@ futures.workspace = true
 tokio-stream.workspace = true
 kameo.workspace = true
 sqlx.workspace = true
+tower-sessions.workspace = true
 
 [dev-dependencies]
+axum-test = "20.0.0"
 serde_qs = "1.1"
 
 [lints]

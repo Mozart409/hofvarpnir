@@ -164,7 +164,6 @@ mod tests {
     // Run with: DATABASE_URL=postgres://... cargo test -p hof-core --all-features -- --include-ignored
 
     #[tokio::test]
-    #[ignore = "requires database"]
     async fn test_create_user() {
         let pool = create_pool().await.expect("Failed to create pool");
         run_migrations(&pool)
@@ -192,7 +191,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires database"]
     async fn test_user_crud() {
         let pool = create_pool().await.expect("Failed to create pool");
         run_migrations(&pool)

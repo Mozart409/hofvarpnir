@@ -24,9 +24,11 @@ use hof_core::{
         jellyfin_metadata::TriggerSourceMetadata,
         scheduler::IndexSource,
     },
-    db::{self, CreateProfile, CreateSource, UpdateProfile, UpdateSource},
+    auth::generate_api_key,
+    db::{self, CreateApiKey, CreateProfile, CreateSource, UpdateProfile, UpdateSource},
     domain::{
         activity::{ActivityEventType, ActivitySeverity},
+        api_key::{ApiKey, ApiKeyEventType, ApiKeyScope},
         profile::{OutputPreset, Profile, Quality},
         source::{Source, SourceType},
         system::IssueSeverity,
@@ -100,6 +102,7 @@ enum NavItem {
     Downloads,
     Activity,
     Schedule,
+    ApiKeys,
 }
 
 #[derive(Debug, Deserialize)]
@@ -196,6 +199,15 @@ pub struct SourceForm {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct ApiKeyForm {
+    name: String,
+    scope_read: Option<String>,
+    scope_write: Option<String>,
+    scope_delete: Option<String>,
+    expires_in_days: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct LoginForm {
     email: String,
     password: String,
@@ -281,6 +293,14 @@ pub fn router(state: AppState) -> Router {
         .route("/web/activity/events", get(activity_events_sse))
         .route("/schedule", get(schedule_page))
         .route("/schedule/cleanup", post(trigger_cleanup))
+        // API Keys management
+        .route(
+            "/settings/api-keys",
+            get(api_keys_page).post(create_api_key),
+        )
+        .route("/settings/api-keys/{id}/roll", post(roll_api_key))
+        .route("/settings/api-keys/{id}/delete", post(delete_api_key))
+        .route("/settings/api-keys/{id}/events", get(api_key_events))
         // Static assets (embedded at compile time)
         .route("/assets/{*path}", get(serve_asset))
         .with_state(state)
@@ -1555,6 +1575,489 @@ async fn trigger_cleanup(
                 .into_response()
         }
     }
+}
+
+// ============================================================================
+// API Keys Page
+// ============================================================================
+
+/// Session key for storing newly created API key token (shown once).
+const NEW_API_KEY_TOKEN: &str = "new_api_key_token";
+
+async fn api_keys_page(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    session: Session,
+) -> impl IntoResponse {
+    let flash = take_flash(&session).await;
+
+    // Check if we have a newly created key token to display
+    let new_token: Option<String> = session.get(NEW_API_KEY_TOKEN).await.ok().flatten();
+    if new_token.is_some() {
+        let _ = session.remove::<String>(NEW_API_KEY_TOKEN).await;
+    }
+
+    let api_keys = match db::list_api_keys(&state.pool, auth.user_id).await {
+        Ok(keys) => keys,
+        Err(error) => {
+            tracing::error!(%error, "failed to load API keys");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                error_page("Failed to load API keys"),
+            );
+        }
+    };
+
+    let page = layout_with_flash(
+        "API Keys",
+        NavItem::ApiKeys,
+        flash,
+        api_keys_content(&api_keys, new_token.as_deref()),
+    );
+
+    (StatusCode::OK, page)
+}
+
+fn api_keys_content(api_keys: &[ApiKey], new_token: Option<&str>) -> Markup {
+    html! {
+        // Show new token modal if just created
+        @if let Some(token) = new_token {
+            div class="mb-6 rounded-2xl border-2 border-emerald-500 dark:border-emerald-400 bg-emerald-50 dark:bg-emerald-900/30 p-6" {
+                div class="flex items-start gap-3" {
+                    span class="text-2xl" { "🔑" }
+                    div class="flex-1" {
+                        h3 class="text-lg font-semibold text-emerald-900 dark:text-emerald-100" {
+                            "API Key Created"
+                        }
+                        p class="mt-1 text-sm text-emerald-800 dark:text-emerald-200" {
+                            "Copy this key now. You won't be able to see it again."
+                        }
+                        div class="mt-3 rounded-lg bg-slate-900 dark:bg-slate-950 p-3" {
+                            code class="block break-all text-sm text-emerald-400 select-all" {
+                                (token)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Create form
+        section class="rounded-2xl border border-slate-200 dark:border-slate-700 bg-white/80 dark:bg-slate-800/80 p-6 shadow-sm" {
+            h2 class="text-lg font-semibold text-slate-900 dark:text-slate-100" { "Create API Key" }
+            form class="mt-4 space-y-4" method="post" action="/settings/api-keys" {
+                (input_text("Name", "name", "Bot, backup script, etc.", true, ""))
+
+                div {
+                    label class="block text-sm font-medium text-slate-700 dark:text-slate-300" { "Scopes" }
+                    p class="mt-1 text-xs text-slate-500 dark:text-slate-400" { "Select at least one scope" }
+                    div class="mt-2 flex flex-wrap gap-4" {
+                        label class="inline-flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300" {
+                            input type="checkbox" name="scope_read" value="1" checked;
+                            "Read"
+                            span class="text-xs text-slate-500" { "(list, get)" }
+                        }
+                        label class="inline-flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300" {
+                            input type="checkbox" name="scope_write" value="1";
+                            "Write"
+                            span class="text-xs text-slate-500" { "(create, update, trigger)" }
+                        }
+                        label class="inline-flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300" {
+                            input type="checkbox" name="scope_delete" value="1";
+                            "Delete"
+                        }
+                    }
+                }
+
+                div {
+                    label class="block text-sm font-medium text-slate-700 dark:text-slate-300" for="expires_in_days" { "Expiration" }
+                    select class="mt-1 w-full rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 px-3 py-2 text-sm text-slate-900 dark:text-slate-100 shadow-sm" name="expires_in_days" id="expires_in_days" {
+                        option value="90" { "90 days" }
+                        option value="180" { "180 days" }
+                        option value="365" { "1 year" }
+                        option value="" { "Never" }
+                    }
+                }
+
+                button class="inline-flex items-center rounded-lg bg-sky-600 dark:bg-sky-500 px-4 py-2 text-sm font-medium text-white transition hover:bg-sky-700 dark:hover:bg-sky-600" type="submit" {
+                    "Generate Key"
+                }
+            }
+        }
+
+        // Existing keys
+        section class="mt-8 rounded-2xl border border-slate-200 dark:border-slate-700 bg-white/80 dark:bg-slate-800/80 p-6 shadow-sm" {
+            h2 class="text-lg font-semibold text-slate-900 dark:text-slate-100" { "Your API Keys" }
+            @if api_keys.is_empty() {
+                p class="mt-4 rounded-lg border border-dashed border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-800 px-4 py-8 text-center text-sm text-slate-500 dark:text-slate-400" {
+                    "No API keys yet. Create one above to get started."
+                }
+            } @else {
+                div class="mt-4 space-y-4" {
+                    @for key in api_keys {
+                        (api_key_card(key))
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn api_key_card(key: &ApiKey) -> Markup {
+    let is_expired = key.is_expired();
+    let card_classes = if is_expired {
+        "rounded-xl border border-rose-200 dark:border-rose-800 bg-rose-50/50 dark:bg-rose-900/20 p-4"
+    } else {
+        "rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 p-4"
+    };
+
+    html! {
+        div class=(card_classes) {
+            div class="flex flex-wrap items-start justify-between gap-4" {
+                div class="flex-1 min-w-0" {
+                    div class="flex items-center gap-2" {
+                        h3 class="font-medium text-slate-900 dark:text-slate-100 truncate" { (key.name) }
+                        @if is_expired {
+                            span class="inline-flex rounded-full bg-rose-100 dark:bg-rose-900/50 px-2 py-0.5 text-xs font-medium text-rose-700 dark:text-rose-300" {
+                                "Expired"
+                            }
+                        }
+                    }
+                    p class="mt-1 font-mono text-sm text-slate-500 dark:text-slate-400" {
+                        (key.prefix) "..."
+                    }
+                    div class="mt-2 flex flex-wrap gap-1" {
+                        @for scope in &key.scopes {
+                            (scope_badge(*scope))
+                        }
+                    }
+                    div class="mt-2 text-xs text-slate-500 dark:text-slate-400" {
+                        @if let Some(last_used) = key.last_used_at {
+                            "Last used " (format_relative_time(last_used))
+                        } @else {
+                            "Never used"
+                        }
+                        " · Created " (format_relative_time(key.created_at))
+                        @if let Some(expires) = key.expires_at {
+                            @if is_expired {
+                                " · Expired " (format_relative_time(expires))
+                            } @else {
+                                " · Expires " (format_relative_time(expires))
+                            }
+                        }
+                    }
+                }
+                div class="flex items-center gap-2" {
+                    // Events toggle
+                    button
+                        class="rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 px-3 py-1.5 text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-600"
+                        hx-get=(format!("/settings/api-keys/{}/events", key.id))
+                        hx-target=(format!("#events-{}", key.id))
+                        hx-swap="innerHTML"
+                    {
+                        "History"
+                    }
+                    // Roll button
+                    form method="post" action=(format!("/settings/api-keys/{}/roll", key.id)) style="display:inline" {
+                        button
+                            class="rounded-lg border border-amber-200 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/50 px-3 py-1.5 text-xs font-medium text-amber-700 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-900"
+                            type="submit"
+                            onclick="return confirm('Roll this key? The current key will stop working immediately.')"
+                        {
+                            "Roll"
+                        }
+                    }
+                    // Delete button
+                    form method="post" action=(format!("/settings/api-keys/{}/delete", key.id)) style="display:inline" {
+                        button
+                            class="rounded-lg border border-rose-200 dark:border-rose-700 bg-rose-50 dark:bg-rose-900/50 px-3 py-1.5 text-xs font-medium text-rose-700 dark:text-rose-300 hover:bg-rose-100 dark:hover:bg-rose-900"
+                            type="submit"
+                            onclick="return confirm('Delete this API key? This cannot be undone.')"
+                        {
+                            "Delete"
+                        }
+                    }
+                }
+            }
+            // Events container (loaded via htmx)
+            div id=(format!("events-{}", key.id)) class="mt-3" {}
+        }
+    }
+}
+
+fn scope_badge(scope: ApiKeyScope) -> Markup {
+    let (label, class) = match scope {
+        ApiKeyScope::Read => (
+            "read",
+            "bg-sky-100 dark:bg-sky-900/50 text-sky-700 dark:text-sky-300",
+        ),
+        ApiKeyScope::Write => (
+            "write",
+            "bg-amber-100 dark:bg-amber-900/50 text-amber-700 dark:text-amber-300",
+        ),
+        ApiKeyScope::Delete => (
+            "delete",
+            "bg-rose-100 dark:bg-rose-900/50 text-rose-700 dark:text-rose-300",
+        ),
+    };
+    html! {
+        span class=(format!("inline-flex rounded-full px-2 py-0.5 text-xs font-medium {class}")) {
+            (label)
+        }
+    }
+}
+
+async fn create_api_key(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    session: Session,
+    Form(form): Form<ApiKeyForm>,
+) -> impl IntoResponse {
+    let name = form.name.trim();
+    if name.is_empty() {
+        set_flash(&session, "error", "Name is required").await;
+        return Redirect::to("/settings/api-keys").into_response();
+    }
+
+    // Collect scopes
+    let mut scopes = Vec::new();
+    if form.scope_read.is_some() {
+        scopes.push(ApiKeyScope::Read);
+    }
+    if form.scope_write.is_some() {
+        scopes.push(ApiKeyScope::Write);
+    }
+    if form.scope_delete.is_some() {
+        scopes.push(ApiKeyScope::Delete);
+    }
+
+    if scopes.is_empty() {
+        set_flash(&session, "error", "At least one scope is required").await;
+        return Redirect::to("/settings/api-keys").into_response();
+    }
+
+    // Parse expiration
+    let expires_at = match form.expires_in_days.as_deref() {
+        Some("") | None => None,
+        Some(days_str) => {
+            let Ok(days) = days_str.parse::<i64>() else {
+                set_flash(&session, "error", "Invalid expiration value").await;
+                return Redirect::to("/settings/api-keys").into_response();
+            };
+            Some(Utc::now() + chrono::Duration::days(days))
+        }
+    };
+
+    // Generate the key
+    let generated = generate_api_key();
+
+    let create = CreateApiKey {
+        user_id: auth.user_id,
+        name,
+        prefix: &generated.prefix,
+        key_hash: &generated.hash,
+        scopes: &scopes,
+        expires_at,
+    };
+
+    match db::create_api_key(&state.pool, create).await {
+        Ok(_) => {
+            // Store the token in session to display once
+            let _ = session.insert(NEW_API_KEY_TOKEN, generated.token).await;
+            set_flash(&session, "success", "API key created").await;
+            Redirect::to("/settings/api-keys").into_response()
+        }
+        Err(error) => {
+            tracing::error!(%error, "failed to create API key");
+            if error.to_string().contains("duplicate") || error.to_string().contains("unique") {
+                set_flash(
+                    &session,
+                    "error",
+                    "An API key with that name already exists",
+                )
+                .await;
+            } else {
+                set_flash(&session, "error", "Failed to create API key").await;
+            }
+            Redirect::to("/settings/api-keys").into_response()
+        }
+    }
+}
+
+async fn roll_api_key(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    session: Session,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let Ok(key_id) = Ulid::from_string(id.trim()) else {
+        set_flash(&session, "error", "Invalid key ID").await;
+        return Redirect::to("/settings/api-keys").into_response();
+    };
+
+    // Verify ownership
+    let existing = match db::get_api_key(&state.pool, key_id).await {
+        Ok(Some(key)) if key.user_id == auth.user_id => key,
+        Ok(_) => {
+            set_flash(&session, "error", "API key not found").await;
+            return Redirect::to("/settings/api-keys").into_response();
+        }
+        Err(error) => {
+            tracing::error!(%error, "failed to get API key for roll");
+            set_flash(&session, "error", "Failed to roll API key").await;
+            return Redirect::to("/settings/api-keys").into_response();
+        }
+    };
+
+    // Generate new key
+    let generated = generate_api_key();
+
+    // Keep same expiration policy (reset from now if it had one)
+    let new_expires_at = existing.expires_at.map(|old_exp| {
+        let duration = old_exp - existing.created_at;
+        Utc::now() + duration
+    });
+
+    match db::roll_api_key(
+        &state.pool,
+        key_id,
+        auth.user_id,
+        &generated.prefix,
+        &generated.hash,
+        new_expires_at,
+        None,
+    )
+    .await
+    {
+        Ok(_) => {
+            // Store the new token in session to display once
+            let _ = session.insert(NEW_API_KEY_TOKEN, generated.token).await;
+            set_flash(&session, "success", "API key rolled - copy the new key").await;
+            Redirect::to("/settings/api-keys").into_response()
+        }
+        Err(error) => {
+            tracing::error!(%error, "failed to roll API key");
+            set_flash(&session, "error", "Failed to roll API key").await;
+            Redirect::to("/settings/api-keys").into_response()
+        }
+    }
+}
+
+async fn delete_api_key(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    session: Session,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let Ok(key_id) = Ulid::from_string(id.trim()) else {
+        set_flash(&session, "error", "Invalid key ID").await;
+        return Redirect::to("/settings/api-keys").into_response();
+    };
+
+    match db::delete_api_key(&state.pool, key_id, auth.user_id, None).await {
+        Ok(()) => {
+            set_flash(&session, "success", "API key deleted").await;
+            Redirect::to("/settings/api-keys").into_response()
+        }
+        Err(db::DbError::NotFound) => {
+            set_flash(&session, "error", "API key not found").await;
+            Redirect::to("/settings/api-keys").into_response()
+        }
+        Err(error) => {
+            tracing::error!(%error, "failed to delete API key");
+            set_flash(&session, "error", "Failed to delete API key").await;
+            Redirect::to("/settings/api-keys").into_response()
+        }
+    }
+}
+
+async fn api_key_events(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let Ok(key_id) = Ulid::from_string(id.trim()) else {
+        return (StatusCode::BAD_REQUEST, "Invalid key ID").into_response();
+    };
+
+    // Verify ownership first
+    match db::get_api_key(&state.pool, key_id).await {
+        Ok(Some(key)) if key.user_id == auth.user_id => {}
+        _ => {
+            // Also check if we own events for a deleted key
+            let events = db::list_api_key_events(&state.pool, key_id).await.ok();
+            if !events
+                .as_ref()
+                .is_some_and(|e| e.iter().any(|ev| ev.user_id == auth.user_id))
+            {
+                return (StatusCode::NOT_FOUND, "API key not found").into_response();
+            }
+        }
+    }
+
+    let events = match db::list_api_key_events(&state.pool, key_id).await {
+        Ok(events) => events,
+        Err(error) => {
+            tracing::error!(%error, "failed to load API key events");
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to load events").into_response();
+        }
+    };
+
+    let markup = html! {
+        @if events.is_empty() {
+            p class="text-xs text-slate-500 dark:text-slate-400" { "No events recorded." }
+        } @else {
+            div class="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 divide-y divide-slate-100 dark:divide-slate-800" {
+                @for event in &events {
+                    div class="px-3 py-2 flex items-center justify-between text-xs" {
+                        span class="font-medium text-slate-700 dark:text-slate-300" {
+                            @match event.event_type {
+                                ApiKeyEventType::Created => "Created",
+                                ApiKeyEventType::Rolled => "Rolled",
+                                ApiKeyEventType::Deleted => "Deleted",
+                            }
+                        }
+                        span class="text-slate-500 dark:text-slate-400" {
+                            (event.created_at.format("%Y-%m-%d %H:%M"))
+                        }
+                    }
+                }
+            }
+        }
+    };
+
+    (StatusCode::OK, markup).into_response()
+}
+
+fn format_relative_time(dt: chrono::DateTime<Utc>) -> String {
+    let now = Utc::now();
+    let duration = now.signed_duration_since(dt);
+
+    if duration.num_seconds() < 0 {
+        // Future date
+        let future_duration = dt.signed_duration_since(now);
+        if future_duration.num_days() > 0 {
+            return format!("in {}d", future_duration.num_days());
+        }
+        if future_duration.num_hours() > 0 {
+            return format!("in {}h", future_duration.num_hours());
+        }
+        return format!("in {}m", future_duration.num_minutes().max(1));
+    }
+
+    if duration.num_days() > 30 {
+        return dt.format("%Y-%m-%d").to_string();
+    }
+    if duration.num_days() > 0 {
+        return format!("{}d ago", duration.num_days());
+    }
+    if duration.num_hours() > 0 {
+        return format!("{}h ago", duration.num_hours());
+    }
+    if duration.num_minutes() > 0 {
+        return format!("{}m ago", duration.num_minutes());
+    }
+    "just now".to_string()
 }
 
 async fn trigger_metadata(
@@ -3940,6 +4443,7 @@ fn layout_with_flash(
                                 (nav_link("/downloads", "Downloads", active == NavItem::Downloads))
                                 (nav_link("/activity", "Activity", active == NavItem::Activity))
                                 (nav_link("/schedule", "Schedule", active == NavItem::Schedule))
+                                (nav_link("/settings/api-keys", "API Keys", active == NavItem::ApiKeys))
                                 // Dark mode toggle
                                 button
                                     type="button"

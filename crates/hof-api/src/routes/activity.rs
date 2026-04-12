@@ -4,27 +4,33 @@
 //! indexing, errors, and other operations.
 
 use axum::{
-    Json, Router,
+    Json,
     extract::{Query, State},
     http::StatusCode,
     response::IntoResponse,
-    routing::get,
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use ulid::Ulid;
 use utoipa::ToSchema;
+use utoipa_axum::{router::OpenApiRouter, routes};
 
 use hof_core::{
     db,
-    domain::activity::{ActivityEvent, ActivityEventType, ActivitySeverity, SourceIndexingSummary},
+    domain::{
+        activity::{ActivityEvent, ActivityEventType, ActivitySeverity, SourceIndexingSummary},
+        api_key::ApiKeyScope,
+    },
 };
 
-use crate::AppState;
+use crate::{
+    AppState,
+    auth::{ApiErrorResponse, Auth},
+};
 
 /// Build the activity router.
-pub fn router() -> Router<AppState> {
-    Router::new().route("/", get(list_activity))
+pub fn router() -> OpenApiRouter<AppState> {
+    OpenApiRouter::new().routes(routes!(list_activity))
 }
 
 // ============================================================================
@@ -109,7 +115,7 @@ pub struct ErrorResponse {
 /// Can be filtered by severity and source ID.
 #[utoipa::path(
     get,
-    path = "/api/v1/activity",
+    path = "",
     tag = "activity",
     params(
         ("limit" = Option<i64>, Query, description = "Maximum number of events (default: 50, max: 200)"),
@@ -121,13 +127,20 @@ pub struct ErrorResponse {
     responses(
         (status = 200, description = "List of activity events", body = ActivityListResponse),
         (status = 400, description = "Invalid request", body = ErrorResponse),
+        (status = 401, description = "Unauthorized", body = ApiErrorResponse),
+        (status = 403, description = "Forbidden - insufficient scope", body = ApiErrorResponse),
         (status = 500, description = "Internal server error", body = ErrorResponse)
     )
 )]
 pub async fn list_activity(
     State(state): State<AppState>,
+    auth: Auth,
     Query(query): Query<ListActivityQuery>,
 ) -> impl IntoResponse {
+    if let Err(e) = auth.require_scope(ApiKeyScope::Read) {
+        return e.into_response();
+    }
+
     // Validate and cap limit
     let limit = query.limit.clamp(1, 200);
 

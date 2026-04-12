@@ -84,12 +84,15 @@ css-build:
 
 # Testing
 test: clear
-    cargo test --all-features -- --include-ignored
+    cargo test --all-features
+# E2E API tests (parallel by default)
+e2e: clear mig-run
+    cargo test --package hof-api --test e2e --all-features
 
-# CI simulation
-ci: clear
+# CI simulation (requires database)
+ci: clear mig-run
     SQLX_OFFLINE=true cargo build --release
-    SQLX_OFFLINE=true cargo test --all-features
+    cargo test --all-features
     cargo clippy --all-targets --all-features -- -D warnings
 
 build-oci: clear

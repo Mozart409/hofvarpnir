@@ -2,30 +2,31 @@
 //!
 //! Provides endpoints to view system status and trigger manual operations.
 
-use axum::{
-    Json, Router,
-    extract::State,
-    http::StatusCode,
-    response::IntoResponse,
-    routing::{get, post},
-};
+use axum::{Json, extract::State, http::StatusCode, response::IntoResponse};
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use utoipa::ToSchema;
+use utoipa_axum::{router::OpenApiRouter, routes};
 
-use hof_core::actors::{
-    cleanup::{GetCleanupStatus, RunCleanup},
-    download_supervisor::GetSupervisorStatus,
-    scheduler::GetSchedulerStatus,
+use hof_core::{
+    actors::{
+        cleanup::{GetCleanupStatus, RunCleanup},
+        download_supervisor::GetSupervisorStatus,
+        scheduler::GetSchedulerStatus,
+    },
+    domain::api_key::ApiKeyScope,
 };
 
-use crate::AppState;
+use crate::{
+    AppState,
+    auth::{ApiErrorResponse, Auth},
+};
 
 /// Build the system router.
-pub fn router() -> Router<AppState> {
-    Router::new()
-        .route("/status", get(get_system_status))
-        .route("/cleanup", post(trigger_cleanup))
+pub fn router() -> OpenApiRouter<AppState> {
+    OpenApiRouter::new()
+        .routes(routes!(get_system_status))
+        .routes(routes!(trigger_cleanup))
 }
 
 // ============================================================================
@@ -116,14 +117,19 @@ pub struct ErrorResponse {
 /// - Video statistics (counts by status)
 #[utoipa::path(
     get,
-    path = "/api/v1/system/status",
+    path = "/status",
     tag = "system",
     responses(
         (status = 200, description = "System status", body = SystemStatusResponse),
+        (status = 401, description = "Unauthorized", body = ApiErrorResponse),
+        (status = 403, description = "Forbidden - insufficient scope", body = ApiErrorResponse),
         (status = 500, description = "Internal server error", body = ErrorResponse)
     )
 )]
-pub async fn get_system_status(State(state): State<AppState>) -> impl IntoResponse {
+pub async fn get_system_status(State(state): State<AppState>, auth: Auth) -> impl IntoResponse {
+    if let Err(e) = auth.require_scope(ApiKeyScope::Read) {
+        return e.into_response();
+    }
     // Get scheduler status
     let scheduler_status = match state.scheduler.ask(GetSchedulerStatus).await {
         Ok(status) => SchedulerStatusResponse {
@@ -216,14 +222,19 @@ pub async fn get_system_status(State(state): State<AppState>) -> impl IntoRespon
 /// - Cleans up orphaned temp files
 #[utoipa::path(
     post,
-    path = "/api/v1/system/cleanup",
+    path = "/cleanup",
     tag = "system",
     responses(
         (status = 200, description = "Cleanup completed", body = CleanupTriggerResponse),
+        (status = 401, description = "Unauthorized", body = ApiErrorResponse),
+        (status = 403, description = "Forbidden - insufficient scope", body = ApiErrorResponse),
         (status = 500, description = "Internal server error", body = ErrorResponse)
     )
 )]
-pub async fn trigger_cleanup(State(state): State<AppState>) -> impl IntoResponse {
+pub async fn trigger_cleanup(State(state): State<AppState>, auth: Auth) -> impl IntoResponse {
+    if let Err(e) = auth.require_scope(ApiKeyScope::Write) {
+        return e.into_response();
+    }
     match state.cleanup.ask(RunCleanup).await {
         Ok(result) => (
             StatusCode::OK,
