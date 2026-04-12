@@ -1646,7 +1646,7 @@ fn api_keys_content(api_keys: &[ApiKey], new_token: Option<&str>) -> Markup {
         section class="rounded-2xl border border-slate-200 dark:border-slate-700 bg-white/80 dark:bg-slate-800/80 p-6 shadow-sm" {
             h2 class="text-lg font-semibold text-slate-900 dark:text-slate-100" { "Create API Key" }
             form class="mt-4 space-y-4" method="post" action="/settings/api-keys" {
-                (input_text("Name", "name", "CI bot, backup script, etc.", true, ""))
+                (input_text("Name", "name", "Bot, backup script, etc.", true, ""))
 
                 div {
                     label class="block text-sm font-medium text-slate-700 dark:text-slate-300" { "Scopes" }
