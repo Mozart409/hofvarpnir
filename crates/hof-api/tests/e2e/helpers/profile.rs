@@ -2,7 +2,7 @@
 
 use hof_core::{
     db::{self, CreateProfile},
-    domain::profile::{Profile, Quality},
+    domain::profile::{OutputPreset, Profile, Quality},
 };
 use sqlx::PgPool;
 use ulid::Ulid;
@@ -12,6 +12,7 @@ pub struct ProfileBuilder {
     user_id: Ulid,
     name: String,
     quality: Quality,
+    output_preset: OutputPreset,
     naming_template: String,
     output_dir: String,
     include_livestreams: bool,
@@ -29,6 +30,7 @@ impl ProfileBuilder {
             user_id,
             name: format!("Test Profile {id}"),
             quality: Quality::Q1080p,
+            output_preset: OutputPreset::Browser,
             naming_template: "{title}-{id}.{ext}".to_string(),
             output_dir: format!("/tmp/test_downloads_{id}"),
             include_livestreams: false,
@@ -102,6 +104,7 @@ impl ProfileBuilder {
                 user_id: self.user_id,
                 name: &self.name,
                 quality: self.quality,
+                output_preset: self.output_preset,
                 naming_template: &self.naming_template,
                 output_dir: &self.output_dir,
                 include_livestreams: self.include_livestreams,
