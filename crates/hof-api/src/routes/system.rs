@@ -2,16 +2,11 @@
 //!
 //! Provides endpoints to view system status and trigger manual operations.
 
-use axum::{
-    Json, Router,
-    extract::State,
-    http::StatusCode,
-    response::IntoResponse,
-    routing::{get, post},
-};
+use axum::{Json, extract::State, http::StatusCode, response::IntoResponse};
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use utoipa::ToSchema;
+use utoipa_axum::{router::OpenApiRouter, routes};
 
 use hof_core::{
     actors::{
@@ -28,10 +23,10 @@ use crate::{
 };
 
 /// Build the system router.
-pub fn router() -> Router<AppState> {
-    Router::new()
-        .route("/status", get(get_system_status))
-        .route("/cleanup", post(trigger_cleanup))
+pub fn router() -> OpenApiRouter<AppState> {
+    OpenApiRouter::new()
+        .routes(routes!(get_system_status))
+        .routes(routes!(trigger_cleanup))
 }
 
 // ============================================================================
@@ -122,7 +117,7 @@ pub struct ErrorResponse {
 /// - Video statistics (counts by status)
 #[utoipa::path(
     get,
-    path = "/api/v1/system/status",
+    path = "/status",
     tag = "system",
     responses(
         (status = 200, description = "System status", body = SystemStatusResponse),
@@ -227,7 +222,7 @@ pub async fn get_system_status(State(state): State<AppState>, auth: Auth) -> imp
 /// - Cleans up orphaned temp files
 #[utoipa::path(
     post,
-    path = "/api/v1/system/cleanup",
+    path = "/cleanup",
     tag = "system",
     responses(
         (status = 200, description = "Cleanup completed", body = CleanupTriggerResponse),

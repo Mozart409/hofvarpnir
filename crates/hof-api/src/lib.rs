@@ -12,9 +12,9 @@
 pub mod auth;
 pub mod routes;
 
-use axum::{Json, Router, routing::get};
 use std::sync::Arc;
 
+use axum::{Json, Router, routing::get};
 use hof_core::actors::cleanup::CleanupActor;
 use hof_core::actors::download_supervisor::DownloadSupervisor;
 use hof_core::actors::jellyfin_metadata::JellyfinMetadataActor;
@@ -27,6 +27,7 @@ use sqlx::PgPool;
 use tokio::sync::broadcast;
 use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
 use utoipa::{Modify, OpenApi};
+use utoipa_axum::router::OpenApiRouter;
 use utoipa_scalar::{Scalar, Servable};
 
 use routes::{activity, downloads, health, profiles, sources, system};
@@ -120,41 +121,15 @@ impl AppState {
     }
 }
 
-/// `OpenAPI` documentation for the API.
-#[allow(clippy::needless_for_each)]
+/// `OpenAPI` base documentation for the API.
+///
+/// Paths are auto-registered via `utoipa-axum` in `router()`.
 #[derive(OpenApi)]
 #[openapi(
     info(
         title = "Hofvarpnir API",
         version = "1.0.0",
         description = "Video archival system API for managing profiles, sources, and downloads."
-    ),
-    paths(
-        health::health_check,
-        health::liveness,
-        health::readiness,
-        profiles::list_profiles,
-        profiles::create_profile,
-        profiles::get_profile,
-        profiles::update_profile,
-        profiles::delete_profile,
-        sources::list_sources,
-        sources::create_source,
-        sources::get_source,
-        sources::update_source,
-        sources::delete_source,
-        sources::trigger_index,
-        sources::trigger_metadata,
-        downloads::list_downloads,
-        downloads::get_download_progress,
-        downloads::get_download,
-        downloads::cancel_download,
-        downloads::delete_download,
-        downloads::retry_download,
-        downloads::bulk_retry_downloads,
-        activity::list_activity,
-        system::get_system_status,
-        system::trigger_cleanup,
     ),
     components(schemas(
         health::HealthResponse,
@@ -164,6 +139,7 @@ impl AppState {
         profiles::ProfileResponse,
         profiles::CreateProfileRequest,
         profiles::UpdateProfileRequest,
+        profiles::ErrorResponse,
         sources::SourceResponse,
         sources::CreateSourceRequest,
         sources::UpdateSourceRequest,
@@ -174,6 +150,8 @@ impl AppState {
         downloads::BulkRetryResponse,
         downloads::CancelResponse,
         downloads::DeleteResponse,
+        downloads::ErrorResponse,
+        downloads::ProgressEvent,
         activity::ActivityEventResponse,
         activity::ActivityListResponse,
         system::SystemStatusResponse,
@@ -183,6 +161,7 @@ impl AppState {
         system::StatisticsResponse,
         system::CleanupTriggerResponse,
         system::CleanupResultResponse,
+        auth::ApiErrorResponse,
         hof_core::domain::profile::Quality,
         hof_core::domain::source::SourceType,
         hof_core::domain::video::VideoStatus,
@@ -201,24 +180,31 @@ impl AppState {
     ),
     modifiers(&SecurityAddon, &ServerAddon)
 )]
-pub struct ApiDoc;
+struct ApiDoc;
 
 /// Build the API router with all JSON + SSE endpoints.
 ///
-/// Mount at `/api` in the top-level application.
+/// Returns both the Axum router and the `OpenAPI` spec (with paths auto-registered).
+/// Mount the router at `/api` in the top-level application.
 ///
 /// # Arguments
 ///
 /// * `state` - Shared application state
-pub fn router(state: AppState) -> Router {
-    Router::new()
+pub fn router(state: AppState) -> (Router, utoipa::openapi::OpenApi) {
+    let (router, mut api) = OpenApiRouter::with_openapi(ApiDoc::openapi())
         .nest("/health", health::router())
         .nest("/v1/profiles", profiles::router())
         .nest("/v1/sources", sources::router())
         .nest("/v1/downloads", downloads::router())
         .nest("/v1/activity", activity::router())
         .nest("/v1/system", system::router())
-        .with_state(state)
+        .split_for_parts();
+
+    // Apply modifiers (security scheme, server URL)
+    SecurityAddon.modify(&mut api);
+    ServerAddon.modify(&mut api);
+
+    (router.with_state(state), api)
 }
 
 /// Build the Scalar `OpenAPI` documentation router.
@@ -228,13 +214,15 @@ pub fn router(state: AppState) -> Router {
 /// Provides:
 /// - `/docs/` - Scalar UI for interactive API documentation
 /// - `/docs/openapi.json` - Raw `OpenAPI` specification in JSON format
-pub fn scalar_router() -> Router {
+///
+/// # Arguments
+///
+/// * `openapi` - The `OpenAPI` spec from `router()`
+pub fn scalar_router(openapi: utoipa::openapi::OpenApi) -> Router {
     Router::new()
-        .merge(Scalar::with_url("/", ApiDoc::openapi()))
-        .route("/openapi.json", get(openapi_json))
-}
-
-/// Serve the `OpenAPI` specification as JSON.
-async fn openapi_json() -> Json<utoipa::openapi::OpenApi> {
-    Json(ApiDoc::openapi())
+        .merge(Scalar::with_url("/", openapi.clone()))
+        .route(
+            "/openapi.json",
+            get(move || async move { Json(openapi.clone()) }),
+        )
 }
