@@ -26,10 +26,16 @@ use utoipa::ToSchema;
 use hof_core::{
     actors::download_supervisor::{CancelDownload, EnqueueDownload},
     db::{self},
-    domain::video::{Video, VideoStatus},
+    domain::{
+        api_key::ApiKeyScope,
+        video::{Video, VideoStatus},
+    },
 };
 
-use crate::AppState;
+use crate::{
+    AppState,
+    auth::{ApiErrorResponse, Auth},
+};
 
 /// Build the downloads router.
 pub fn router() -> Router<AppState> {
@@ -185,13 +191,20 @@ pub struct ErrorResponse {
     responses(
         (status = 200, description = "List of videos/downloads", body = Vec<VideoResponse>),
         (status = 400, description = "Invalid request", body = ErrorResponse),
+        (status = 401, description = "Unauthorized", body = ApiErrorResponse),
+        (status = 403, description = "Forbidden - insufficient scope", body = ApiErrorResponse),
         (status = 500, description = "Internal server error", body = ErrorResponse)
     )
 )]
 pub async fn list_downloads(
     State(state): State<AppState>,
+    auth: Auth,
     Query(query): Query<ListDownloadsQuery>,
 ) -> impl IntoResponse {
+    if let Err(e) = auth.require_scope(ApiKeyScope::Read) {
+        return e.into_response();
+    }
+
     // If filtering by source_id, use that query
     if let Some(source_id_str) = query.source_id {
         let Ok(source_id) = Ulid::from_string(&source_id_str) else {
@@ -258,12 +271,17 @@ pub async fn list_downloads(
     path = "/api/v1/downloads/progress",
     tag = "downloads",
     responses(
-        (status = 200, description = "SSE stream of progress events", content_type = "text/event-stream")
+        (status = 200, description = "SSE stream of progress events", content_type = "text/event-stream"),
+        (status = 401, description = "Unauthorized", body = ApiErrorResponse),
+        (status = 403, description = "Forbidden - insufficient scope", body = ApiErrorResponse)
     )
 )]
 pub async fn get_download_progress(
     State(state): State<AppState>,
-) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    auth: Auth,
+) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, crate::auth::ApiError> {
+    auth.require_scope(ApiKeyScope::Read)?;
+
     // Subscribe to the progress broadcast channel
     let rx = state.progress_tx.subscribe();
 
@@ -296,11 +314,11 @@ pub async fn get_download_progress(
         }
     });
 
-    Sse::new(stream).keep_alive(
+    Ok(Sse::new(stream).keep_alive(
         KeepAlive::new()
             .interval(Duration::from_secs(15))
             .text("keep-alive"),
-    )
+    ))
 }
 
 /// Manually retry a failed download.
@@ -317,6 +335,8 @@ pub async fn get_download_progress(
     responses(
         (status = 202, description = "Retry enqueued", body = RetryResponse),
         (status = 400, description = "Invalid ID format or video not eligible for retry", body = ErrorResponse),
+        (status = 401, description = "Unauthorized", body = ApiErrorResponse),
+        (status = 403, description = "Forbidden - insufficient scope", body = ApiErrorResponse),
         (status = 404, description = "Video not found", body = ErrorResponse),
         (status = 500, description = "Internal server error", body = ErrorResponse)
     )
@@ -324,8 +344,13 @@ pub async fn get_download_progress(
 #[allow(clippy::too_many_lines)]
 pub async fn retry_download(
     State(state): State<AppState>,
+    auth: Auth,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
+    if let Err(e) = auth.require_scope(ApiKeyScope::Write) {
+        return e.into_response();
+    }
+
     let Ok(video_id) = Ulid::from_string(&id) else {
         return (
             StatusCode::BAD_REQUEST,
@@ -520,14 +545,21 @@ pub async fn retry_download(
     responses(
         (status = 200, description = "Video details", body = VideoResponse),
         (status = 400, description = "Invalid ID format", body = ErrorResponse),
+        (status = 401, description = "Unauthorized", body = ApiErrorResponse),
+        (status = 403, description = "Forbidden - insufficient scope", body = ApiErrorResponse),
         (status = 404, description = "Video not found", body = ErrorResponse),
         (status = 500, description = "Internal server error", body = ErrorResponse)
     )
 )]
 pub async fn get_download(
     State(state): State<AppState>,
+    auth: Auth,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
+    if let Err(e) = auth.require_scope(ApiKeyScope::Read) {
+        return e.into_response();
+    }
+
     let Ok(video_id) = Ulid::from_string(&id) else {
         return (
             StatusCode::BAD_REQUEST,
@@ -577,14 +609,21 @@ pub async fn get_download(
     responses(
         (status = 200, description = "Download cancelled", body = CancelResponse),
         (status = 400, description = "Invalid ID format", body = ErrorResponse),
+        (status = 401, description = "Unauthorized", body = ApiErrorResponse),
+        (status = 403, description = "Forbidden - insufficient scope", body = ApiErrorResponse),
         (status = 404, description = "Video not found", body = ErrorResponse),
         (status = 500, description = "Internal server error", body = ErrorResponse)
     )
 )]
 pub async fn cancel_download(
     State(state): State<AppState>,
+    auth: Auth,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
+    if let Err(e) = auth.require_scope(ApiKeyScope::Write) {
+        return e.into_response();
+    }
+
     let Ok(video_id) = Ulid::from_string(&id) else {
         return (
             StatusCode::BAD_REQUEST,
@@ -667,6 +706,8 @@ pub async fn cancel_download(
     responses(
         (status = 200, description = "Video deleted", body = DeleteResponse),
         (status = 400, description = "Invalid ID format", body = ErrorResponse),
+        (status = 401, description = "Unauthorized", body = ApiErrorResponse),
+        (status = 403, description = "Forbidden - insufficient scope", body = ApiErrorResponse),
         (status = 404, description = "Video not found", body = ErrorResponse),
         (status = 409, description = "Video is currently downloading", body = ErrorResponse),
         (status = 500, description = "Internal server error", body = ErrorResponse)
@@ -674,8 +715,13 @@ pub async fn cancel_download(
 )]
 pub async fn delete_download(
     State(state): State<AppState>,
+    auth: Auth,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
+    if let Err(e) = auth.require_scope(ApiKeyScope::Delete) {
+        return e.into_response();
+    }
+
     let Ok(video_id) = Ulid::from_string(&id) else {
         return (
             StatusCode::BAD_REQUEST,
@@ -766,11 +812,16 @@ pub async fn delete_download(
     tag = "downloads",
     responses(
         (status = 202, description = "Bulk retry started", body = BulkRetryResponse),
+        (status = 401, description = "Unauthorized", body = ApiErrorResponse),
+        (status = 403, description = "Forbidden - insufficient scope", body = ApiErrorResponse),
         (status = 500, description = "Internal server error", body = ErrorResponse)
     )
 )]
 #[allow(clippy::too_many_lines)]
-pub async fn bulk_retry_downloads(State(state): State<AppState>) -> impl IntoResponse {
+pub async fn bulk_retry_downloads(State(state): State<AppState>, auth: Auth) -> impl IntoResponse {
+    if let Err(e) = auth.require_scope(ApiKeyScope::Write) {
+        return e.into_response();
+    }
     // Get all failed and permanently failed videos
     let failed_videos = match db::list_videos(&state.pool, Some(VideoStatus::Failed)).await {
         Ok(v) => v,

@@ -13,13 +13,19 @@ use chrono::{DateTime, Utc};
 use serde::Serialize;
 use utoipa::ToSchema;
 
-use hof_core::actors::{
-    cleanup::{GetCleanupStatus, RunCleanup},
-    download_supervisor::GetSupervisorStatus,
-    scheduler::GetSchedulerStatus,
+use hof_core::{
+    actors::{
+        cleanup::{GetCleanupStatus, RunCleanup},
+        download_supervisor::GetSupervisorStatus,
+        scheduler::GetSchedulerStatus,
+    },
+    domain::api_key::ApiKeyScope,
 };
 
-use crate::AppState;
+use crate::{
+    AppState,
+    auth::{ApiErrorResponse, Auth},
+};
 
 /// Build the system router.
 pub fn router() -> Router<AppState> {
@@ -120,10 +126,15 @@ pub struct ErrorResponse {
     tag = "system",
     responses(
         (status = 200, description = "System status", body = SystemStatusResponse),
+        (status = 401, description = "Unauthorized", body = ApiErrorResponse),
+        (status = 403, description = "Forbidden - insufficient scope", body = ApiErrorResponse),
         (status = 500, description = "Internal server error", body = ErrorResponse)
     )
 )]
-pub async fn get_system_status(State(state): State<AppState>) -> impl IntoResponse {
+pub async fn get_system_status(State(state): State<AppState>, auth: Auth) -> impl IntoResponse {
+    if let Err(e) = auth.require_scope(ApiKeyScope::Read) {
+        return e.into_response();
+    }
     // Get scheduler status
     let scheduler_status = match state.scheduler.ask(GetSchedulerStatus).await {
         Ok(status) => SchedulerStatusResponse {
@@ -220,10 +231,15 @@ pub async fn get_system_status(State(state): State<AppState>) -> impl IntoRespon
     tag = "system",
     responses(
         (status = 200, description = "Cleanup completed", body = CleanupTriggerResponse),
+        (status = 401, description = "Unauthorized", body = ApiErrorResponse),
+        (status = 403, description = "Forbidden - insufficient scope", body = ApiErrorResponse),
         (status = 500, description = "Internal server error", body = ErrorResponse)
     )
 )]
-pub async fn trigger_cleanup(State(state): State<AppState>) -> impl IntoResponse {
+pub async fn trigger_cleanup(State(state): State<AppState>, auth: Auth) -> impl IntoResponse {
+    if let Err(e) = auth.require_scope(ApiKeyScope::Write) {
+        return e.into_response();
+    }
     match state.cleanup.ask(RunCleanup).await {
         Ok(result) => (
             StatusCode::OK,
