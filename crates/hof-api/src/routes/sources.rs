@@ -3,16 +3,16 @@
 //! Sources represent channels, playlists, or other feeds to monitor.
 
 use axum::{
-    Json, Router,
+    Json,
     extract::{Path, Query, State},
     http::StatusCode,
     response::IntoResponse,
-    routing::{get, post},
 };
 use chrono::{DateTime, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use ulid::Ulid;
 use utoipa::ToSchema;
+use utoipa_axum::{router::OpenApiRouter, routes};
 
 use hof_core::{
     actors::jellyfin_metadata::TriggerSourceMetadata,
@@ -30,15 +30,12 @@ use crate::{
 };
 
 /// Build the sources router.
-pub fn router() -> Router<AppState> {
-    Router::new()
-        .route("/", get(list_sources).post(create_source))
-        .route(
-            "/{id}",
-            get(get_source).put(update_source).delete(delete_source),
-        )
-        .route("/{id}/index", post(trigger_index))
-        .route("/{id}/metadata", post(trigger_metadata))
+pub fn router() -> OpenApiRouter<AppState> {
+    OpenApiRouter::new()
+        .routes(routes!(list_sources, create_source))
+        .routes(routes!(get_source, update_source, delete_source))
+        .routes(routes!(trigger_index))
+        .routes(routes!(trigger_metadata))
 }
 
 // ============================================================================
@@ -186,7 +183,7 @@ pub struct ErrorResponse {
 /// Optionally filter by profile ID using the `profile_id` query parameter.
 #[utoipa::path(
     get,
-    path = "/api/v1/sources",
+    path = "",
     tag = "sources",
     params(
         ("profile_id" = Option<String>, Query, description = "Filter by profile ID")
@@ -244,7 +241,7 @@ pub async fn list_sources(
 /// Create a new source.
 #[utoipa::path(
     post,
-    path = "/api/v1/sources",
+    path = "",
     tag = "sources",
     request_body = CreateSourceRequest,
     responses(
@@ -315,7 +312,7 @@ pub async fn create_source(
 /// Get a source by ID.
 #[utoipa::path(
     get,
-    path = "/api/v1/sources/{id}",
+    path = "/{id}",
     tag = "sources",
     params(
         ("id" = String, Path, description = "Source ID (ULID)")
@@ -376,7 +373,7 @@ pub async fn get_source(
 /// Update a source.
 #[utoipa::path(
     put,
-    path = "/api/v1/sources/{id}",
+    path = "/{id}",
     tag = "sources",
     params(
         ("id" = String, Path, description = "Source ID (ULID)")
@@ -470,7 +467,7 @@ pub async fn update_source(
 /// Delete a source.
 #[utoipa::path(
     delete,
-    path = "/api/v1/sources/{id}",
+    path = "/{id}",
     tag = "sources",
     params(
         ("id" = String, Path, description = "Source ID (ULID)")
@@ -531,7 +528,7 @@ pub async fn delete_source(
 /// bypassing the normal schedule.
 #[utoipa::path(
     post,
-    path = "/api/v1/sources/{id}/index",
+    path = "/{id}/index",
     tag = "sources",
     params(
         ("id" = String, Path, description = "Source ID (ULID)")
@@ -621,7 +618,7 @@ pub async fn trigger_index(
 /// channel metadata (thumbnail URL, channel ID) available for image downloads.
 #[utoipa::path(
     post,
-    path = "/api/v1/sources/{id}/metadata",
+    path = "/{id}/metadata",
     tag = "sources",
     params(
         ("id" = String, Path, description = "Source ID (ULID)")

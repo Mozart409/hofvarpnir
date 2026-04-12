@@ -1,13 +1,13 @@
 //! Health check endpoints for container orchestration.
 
+use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::routing::get;
-use axum::{Json, Router};
 use hof_core::domain::system::{IssueSeverity, SystemIssue};
 use serde::Serialize;
 use utoipa::ToSchema;
+use utoipa_axum::{router::OpenApiRouter, routes};
 
 use crate::AppState;
 
@@ -63,11 +63,11 @@ pub struct ComponentHealth {
 }
 
 /// Build the health router.
-pub fn router() -> Router<AppState> {
-    Router::new()
-        .route("/", get(health_check))
-        .route("/live", get(liveness))
-        .route("/ready", get(readiness))
+pub fn router() -> OpenApiRouter<AppState> {
+    OpenApiRouter::new()
+        .routes(routes!(health_check))
+        .routes(routes!(liveness))
+        .routes(routes!(readiness))
 }
 
 /// Comprehensive health check.
@@ -76,7 +76,7 @@ pub fn router() -> Router<AppState> {
 /// Use this for monitoring dashboards.
 #[utoipa::path(
     get,
-    path = "/api/health",
+    path = "",
     responses(
         (status = 200, description = "System is healthy", body = HealthResponse),
         (status = 503, description = "System is unhealthy", body = HealthResponse),
@@ -123,7 +123,7 @@ pub async fn health_check(State(state): State<AppState>) -> impl IntoResponse {
 /// Use this for `livenessProbe` in Kubernetes.
 #[utoipa::path(
     get,
-    path = "/api/health/live",
+    path = "/live",
     responses(
         (status = 200, description = "Process is alive"),
     ),
@@ -139,7 +139,7 @@ pub async fn liveness() -> StatusCode {
 /// Use this for `readinessProbe` in Kubernetes and Docker HEALTHCHECK.
 #[utoipa::path(
     get,
-    path = "/api/health/ready",
+    path = "/ready",
     responses(
         (status = 200, description = "Service is ready"),
         (status = 503, description = "Service is not ready"),

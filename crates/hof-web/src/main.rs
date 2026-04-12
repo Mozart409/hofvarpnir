@@ -69,6 +69,7 @@ async fn main() -> Result<()> {
 
     // Build the application router
     let x_request_id = HeaderName::from_static("x-request-id");
+    let (api_router, openapi) = hof_api::router(api_state.clone());
     let app = axum::Router::new()
         .merge(axum::Router::new().route(
             "/metrics",
@@ -77,8 +78,8 @@ async fn main() -> Result<()> {
                 move || async move { handle.render() }
             }),
         ))
-        .nest("/api", hof_api::router(api_state.clone()))
-        .nest("/docs", hof_api::scalar_router())
+        .nest("/api", api_router)
+        .nest("/docs", hof_api::scalar_router(openapi))
         .merge(hof_web::router(api_state))
         .layer(session_layer)
         .layer(axum::middleware::from_fn(hof_web::middleware::http_metrics))

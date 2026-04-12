@@ -7,14 +7,13 @@ use std::convert::Infallible;
 use std::time::Duration;
 
 use axum::{
-    Json, Router,
+    Json,
     extract::{Path, Query, State},
     http::StatusCode,
     response::{
         IntoResponse,
         sse::{Event, KeepAlive, Sse},
     },
-    routing::{MethodFilter, get, post},
 };
 use chrono::{DateTime, Utc};
 use futures::stream::{Stream, StreamExt};
@@ -22,6 +21,7 @@ use serde::{Deserialize, Serialize};
 use tokio_stream::wrappers::BroadcastStream;
 use ulid::Ulid;
 use utoipa::ToSchema;
+use utoipa_axum::{router::OpenApiRouter, routes};
 
 use hof_core::{
     actors::download_supervisor::{CancelDownload, EnqueueDownload},
@@ -38,16 +38,13 @@ use crate::{
 };
 
 /// Build the downloads router.
-pub fn router() -> Router<AppState> {
-    Router::new()
-        .route("/", get(list_downloads).post(bulk_retry_downloads))
-        .route("/progress", get(get_download_progress))
-        .route(
-            "/{id}",
-            get(get_download).on(MethodFilter::DELETE, delete_download),
-        )
-        .route("/{id}/cancel", post(cancel_download))
-        .route("/{id}/retry", post(retry_download))
+pub fn router() -> OpenApiRouter<AppState> {
+    OpenApiRouter::new()
+        .routes(routes!(list_downloads, bulk_retry_downloads))
+        .routes(routes!(get_download_progress))
+        .routes(routes!(get_download, delete_download))
+        .routes(routes!(cancel_download))
+        .routes(routes!(retry_download))
 }
 
 // ============================================================================
@@ -182,7 +179,7 @@ pub struct ErrorResponse {
 /// Optionally filter by status or source ID.
 #[utoipa::path(
     get,
-    path = "/api/v1/downloads",
+    path = "",
     tag = "downloads",
     params(
         ("status" = Option<VideoStatus>, Query, description = "Filter by video status"),
@@ -268,7 +265,7 @@ pub async fn list_downloads(
 /// if the connection drops.
 #[utoipa::path(
     get,
-    path = "/api/v1/downloads/progress",
+    path = "/progress",
     tag = "downloads",
     responses(
         (status = 200, description = "SSE stream of progress events", content_type = "text/event-stream"),
@@ -327,7 +324,7 @@ pub async fn get_download_progress(
 /// bypassing the normal retry schedule.
 #[utoipa::path(
     post,
-    path = "/api/v1/downloads/{id}/retry",
+    path = "/{id}/retry",
     tag = "downloads",
     params(
         ("id" = String, Path, description = "Video ID (ULID)")
@@ -537,7 +534,7 @@ pub async fn retry_download(
 /// download status, error messages, and file information.
 #[utoipa::path(
     get,
-    path = "/api/v1/downloads/{id}",
+    path = "/{id}",
     tag = "downloads",
     params(
         ("id" = String, Path, description = "Video ID (ULID)")
@@ -601,7 +598,7 @@ pub async fn get_download(
 /// The video can be retried later using the retry endpoint.
 #[utoipa::path(
     post,
-    path = "/api/v1/downloads/{id}/cancel",
+    path = "/{id}/cancel",
     tag = "downloads",
     params(
         ("id" = String, Path, description = "Video ID (ULID)")
@@ -698,7 +695,7 @@ pub async fn cancel_download(
 /// downloaded file from disk. This action cannot be undone.
 #[utoipa::path(
     delete,
-    path = "/api/v1/downloads/{id}",
+    path = "/{id}",
     tag = "downloads",
     params(
         ("id" = String, Path, description = "Video ID (ULID)")
@@ -808,7 +805,7 @@ pub async fn delete_download(
 /// outages or temporary `YouTube` blocks.
 #[utoipa::path(
     post,
-    path = "/api/v1/downloads",
+    path = "",
     tag = "downloads",
     responses(
         (status = 202, description = "Bulk retry started", body = BulkRetryResponse),
