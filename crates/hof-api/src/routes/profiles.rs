@@ -18,7 +18,7 @@ use hof_core::{
     db::{self, CreateProfile, UpdateProfile},
     domain::{
         api_key::ApiKeyScope,
-        profile::{Profile, Quality},
+        profile::{OutputPreset, Profile, Quality},
     },
     ytdlp::validate_output_template,
 };

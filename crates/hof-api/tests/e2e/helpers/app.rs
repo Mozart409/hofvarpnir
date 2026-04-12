@@ -7,6 +7,7 @@ use axum::Router;
 use axum_test::TestServer;
 use hof_api::AppState;
 use hof_core::{
+    ActivityBroadcaster,
     actors::{
         cleanup::{CleanupActor, CleanupActorArgs},
         download_supervisor::{DownloadSupervisor, DownloadSupervisorArgs},
@@ -68,11 +69,14 @@ impl TestApp {
             ytdlp_path: std::path::PathBuf::from("yt-dlp"),
         };
 
+        let broadcaster = ActivityBroadcaster::new();
+
         let supervisor = DownloadSupervisor::spawn(DownloadSupervisorArgs {
             pool: pool.clone(),
             ytdlp: ytdlp.clone(),
             config: download_config,
             progress_tx,
+            broadcaster: broadcaster.clone(),
         });
 
         let scheduler = SchedulerActor::spawn(SchedulerArgs {
@@ -80,17 +84,20 @@ impl TestApp {
             ytdlp,
             supervisor: supervisor.clone(),
             check_interval: None,
+            broadcaster: broadcaster.clone(),
         });
 
         let cleanup = CleanupActor::spawn(CleanupActorArgs {
             pool: pool.clone(),
             global_retention_days: None,
             cleanup_interval: None,
+            broadcaster: broadcaster.clone(),
         });
 
         let jellyfin_metadata = JellyfinMetadataActor::spawn(JellyfinMetadataActorArgs {
             pool: pool.clone(),
             check_interval: None,
+            broadcaster: broadcaster.clone(),
         });
 
         // Create broadcast channel for SSE (not used in most tests)
@@ -104,6 +111,7 @@ impl TestApp {
             cleanup.clone(),
             broadcast_tx,
             vec![],
+            broadcaster,
         );
 
         // Build the API router

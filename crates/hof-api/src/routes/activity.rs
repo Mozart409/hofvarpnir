@@ -18,7 +18,7 @@ use utoipa_axum::{router::OpenApiRouter, routes};
 use hof_core::{
     db,
     domain::{
-        activity::{ActivityEvent, ActivityEventType, ActivitySeverity},
+        activity::{ActivityEvent, ActivityEventType, ActivitySeverity, SourceIndexingSummary},
         api_key::ApiKeyScope,
     },
 };
