@@ -461,8 +461,13 @@ async fn write_token_can_trigger_index() {
         .add_header("Authorization", key.bearer())
         .await;
 
-    // 202 Accepted for async operation
-    response.assert_status(StatusCode::ACCEPTED);
+    // 202 Accepted for async operation, or 409 Conflict if scheduler already started indexing
+    // Both indicate auth succeeded (not 401/403)
+    let status = response.status_code();
+    assert!(
+        status == StatusCode::ACCEPTED || status == StatusCode::CONFLICT,
+        "Expected 202 or 409, got {status}"
+    );
 }
 
 // ============================================================================
