@@ -290,6 +290,7 @@ struct DownloadStarting {
 impl Message<DownloadStarting> for DownloadSupervisor {
     type Reply = ();
 
+    #[instrument(skip_all, fields(video_id = %msg.video_id))]
     async fn handle(&mut self, msg: DownloadStarting, _ctx: &mut Context<Self, Self::Reply>) {
         debug!(video_id = %msg.video_id, "Download starting");
         self.last_download_start = Some(Instant::now());
@@ -342,6 +343,7 @@ struct DownloadCompleted {
 impl Message<DownloadCompleted> for DownloadSupervisor {
     type Reply = ();
 
+    #[instrument(skip_all, fields(video_id = %msg.video_id))]
     async fn handle(&mut self, msg: DownloadCompleted, _ctx: &mut Context<Self, Self::Reply>) {
         self.active_downloads.remove(&msg.video_id);
         #[allow(clippy::cast_precision_loss)]
@@ -520,6 +522,7 @@ pub struct CancelDownload {
 impl Message<CancelDownload> for DownloadSupervisor {
     type Reply = Result<(), String>;
 
+    #[instrument(skip_all, fields(video_id = %msg.video_id))]
     async fn handle(
         &mut self,
         msg: CancelDownload,
@@ -582,6 +585,7 @@ impl DownloadSupervisor {
 
     /// Handle a download failure with retry scheduling.
     #[allow(clippy::too_many_lines)]
+    #[instrument(skip(self, failure), fields(video_id = %video_id))]
     async fn handle_failure(&mut self, video_id: Ulid, failure: FailureContext<'_>) {
         if failure.is_rate_limited {
             // Increase global rate limit backoff

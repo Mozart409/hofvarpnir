@@ -327,6 +327,7 @@ struct IndexingCompleted {
 impl Message<IndexingCompleted> for SchedulerActor {
     type Reply = ();
 
+    #[instrument(skip_all, fields(source_id = %msg.source_id))]
     async fn handle(&mut self, msg: IndexingCompleted, _ctx: &mut Context<Self, Self::Reply>) {
         self.active_indexers.remove(&msg.source_id);
         self.last_indexed.insert(msg.source_id, Instant::now());
@@ -392,6 +393,7 @@ impl Message<IndexingCompleted> for SchedulerActor {
 
 impl SchedulerActor {
     /// Spawn an indexer for a source.
+    #[instrument(skip(self, scheduler_ref), fields(source_id = %source.id))]
     async fn spawn_indexer(
         &mut self,
         source: &Source,
@@ -465,6 +467,7 @@ pub struct AddSource {
 impl Message<AddSource> for SchedulerActor {
     type Reply = ();
 
+    #[instrument(skip_all, fields(source_id = %msg.source.id))]
     async fn handle(&mut self, msg: AddSource, ctx: &mut Context<Self, Self::Reply>) {
         info!(source_id = %msg.source.id, url = %msg.source.url, "Source added to scheduler");
 
@@ -491,6 +494,7 @@ pub struct RemoveSource {
 impl Message<RemoveSource> for SchedulerActor {
     type Reply = ();
 
+    #[instrument(skip_all, fields(source_id = %msg.source_id))]
     async fn handle(&mut self, msg: RemoveSource, _ctx: &mut Context<Self, Self::Reply>) {
         info!(source_id = %msg.source_id, "Source removed from scheduler");
 
