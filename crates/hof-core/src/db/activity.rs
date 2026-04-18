@@ -3,6 +3,7 @@
 use chrono::{DateTime, Utc};
 use sqlx::postgres::PgPool;
 use tokio::sync::broadcast;
+use tracing::instrument;
 use ulid::Ulid;
 
 use super::DbError;
@@ -94,6 +95,7 @@ pub struct CreateActivityEvent<'a> {
 /// # Errors
 ///
 /// Returns an error if the database operation fails.
+#[instrument(skip(pool, data), fields(otel.kind = "client", db.system = "postgresql"))]
 pub async fn create_activity_event(
     pool: &PgPool,
     data: CreateActivityEvent<'_>,
@@ -124,6 +126,7 @@ pub async fn create_activity_event(
 /// # Errors
 ///
 /// Returns an error if the database operation fails.
+#[instrument(skip(pool), fields(otel.kind = "client", db.system = "postgresql"))]
 pub async fn list_activity_events(
     pool: &PgPool,
     limit: i64,
@@ -162,6 +165,7 @@ pub async fn list_activity_events(
 /// # Errors
 ///
 /// Returns an error if the database operation fails.
+#[instrument(skip(pool), fields(otel.kind = "client", db.system = "postgresql"))]
 pub async fn count_activity_events(
     pool: &PgPool,
     severity: Option<ActivitySeverity>,
@@ -191,6 +195,7 @@ pub async fn count_activity_events(
 /// # Errors
 ///
 /// Returns an error if the database operation fails.
+#[instrument(skip(pool), fields(otel.kind = "client", db.system = "postgresql"))]
 pub async fn cleanup_old_activity_events(
     pool: &PgPool,
     before: DateTime<Utc>,
@@ -207,6 +212,7 @@ pub async fn cleanup_old_activity_events(
 ///
 /// Logs errors via tracing but never fails. Intended for use in actors
 /// where we don't want event logging to block or disrupt the main flow.
+#[instrument(skip(pool, message), fields(otel.kind = "client", db.system = "postgresql"))]
 pub async fn log_activity(
     pool: &PgPool,
     event_type: ActivityEventType,

@@ -107,6 +107,7 @@ pub async fn get_source(pool: &PgPool, id: Ulid) -> Result<Source, DbError> {
 /// # Errors
 ///
 /// Returns an error if the database operation fails.
+#[instrument(skip(pool), fields(otel.kind = "client", db.system = "postgresql"))]
 pub async fn list_sources_for_profile(
     pool: &PgPool,
     profile_id: Ulid,
@@ -135,6 +136,7 @@ pub async fn list_sources_for_profile(
 /// # Errors
 ///
 /// Returns an error if the database operation fails.
+#[instrument(skip(pool), fields(otel.kind = "client", db.system = "postgresql"))]
 pub async fn list_sources(pool: &PgPool) -> Result<Vec<Source>, DbError> {
     let query = format!(
         r"
@@ -166,6 +168,7 @@ pub async fn list_sources(pool: &PgPool) -> Result<Vec<Source>, DbError> {
 /// # Errors
 ///
 /// Returns an error if the database operation fails.
+#[instrument(skip(pool), fields(otel.kind = "client", db.system = "postgresql"))]
 pub async fn list_sources_due_for_indexing(pool: &PgPool) -> Result<Vec<Source>, DbError> {
     let query = format!(
         r"
@@ -194,6 +197,7 @@ pub async fn list_sources_due_for_indexing(pool: &PgPool) -> Result<Vec<Source>,
 /// # Errors
 ///
 /// Returns `DbError::NotFound` if the source doesn't exist.
+#[instrument(skip(pool, data), fields(otel.kind = "client", db.system = "postgresql"))]
 pub async fn update_source(
     pool: &PgPool,
     id: Ulid,
@@ -234,6 +238,7 @@ pub async fn update_source(
 /// # Errors
 ///
 /// Returns `DbError::NotFound` if the source doesn't exist.
+#[instrument(skip(pool), fields(otel.kind = "client", db.system = "postgresql"))]
 pub async fn set_source_enabled(pool: &PgPool, id: Ulid, enabled: bool) -> Result<(), DbError> {
     let result = sqlx::query(
         r"
@@ -259,6 +264,7 @@ pub async fn set_source_enabled(pool: &PgPool, id: Ulid, enabled: bool) -> Resul
 /// # Errors
 ///
 /// Returns `DbError::NotFound` if the source doesn't exist.
+#[instrument(skip(pool), fields(otel.kind = "client", db.system = "postgresql"))]
 pub async fn update_source_last_indexed(
     pool: &PgPool,
     id: Ulid,
@@ -292,6 +298,7 @@ pub async fn update_source_last_indexed(
 /// # Errors
 ///
 /// Returns `DbError::NotFound` if the source doesn't exist.
+#[instrument(skip(pool), fields(otel.kind = "client", db.system = "postgresql"))]
 pub async fn record_source_indexing_error(
     pool: &PgPool,
     id: Ulid,
@@ -325,6 +332,7 @@ pub async fn record_source_indexing_error(
 /// # Errors
 ///
 /// Returns `DbError::NotFound` if the source doesn't exist.
+#[instrument(skip(pool), fields(otel.kind = "client", db.system = "postgresql"))]
 pub async fn reset_source_indexing_errors(pool: &PgPool, id: Ulid) -> Result<(), DbError> {
     let result = sqlx::query(
         r"
@@ -350,6 +358,7 @@ pub async fn reset_source_indexing_errors(pool: &PgPool, id: Ulid) -> Result<(),
 /// # Errors
 ///
 /// Returns `DbError::NotFound` if the source doesn't exist.
+#[instrument(skip(pool, data), fields(otel.kind = "client", db.system = "postgresql"))]
 pub async fn update_source_channel_metadata(
     pool: &PgPool,
     id: Ulid,
@@ -385,6 +394,7 @@ pub async fn update_source_channel_metadata(
 /// # Errors
 ///
 /// Returns `DbError::NotFound` if the source doesn't exist.
+#[instrument(skip(pool), fields(otel.kind = "client", db.system = "postgresql"))]
 pub async fn update_source_jellyfin_metadata_at(
     pool: &PgPool,
     id: Ulid,
@@ -418,6 +428,7 @@ pub async fn update_source_jellyfin_metadata_at(
 /// # Errors
 ///
 /// Returns an error if the database operation fails.
+#[instrument(skip(pool), fields(otel.kind = "client", db.system = "postgresql"))]
 pub async fn list_sources_needing_jellyfin_metadata(pool: &PgPool) -> Result<Vec<Source>, DbError> {
     let query = format!(
         r"
@@ -442,6 +453,7 @@ pub async fn list_sources_needing_jellyfin_metadata(pool: &PgPool) -> Result<Vec
 /// # Errors
 ///
 /// Returns `DbError::NotFound` if the source doesn't exist.
+#[instrument(skip(pool), fields(otel.kind = "client", db.system = "postgresql"))]
 pub async fn delete_source(pool: &PgPool, id: Ulid) -> Result<(), DbError> {
     let result = sqlx::query("DELETE FROM sources WHERE id = $1")
         .bind(id.to_string())
@@ -464,6 +476,7 @@ pub async fn delete_source(pool: &PgPool, id: Ulid) -> Result<(), DbError> {
 /// # Errors
 ///
 /// Returns an error if the database operation fails (e.g., duplicate link).
+#[instrument(skip(pool), fields(otel.kind = "client", db.system = "postgresql"))]
 pub async fn link_video_to_source(
     pool: &PgPool,
     source_id: Ulid,
@@ -489,6 +502,7 @@ pub async fn link_video_to_source(
 /// # Errors
 ///
 /// Returns an error if the database operation fails.
+#[instrument(skip(pool), fields(otel.kind = "client", db.system = "postgresql"))]
 pub async fn unlink_video_from_source(
     pool: &PgPool,
     source_id: Ulid,
@@ -513,6 +527,7 @@ pub async fn unlink_video_from_source(
 /// # Errors
 ///
 /// Returns an error if the database operation fails.
+#[instrument(skip(pool), fields(otel.kind = "client", db.system = "postgresql"))]
 pub async fn get_sources_for_video(pool: &PgPool, video_id: Ulid) -> Result<Vec<Ulid>, DbError> {
     let rows: Vec<(String,)> = sqlx::query_as(
         r"
@@ -538,6 +553,7 @@ pub async fn get_sources_for_video(pool: &PgPool, video_id: Ulid) -> Result<Vec<
 /// # Errors
 ///
 /// Returns an error if the database operation fails.
+#[instrument(skip(pool), fields(otel.kind = "client", db.system = "postgresql"))]
 pub async fn get_video_ids_for_source(
     pool: &PgPool,
     source_id: Ulid,
