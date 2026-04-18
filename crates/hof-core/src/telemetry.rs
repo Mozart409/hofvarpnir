@@ -4,7 +4,8 @@
 //! - Console output with optional JSON formatting (`LOG_FORMAT=json`)
 //! - Environment-based log filtering via `RUST_LOG`
 //! - Per-request ID generation and propagation via `x-request-id` header
-//! - OpenTelemetry trace export via OTLP/gRPC (when `OTEL_EXPORTER_OTLP_ENDPOINT` is set)
+//! - OpenTelemetry trace export via OTLP (when `OTEL_EXPORTER_OTLP_ENDPOINT` is set)
+//!   - Protocol configurable via `OTEL_EXPORTER_OTLP_PROTOCOL` (`grpc` or `http/protobuf`)
 //! - Log shipping to Grafana Loki with `trace_id` correlation (when `LOKI_URL` is set)
 //! - HTTP semantic convention attributes for service graph generation
 //!
@@ -56,7 +57,8 @@ impl Drop for TelemetryGuard {
 /// Reads configuration from environment variables:
 /// - `RUST_LOG` — filter directives (default: `info`)
 /// - `LOG_FORMAT` — `json` for structured JSON output, anything else for human-readable (default)
-/// - `OTEL_EXPORTER_OTLP_ENDPOINT` — if set, enables OTLP/gRPC trace export
+/// - `OTEL_EXPORTER_OTLP_ENDPOINT` — if set, enables OTLP trace export
+/// - `OTEL_EXPORTER_OTLP_PROTOCOL` — `grpc` (default) or `http/protobuf`
 /// - `OTEL_SERVICE_NAME` — service name reported to the collector (default: `hofvarpnir`)
 /// - `LOKI_URL` — if set, ships logs to Grafana Loki (e.g. `http://localhost:3100`)
 ///
@@ -125,11 +127,24 @@ where
     }
 
     let service_name = std::env::var("OTEL_SERVICE_NAME").unwrap_or_else(|_| "hofvarpnir".into());
+    let protocol = std::env::var("OTEL_EXPORTER_OTLP_PROTOCOL").unwrap_or_else(|_| "grpc".into());
 
-    let exporter = match opentelemetry_otlp::SpanExporterBuilder::new()
-        .with_tonic()
-        .build()
-    {
+    let exporter = match protocol.as_str() {
+        "grpc" => opentelemetry_otlp::SpanExporter::builder()
+            .with_tonic()
+            .build(),
+        "http/protobuf" => opentelemetry_otlp::SpanExporter::builder()
+            .with_http()
+            .build(),
+        other => {
+            eprintln!(
+                "Unsupported OTEL_EXPORTER_OTLP_PROTOCOL: {other}. Use 'grpc' or 'http/protobuf'"
+            );
+            return (None, None);
+        }
+    };
+
+    let exporter = match exporter {
         Ok(e) => e,
         Err(e) => {
             eprintln!("Failed to create OTLP span exporter: {e}");
