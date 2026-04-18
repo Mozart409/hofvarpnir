@@ -2,6 +2,7 @@
 
 use chrono::{DateTime, NaiveDate, Utc};
 use sqlx::postgres::PgPool;
+use tracing::instrument;
 use ulid::Ulid;
 
 use super::{DbError, MAX_INDEX_RETRIES};
@@ -52,6 +53,7 @@ const SOURCE_COLUMNS: &str = r"
 /// # Errors
 ///
 /// Returns an error if the database operation fails.
+#[instrument(skip(pool, data), fields(otel.kind = "client", db.system = "postgresql"))]
 pub async fn create_source(pool: &PgPool, data: CreateSource<'_>) -> Result<Source, DbError> {
     let id = Ulid::new();
     let query = format!(
@@ -82,6 +84,7 @@ pub async fn create_source(pool: &PgPool, data: CreateSource<'_>) -> Result<Sour
 /// # Errors
 ///
 /// Returns `DbError::NotFound` if the source doesn't exist.
+#[instrument(skip(pool), fields(otel.kind = "client", db.system = "postgresql"))]
 pub async fn get_source(pool: &PgPool, id: Ulid) -> Result<Source, DbError> {
     let query = format!(
         r"
