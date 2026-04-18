@@ -12,9 +12,13 @@ clear:
 # Podman commands
 up: clear
     podman-compose -f containers/compose.dev.yml up -d --build --remove-orphans
+    sleep 2
 
 down: clear
     podman-compose -f containers/compose.dev.yml down
+
+down-v: clear
+    podman-compose -f containers/compose.dev.yml down -v
 
 logs service="":
     podman-compose -f containers/compose.dev.yml logs -f {{service}}
@@ -70,7 +74,7 @@ lint: clear
     cargo clippy --all-targets --all-features -- -D warnings -W clippy::pedantic
 
 # Development
-dev: clear
+dev: clear up
     cargo watch -c -x 'run -p hof-web --bin hofvarpnir'
 
 # Tailwind CSS
