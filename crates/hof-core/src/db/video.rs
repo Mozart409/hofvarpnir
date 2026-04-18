@@ -2,6 +2,7 @@
 
 use chrono::{DateTime, Utc};
 use sqlx::postgres::PgPool;
+use tracing::instrument;
 use ulid::Ulid;
 
 use super::DbError;
@@ -41,6 +42,7 @@ pub struct UpdateVideo<'a> {
 /// # Errors
 ///
 /// Returns an error if the database operation fails.
+#[instrument(skip(pool, data), fields(otel.kind = "client", db.system = "postgresql"))]
 pub async fn create_video(pool: &PgPool, data: CreateVideo<'_>) -> Result<Video, DbError> {
     let id = Ulid::new();
     let row = sqlx::query_as::<_, VideoRow>(
@@ -74,6 +76,7 @@ pub async fn create_video(pool: &PgPool, data: CreateVideo<'_>) -> Result<Video,
 /// # Errors
 ///
 /// Returns an error if the database operation fails.
+#[instrument(skip(pool, data), fields(otel.kind = "client", db.system = "postgresql"))]
 pub async fn upsert_video(pool: &PgPool, data: CreateVideo<'_>) -> Result<Video, DbError> {
     let id = Ulid::new();
     let row = sqlx::query_as::<_, VideoRow>(
@@ -112,6 +115,7 @@ pub async fn upsert_video(pool: &PgPool, data: CreateVideo<'_>) -> Result<Video,
 /// # Errors
 ///
 /// Returns `DbError::NotFound` if the video doesn't exist.
+#[instrument(skip(pool), fields(otel.kind = "client", db.system = "postgresql"))]
 pub async fn get_video(pool: &PgPool, id: Ulid) -> Result<Video, DbError> {
     let row = sqlx::query_as::<_, VideoRow>(
         r"
@@ -136,6 +140,7 @@ pub async fn get_video(pool: &PgPool, id: Ulid) -> Result<Video, DbError> {
 /// # Errors
 ///
 /// Returns `DbError::NotFound` if the video doesn't exist.
+#[instrument(skip(pool), fields(otel.kind = "client", db.system = "postgresql"))]
 pub async fn get_video_by_platform_id(
     pool: &PgPool,
     platform: &str,
@@ -165,6 +170,7 @@ pub async fn get_video_by_platform_id(
 /// # Errors
 ///
 /// Returns an error if the database operation fails.
+#[instrument(skip(pool), fields(otel.kind = "client", db.system = "postgresql"))]
 pub async fn list_videos(
     pool: &PgPool,
     status_filter: Option<VideoStatus>,
@@ -213,6 +219,7 @@ pub async fn list_videos(
 /// # Errors
 ///
 /// Returns an error if the database operation fails.
+#[instrument(skip(pool), fields(otel.kind = "client", db.system = "postgresql"))]
 pub async fn list_videos_paginated(
     pool: &PgPool,
     status_filter: Option<VideoStatus>,
@@ -251,6 +258,7 @@ pub async fn list_videos_paginated(
 /// # Errors
 ///
 /// Returns an error if the database operation fails.
+#[instrument(skip(pool), fields(otel.kind = "client", db.system = "postgresql"))]
 pub async fn count_videos(
     pool: &PgPool,
     status_filter: Option<VideoStatus>,
@@ -277,6 +285,7 @@ pub async fn count_videos(
 /// # Errors
 ///
 /// Returns an error if the database operation fails.
+#[instrument(skip(pool), fields(otel.kind = "client", db.system = "postgresql"))]
 pub async fn list_videos_for_source(pool: &PgPool, source_id: Ulid) -> Result<Vec<Video>, DbError> {
     let rows = sqlx::query_as::<_, VideoRow>(
         r"
@@ -305,6 +314,7 @@ pub async fn list_videos_for_source(pool: &PgPool, source_id: Ulid) -> Result<Ve
 /// # Errors
 ///
 /// Returns an error if the database operation fails.
+#[instrument(skip(pool), fields(otel.kind = "client", db.system = "postgresql"))]
 pub async fn list_videos_ready_for_download(pool: &PgPool) -> Result<Vec<Video>, DbError> {
     let rows = sqlx::query_as::<_, VideoRow>(
         r"
@@ -333,6 +343,7 @@ pub async fn list_videos_ready_for_download(pool: &PgPool) -> Result<Vec<Video>,
 /// # Errors
 ///
 /// Returns an error if the database operation fails.
+#[instrument(skip(pool), fields(otel.kind = "client", db.system = "postgresql"))]
 pub async fn list_videos_past_retention(
     pool: &PgPool,
     global_retention_days: Option<i32>,
@@ -375,6 +386,7 @@ pub async fn list_videos_past_retention(
 ///
 /// Returns `DbError::NotFound` if the video doesn't exist.
 #[allow(clippy::too_many_lines)]
+#[instrument(skip(pool, data), fields(otel.kind = "client", db.system = "postgresql"))]
 pub async fn update_video(
     pool: &PgPool,
     id: Ulid,
@@ -436,6 +448,7 @@ pub async fn update_video(
 /// # Errors
 ///
 /// Returns `DbError::NotFound` if the video doesn't exist.
+#[instrument(skip(pool), fields(otel.kind = "client", db.system = "postgresql"))]
 pub async fn update_video_status(
     pool: &PgPool,
     id: Ulid,
@@ -465,6 +478,7 @@ pub async fn update_video_status(
 /// # Errors
 ///
 /// Returns `DbError::NotFound` if the video doesn't exist.
+#[instrument(skip(pool), fields(otel.kind = "client", db.system = "postgresql"))]
 pub async fn mark_video_downloading(pool: &PgPool, id: Ulid) -> Result<(), DbError> {
     let result = sqlx::query(
         r"
@@ -492,6 +506,7 @@ pub async fn mark_video_downloading(pool: &PgPool, id: Ulid) -> Result<(), DbErr
 /// # Errors
 ///
 /// Returns `DbError::NotFound` if the video doesn't exist.
+#[instrument(skip(pool), fields(otel.kind = "client", db.system = "postgresql"))]
 pub async fn mark_video_completed(
     pool: &PgPool,
     id: Ulid,
@@ -528,6 +543,7 @@ pub async fn mark_video_completed(
 /// # Errors
 ///
 /// Returns `DbError::NotFound` if the video doesn't exist.
+#[instrument(skip(pool), fields(otel.kind = "client", db.system = "postgresql"))]
 pub async fn mark_video_failed(
     pool: &PgPool,
     id: Ulid,
@@ -569,6 +585,7 @@ pub async fn mark_video_failed(
 /// # Errors
 ///
 /// Returns an error if the database operation fails.
+#[instrument(skip(pool), fields(otel.kind = "client", db.system = "postgresql"))]
 pub async fn reset_stuck_downloads(pool: &PgPool) -> Result<u64, DbError> {
     let result = sqlx::query(
         r"
@@ -591,6 +608,7 @@ pub async fn reset_stuck_downloads(pool: &PgPool) -> Result<u64, DbError> {
 /// # Errors
 ///
 /// Returns an error if the database operation fails.
+#[instrument(skip(pool), fields(otel.kind = "client", db.system = "postgresql"))]
 pub async fn get_source_names_for_videos(
     pool: &PgPool,
 ) -> Result<std::collections::HashMap<Ulid, String>, DbError> {
@@ -620,6 +638,7 @@ pub async fn get_source_names_for_videos(
 /// # Errors
 ///
 /// Returns `DbError::NotFound` if the video doesn't exist.
+#[instrument(skip(pool), fields(otel.kind = "client", db.system = "postgresql"))]
 pub async fn delete_video(pool: &PgPool, id: Ulid) -> Result<(), DbError> {
     let result = sqlx::query("DELETE FROM videos WHERE id = $1")
         .bind(id.to_string())
