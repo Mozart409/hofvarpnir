@@ -39,6 +39,7 @@ jobs:
         with:
           languages: rust
           queries: security-extended
+          config-file: .github/codeql-config.yml
 
       - name: Build
         env:
