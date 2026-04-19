@@ -1,17 +1,15 @@
 //! Profile endpoint CRUD tests.
 
 use axum::http::StatusCode;
+use sqlx::PgPool;
 
 use crate::helpers::{ApiKeyBuilder, ProfileBuilder, TestApp, UserBuilder};
 
-#[tokio::test]
-async fn list_profiles_returns_empty_array() {
-    let app = TestApp::new().await;
-    let user = UserBuilder::new().build(&app.pool).await;
-    let key = ApiKeyBuilder::new(user.id)
-        .read_only()
-        .build(&app.pool)
-        .await;
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn list_profiles_returns_empty_array(pool: PgPool) {
+    let app = TestApp::new(pool.clone()).await;
+    let user = UserBuilder::new().build(&pool).await;
+    let key = ApiKeyBuilder::new(user.id).read_only().build(&pool).await;
 
     let response = app
         .server
@@ -24,14 +22,11 @@ async fn list_profiles_returns_empty_array() {
     let _body: Vec<serde_json::Value> = response.json();
 }
 
-#[tokio::test]
-async fn create_profile_returns_201() {
-    let app = TestApp::new().await;
-    let user = UserBuilder::new().build(&app.pool).await;
-    let key = ApiKeyBuilder::new(user.id)
-        .read_write()
-        .build(&app.pool)
-        .await;
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn create_profile_returns_201(pool: PgPool) {
+    let app = TestApp::new(pool.clone()).await;
+    let user = UserBuilder::new().build(&pool).await;
+    let key = ApiKeyBuilder::new(user.id).read_write().build(&pool).await;
 
     let response = app
         .server
@@ -54,14 +49,11 @@ async fn create_profile_returns_201() {
     assert!(body["id"].is_string());
 }
 
-#[tokio::test]
-async fn create_profile_with_optional_fields() {
-    let app = TestApp::new().await;
-    let user = UserBuilder::new().build(&app.pool).await;
-    let key = ApiKeyBuilder::new(user.id)
-        .read_write()
-        .build(&app.pool)
-        .await;
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn create_profile_with_optional_fields(pool: PgPool) {
+    let app = TestApp::new(pool.clone()).await;
+    let user = UserBuilder::new().build(&pool).await;
+    let key = ApiKeyBuilder::new(user.id).read_write().build(&pool).await;
 
     let response = app
         .server
@@ -89,14 +81,11 @@ async fn create_profile_with_optional_fields() {
     assert_eq!(body["retention_days"], 90);
 }
 
-#[tokio::test]
-async fn create_profile_invalid_naming_template() {
-    let app = TestApp::new().await;
-    let user = UserBuilder::new().build(&app.pool).await;
-    let key = ApiKeyBuilder::new(user.id)
-        .read_write()
-        .build(&app.pool)
-        .await;
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn create_profile_invalid_naming_template(pool: PgPool) {
+    let app = TestApp::new(pool.clone()).await;
+    let user = UserBuilder::new().build(&pool).await;
+    let key = ApiKeyBuilder::new(user.id).read_write().build(&pool).await;
 
     let response = app
         .server
@@ -114,18 +103,15 @@ async fn create_profile_invalid_naming_template() {
     response.assert_status(StatusCode::BAD_REQUEST);
 }
 
-#[tokio::test]
-async fn get_profile_returns_profile() {
-    let app = TestApp::new().await;
-    let user = UserBuilder::new().build(&app.pool).await;
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn get_profile_returns_profile(pool: PgPool) {
+    let app = TestApp::new(pool.clone()).await;
+    let user = UserBuilder::new().build(&pool).await;
     let profile = ProfileBuilder::new(user.id)
         .name("Get Test Profile")
-        .build(&app.pool)
+        .build(&pool)
         .await;
-    let key = ApiKeyBuilder::new(user.id)
-        .read_only()
-        .build(&app.pool)
-        .await;
+    let key = ApiKeyBuilder::new(user.id).read_only().build(&pool).await;
 
     let response = app
         .server
@@ -140,14 +126,11 @@ async fn get_profile_returns_profile() {
     assert_eq!(body["name"], "Get Test Profile");
 }
 
-#[tokio::test]
-async fn get_profile_not_found() {
-    let app = TestApp::new().await;
-    let user = UserBuilder::new().build(&app.pool).await;
-    let key = ApiKeyBuilder::new(user.id)
-        .read_only()
-        .build(&app.pool)
-        .await;
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn get_profile_not_found(pool: PgPool) {
+    let app = TestApp::new(pool.clone()).await;
+    let user = UserBuilder::new().build(&pool).await;
+    let key = ApiKeyBuilder::new(user.id).read_only().build(&pool).await;
 
     let response = app
         .server
@@ -158,14 +141,11 @@ async fn get_profile_not_found() {
     response.assert_status(StatusCode::NOT_FOUND);
 }
 
-#[tokio::test]
-async fn get_profile_invalid_id() {
-    let app = TestApp::new().await;
-    let user = UserBuilder::new().build(&app.pool).await;
-    let key = ApiKeyBuilder::new(user.id)
-        .read_only()
-        .build(&app.pool)
-        .await;
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn get_profile_invalid_id(pool: PgPool) {
+    let app = TestApp::new(pool.clone()).await;
+    let user = UserBuilder::new().build(&pool).await;
+    let key = ApiKeyBuilder::new(user.id).read_only().build(&pool).await;
 
     let response = app
         .server
@@ -176,18 +156,15 @@ async fn get_profile_invalid_id() {
     response.assert_status(StatusCode::BAD_REQUEST);
 }
 
-#[tokio::test]
-async fn update_profile_partial() {
-    let app = TestApp::new().await;
-    let user = UserBuilder::new().build(&app.pool).await;
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn update_profile_partial(pool: PgPool) {
+    let app = TestApp::new(pool.clone()).await;
+    let user = UserBuilder::new().build(&pool).await;
     let profile = ProfileBuilder::new(user.id)
         .name("Original Name")
-        .build(&app.pool)
+        .build(&pool)
         .await;
-    let key = ApiKeyBuilder::new(user.id)
-        .read_write()
-        .build(&app.pool)
-        .await;
+    let key = ApiKeyBuilder::new(user.id).read_write().build(&pool).await;
 
     let response = app
         .server
@@ -204,18 +181,15 @@ async fn update_profile_partial() {
     assert_eq!(body["quality"], "Q1080p");
 }
 
-#[tokio::test]
-async fn update_profile_clear_retention() {
-    let app = TestApp::new().await;
-    let user = UserBuilder::new().build(&app.pool).await;
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn update_profile_clear_retention(pool: PgPool) {
+    let app = TestApp::new(pool.clone()).await;
+    let user = UserBuilder::new().build(&pool).await;
     let profile = ProfileBuilder::new(user.id)
         .retention_days(30)
-        .build(&app.pool)
+        .build(&pool)
         .await;
-    let key = ApiKeyBuilder::new(user.id)
-        .read_write()
-        .build(&app.pool)
-        .await;
+    let key = ApiKeyBuilder::new(user.id).read_write().build(&pool).await;
 
     // Verify retention is set
     let get_response = app
@@ -240,15 +214,12 @@ async fn update_profile_clear_retention() {
     assert!(body["retention_days"].is_null());
 }
 
-#[tokio::test]
-async fn delete_profile_returns_204() {
-    let app = TestApp::new().await;
-    let user = UserBuilder::new().build(&app.pool).await;
-    let profile = ProfileBuilder::new(user.id).build(&app.pool).await;
-    let key = ApiKeyBuilder::new(user.id)
-        .full_access()
-        .build(&app.pool)
-        .await;
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn delete_profile_returns_204(pool: PgPool) {
+    let app = TestApp::new(pool.clone()).await;
+    let user = UserBuilder::new().build(&pool).await;
+    let profile = ProfileBuilder::new(user.id).build(&pool).await;
+    let key = ApiKeyBuilder::new(user.id).full_access().build(&pool).await;
 
     let response = app
         .server
@@ -267,14 +238,11 @@ async fn delete_profile_returns_204() {
     get_response.assert_status(StatusCode::NOT_FOUND);
 }
 
-#[tokio::test]
-async fn delete_profile_not_found() {
-    let app = TestApp::new().await;
-    let user = UserBuilder::new().build(&app.pool).await;
-    let key = ApiKeyBuilder::new(user.id)
-        .full_access()
-        .build(&app.pool)
-        .await;
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn delete_profile_not_found(pool: PgPool) {
+    let app = TestApp::new(pool.clone()).await;
+    let user = UserBuilder::new().build(&pool).await;
+    let key = ApiKeyBuilder::new(user.id).full_access().build(&pool).await;
 
     let response = app
         .server
@@ -285,26 +253,23 @@ async fn delete_profile_not_found() {
     response.assert_status(StatusCode::NOT_FOUND);
 }
 
-#[tokio::test]
-async fn list_profiles_filter_by_user() {
-    let app = TestApp::new().await;
-    let user1 = UserBuilder::new().build(&app.pool).await;
-    let user2 = UserBuilder::new().build(&app.pool).await;
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn list_profiles_filter_by_user(pool: PgPool) {
+    let app = TestApp::new(pool.clone()).await;
+    let user1 = UserBuilder::new().build(&pool).await;
+    let user2 = UserBuilder::new().build(&pool).await;
 
     // Create profiles for both users
     ProfileBuilder::new(user1.id)
         .name("User1 Profile")
-        .build(&app.pool)
+        .build(&pool)
         .await;
     ProfileBuilder::new(user2.id)
         .name("User2 Profile")
-        .build(&app.pool)
+        .build(&pool)
         .await;
 
-    let key = ApiKeyBuilder::new(user1.id)
-        .read_only()
-        .build(&app.pool)
-        .await;
+    let key = ApiKeyBuilder::new(user1.id).read_only().build(&pool).await;
 
     // Filter by user1
     let response = app
