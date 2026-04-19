@@ -4,6 +4,7 @@
 //! and proper 401/403 responses for missing/insufficient auth.
 
 use axum::http::StatusCode;
+use sqlx::PgPool;
 
 use crate::helpers::{ApiKeyBuilder, ProfileBuilder, SourceBuilder, TestApp, UserBuilder};
 
@@ -11,45 +12,45 @@ use crate::helpers::{ApiKeyBuilder, ProfileBuilder, SourceBuilder, TestApp, User
 // No Auth -> 401 Unauthorized
 // ============================================================================
 
-#[tokio::test]
-async fn profiles_list_without_auth_returns_401() {
-    let app = TestApp::new().await;
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn profiles_list_without_auth_returns_401(pool: PgPool) {
+    let app = TestApp::new(pool).await;
 
     let response = app.server.get("/api/v1/profiles").await;
 
     response.assert_status(StatusCode::UNAUTHORIZED);
 }
 
-#[tokio::test]
-async fn sources_list_without_auth_returns_401() {
-    let app = TestApp::new().await;
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn sources_list_without_auth_returns_401(pool: PgPool) {
+    let app = TestApp::new(pool).await;
 
     let response = app.server.get("/api/v1/sources").await;
 
     response.assert_status(StatusCode::UNAUTHORIZED);
 }
 
-#[tokio::test]
-async fn downloads_list_without_auth_returns_401() {
-    let app = TestApp::new().await;
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn downloads_list_without_auth_returns_401(pool: PgPool) {
+    let app = TestApp::new(pool).await;
 
     let response = app.server.get("/api/v1/downloads").await;
 
     response.assert_status(StatusCode::UNAUTHORIZED);
 }
 
-#[tokio::test]
-async fn system_status_without_auth_returns_401() {
-    let app = TestApp::new().await;
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn system_status_without_auth_returns_401(pool: PgPool) {
+    let app = TestApp::new(pool).await;
 
     let response = app.server.get("/api/v1/system/status").await;
 
     response.assert_status(StatusCode::UNAUTHORIZED);
 }
 
-#[tokio::test]
-async fn activity_list_without_auth_returns_401() {
-    let app = TestApp::new().await;
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn activity_list_without_auth_returns_401(pool: PgPool) {
+    let app = TestApp::new(pool).await;
 
     let response = app.server.get("/api/v1/activity").await;
 
@@ -60,9 +61,9 @@ async fn activity_list_without_auth_returns_401() {
 // Invalid Token -> 401 Unauthorized
 // ============================================================================
 
-#[tokio::test]
-async fn invalid_token_returns_401() {
-    let app = TestApp::new().await;
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn invalid_token_returns_401(pool: PgPool) {
+    let app = TestApp::new(pool).await;
 
     let response = app
         .server
@@ -73,9 +74,9 @@ async fn invalid_token_returns_401() {
     response.assert_status(StatusCode::UNAUTHORIZED);
 }
 
-#[tokio::test]
-async fn malformed_bearer_returns_401() {
-    let app = TestApp::new().await;
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn malformed_bearer_returns_401(pool: PgPool) {
+    let app = TestApp::new(pool).await;
 
     let response = app
         .server
@@ -86,11 +87,11 @@ async fn malformed_bearer_returns_401() {
     response.assert_status(StatusCode::UNAUTHORIZED);
 }
 
-#[tokio::test]
-async fn expired_token_returns_401() {
-    let app = TestApp::new().await;
-    let user = UserBuilder::new().build(&app.pool).await;
-    let key = ApiKeyBuilder::new(user.id).expired().build(&app.pool).await;
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn expired_token_returns_401(pool: PgPool) {
+    let app = TestApp::new(pool.clone()).await;
+    let user = UserBuilder::new().build(&pool).await;
+    let key = ApiKeyBuilder::new(user.id).expired().build(&pool).await;
 
     let response = app
         .server
@@ -105,14 +106,11 @@ async fn expired_token_returns_401() {
 // Read Scope Tests
 // ============================================================================
 
-#[tokio::test]
-async fn read_token_can_list_profiles() {
-    let app = TestApp::new().await;
-    let user = UserBuilder::new().build(&app.pool).await;
-    let key = ApiKeyBuilder::new(user.id)
-        .read_only()
-        .build(&app.pool)
-        .await;
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn read_token_can_list_profiles(pool: PgPool) {
+    let app = TestApp::new(pool.clone()).await;
+    let user = UserBuilder::new().build(&pool).await;
+    let key = ApiKeyBuilder::new(user.id).read_only().build(&pool).await;
 
     let response = app
         .server
@@ -123,15 +121,12 @@ async fn read_token_can_list_profiles() {
     response.assert_status_ok();
 }
 
-#[tokio::test]
-async fn read_token_can_get_profile() {
-    let app = TestApp::new().await;
-    let user = UserBuilder::new().build(&app.pool).await;
-    let profile = ProfileBuilder::new(user.id).build(&app.pool).await;
-    let key = ApiKeyBuilder::new(user.id)
-        .read_only()
-        .build(&app.pool)
-        .await;
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn read_token_can_get_profile(pool: PgPool) {
+    let app = TestApp::new(pool.clone()).await;
+    let user = UserBuilder::new().build(&pool).await;
+    let profile = ProfileBuilder::new(user.id).build(&pool).await;
+    let key = ApiKeyBuilder::new(user.id).read_only().build(&pool).await;
 
     let response = app
         .server
@@ -142,14 +137,11 @@ async fn read_token_can_get_profile() {
     response.assert_status_ok();
 }
 
-#[tokio::test]
-async fn read_token_cannot_create_profile() {
-    let app = TestApp::new().await;
-    let user = UserBuilder::new().build(&app.pool).await;
-    let key = ApiKeyBuilder::new(user.id)
-        .read_only()
-        .build(&app.pool)
-        .await;
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn read_token_cannot_create_profile(pool: PgPool) {
+    let app = TestApp::new(pool.clone()).await;
+    let user = UserBuilder::new().build(&pool).await;
+    let key = ApiKeyBuilder::new(user.id).read_only().build(&pool).await;
 
     let response = app
         .server
@@ -167,15 +159,12 @@ async fn read_token_cannot_create_profile() {
     response.assert_status(StatusCode::FORBIDDEN);
 }
 
-#[tokio::test]
-async fn read_token_cannot_update_profile() {
-    let app = TestApp::new().await;
-    let user = UserBuilder::new().build(&app.pool).await;
-    let profile = ProfileBuilder::new(user.id).build(&app.pool).await;
-    let key = ApiKeyBuilder::new(user.id)
-        .read_only()
-        .build(&app.pool)
-        .await;
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn read_token_cannot_update_profile(pool: PgPool) {
+    let app = TestApp::new(pool.clone()).await;
+    let user = UserBuilder::new().build(&pool).await;
+    let profile = ProfileBuilder::new(user.id).build(&pool).await;
+    let key = ApiKeyBuilder::new(user.id).read_only().build(&pool).await;
 
     let response = app
         .server
@@ -187,15 +176,12 @@ async fn read_token_cannot_update_profile() {
     response.assert_status(StatusCode::FORBIDDEN);
 }
 
-#[tokio::test]
-async fn read_token_cannot_delete_profile() {
-    let app = TestApp::new().await;
-    let user = UserBuilder::new().build(&app.pool).await;
-    let profile = ProfileBuilder::new(user.id).build(&app.pool).await;
-    let key = ApiKeyBuilder::new(user.id)
-        .read_only()
-        .build(&app.pool)
-        .await;
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn read_token_cannot_delete_profile(pool: PgPool) {
+    let app = TestApp::new(pool.clone()).await;
+    let user = UserBuilder::new().build(&pool).await;
+    let profile = ProfileBuilder::new(user.id).build(&pool).await;
+    let key = ApiKeyBuilder::new(user.id).read_only().build(&pool).await;
 
     let response = app
         .server
@@ -210,14 +196,11 @@ async fn read_token_cannot_delete_profile() {
 // Write Scope Tests
 // ============================================================================
 
-#[tokio::test]
-async fn write_token_can_create_profile() {
-    let app = TestApp::new().await;
-    let user = UserBuilder::new().build(&app.pool).await;
-    let key = ApiKeyBuilder::new(user.id)
-        .read_write()
-        .build(&app.pool)
-        .await;
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn write_token_can_create_profile(pool: PgPool) {
+    let app = TestApp::new(pool.clone()).await;
+    let user = UserBuilder::new().build(&pool).await;
+    let key = ApiKeyBuilder::new(user.id).read_write().build(&pool).await;
 
     let response = app
         .server
@@ -235,15 +218,12 @@ async fn write_token_can_create_profile() {
     response.assert_status(StatusCode::CREATED);
 }
 
-#[tokio::test]
-async fn write_token_can_update_profile() {
-    let app = TestApp::new().await;
-    let user = UserBuilder::new().build(&app.pool).await;
-    let profile = ProfileBuilder::new(user.id).build(&app.pool).await;
-    let key = ApiKeyBuilder::new(user.id)
-        .read_write()
-        .build(&app.pool)
-        .await;
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn write_token_can_update_profile(pool: PgPool) {
+    let app = TestApp::new(pool.clone()).await;
+    let user = UserBuilder::new().build(&pool).await;
+    let profile = ProfileBuilder::new(user.id).build(&pool).await;
+    let key = ApiKeyBuilder::new(user.id).read_write().build(&pool).await;
 
     let response = app
         .server
@@ -255,15 +235,12 @@ async fn write_token_can_update_profile() {
     response.assert_status_ok();
 }
 
-#[tokio::test]
-async fn write_token_cannot_delete_profile() {
-    let app = TestApp::new().await;
-    let user = UserBuilder::new().build(&app.pool).await;
-    let profile = ProfileBuilder::new(user.id).build(&app.pool).await;
-    let key = ApiKeyBuilder::new(user.id)
-        .read_write()
-        .build(&app.pool)
-        .await;
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn write_token_cannot_delete_profile(pool: PgPool) {
+    let app = TestApp::new(pool.clone()).await;
+    let user = UserBuilder::new().build(&pool).await;
+    let profile = ProfileBuilder::new(user.id).build(&pool).await;
+    let key = ApiKeyBuilder::new(user.id).read_write().build(&pool).await;
 
     let response = app
         .server
@@ -278,14 +255,11 @@ async fn write_token_cannot_delete_profile() {
 // Delete Scope Tests
 // ============================================================================
 
-#[tokio::test]
-async fn delete_token_cannot_read() {
-    let app = TestApp::new().await;
-    let user = UserBuilder::new().build(&app.pool).await;
-    let key = ApiKeyBuilder::new(user.id)
-        .delete_only()
-        .build(&app.pool)
-        .await;
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn delete_token_cannot_read(pool: PgPool) {
+    let app = TestApp::new(pool.clone()).await;
+    let user = UserBuilder::new().build(&pool).await;
+    let key = ApiKeyBuilder::new(user.id).delete_only().build(&pool).await;
 
     let response = app
         .server
@@ -296,14 +270,11 @@ async fn delete_token_cannot_read() {
     response.assert_status(StatusCode::FORBIDDEN);
 }
 
-#[tokio::test]
-async fn delete_token_cannot_write() {
-    let app = TestApp::new().await;
-    let user = UserBuilder::new().build(&app.pool).await;
-    let key = ApiKeyBuilder::new(user.id)
-        .delete_only()
-        .build(&app.pool)
-        .await;
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn delete_token_cannot_write(pool: PgPool) {
+    let app = TestApp::new(pool.clone()).await;
+    let user = UserBuilder::new().build(&pool).await;
+    let key = ApiKeyBuilder::new(user.id).delete_only().build(&pool).await;
 
     let response = app
         .server
@@ -321,15 +292,12 @@ async fn delete_token_cannot_write() {
     response.assert_status(StatusCode::FORBIDDEN);
 }
 
-#[tokio::test]
-async fn delete_token_can_delete_profile() {
-    let app = TestApp::new().await;
-    let user = UserBuilder::new().build(&app.pool).await;
-    let profile = ProfileBuilder::new(user.id).build(&app.pool).await;
-    let key = ApiKeyBuilder::new(user.id)
-        .delete_only()
-        .build(&app.pool)
-        .await;
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn delete_token_can_delete_profile(pool: PgPool) {
+    let app = TestApp::new(pool.clone()).await;
+    let user = UserBuilder::new().build(&pool).await;
+    let profile = ProfileBuilder::new(user.id).build(&pool).await;
+    let key = ApiKeyBuilder::new(user.id).delete_only().build(&pool).await;
 
     let response = app
         .server
@@ -344,14 +312,11 @@ async fn delete_token_can_delete_profile() {
 // Full Access Tests
 // ============================================================================
 
-#[tokio::test]
-async fn full_access_token_can_do_everything() {
-    let app = TestApp::new().await;
-    let user = UserBuilder::new().build(&app.pool).await;
-    let key = ApiKeyBuilder::new(user.id)
-        .full_access()
-        .build(&app.pool)
-        .await;
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn full_access_token_can_do_everything(pool: PgPool) {
+    let app = TestApp::new(pool.clone()).await;
+    let user = UserBuilder::new().build(&pool).await;
+    let key = ApiKeyBuilder::new(user.id).full_access().build(&pool).await;
 
     // Create
     let create_response = app
@@ -401,14 +366,11 @@ async fn full_access_token_can_do_everything() {
 // Source Auth Tests
 // ============================================================================
 
-#[tokio::test]
-async fn read_token_can_list_sources() {
-    let app = TestApp::new().await;
-    let user = UserBuilder::new().build(&app.pool).await;
-    let key = ApiKeyBuilder::new(user.id)
-        .read_only()
-        .build(&app.pool)
-        .await;
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn read_token_can_list_sources(pool: PgPool) {
+    let app = TestApp::new(pool.clone()).await;
+    let user = UserBuilder::new().build(&pool).await;
+    let key = ApiKeyBuilder::new(user.id).read_only().build(&pool).await;
 
     let response = app
         .server
@@ -419,15 +381,12 @@ async fn read_token_can_list_sources() {
     response.assert_status_ok();
 }
 
-#[tokio::test]
-async fn read_token_cannot_create_source() {
-    let app = TestApp::new().await;
-    let user = UserBuilder::new().build(&app.pool).await;
-    let profile = ProfileBuilder::new(user.id).build(&app.pool).await;
-    let key = ApiKeyBuilder::new(user.id)
-        .read_only()
-        .build(&app.pool)
-        .await;
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn read_token_cannot_create_source(pool: PgPool) {
+    let app = TestApp::new(pool.clone()).await;
+    let user = UserBuilder::new().build(&pool).await;
+    let profile = ProfileBuilder::new(user.id).build(&pool).await;
+    let key = ApiKeyBuilder::new(user.id).read_only().build(&pool).await;
 
     let response = app
         .server
@@ -444,16 +403,13 @@ async fn read_token_cannot_create_source() {
     response.assert_status(StatusCode::FORBIDDEN);
 }
 
-#[tokio::test]
-async fn write_token_can_trigger_index() {
-    let app = TestApp::new().await;
-    let user = UserBuilder::new().build(&app.pool).await;
-    let profile = ProfileBuilder::new(user.id).build(&app.pool).await;
-    let source = SourceBuilder::new(profile.id).build(&app.pool).await;
-    let key = ApiKeyBuilder::new(user.id)
-        .read_write()
-        .build(&app.pool)
-        .await;
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn write_token_can_trigger_index(pool: PgPool) {
+    let app = TestApp::new(pool.clone()).await;
+    let user = UserBuilder::new().build(&pool).await;
+    let profile = ProfileBuilder::new(user.id).build(&pool).await;
+    let source = SourceBuilder::new(profile.id).build(&pool).await;
+    let key = ApiKeyBuilder::new(user.id).read_write().build(&pool).await;
 
     let response = app
         .server
@@ -474,14 +430,11 @@ async fn write_token_can_trigger_index() {
 // System Endpoint Auth Tests
 // ============================================================================
 
-#[tokio::test]
-async fn read_token_can_get_system_status() {
-    let app = TestApp::new().await;
-    let user = UserBuilder::new().build(&app.pool).await;
-    let key = ApiKeyBuilder::new(user.id)
-        .read_only()
-        .build(&app.pool)
-        .await;
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn read_token_can_get_system_status(pool: PgPool) {
+    let app = TestApp::new(pool.clone()).await;
+    let user = UserBuilder::new().build(&pool).await;
+    let key = ApiKeyBuilder::new(user.id).read_only().build(&pool).await;
 
     let response = app
         .server
@@ -492,14 +445,11 @@ async fn read_token_can_get_system_status() {
     response.assert_status_ok();
 }
 
-#[tokio::test]
-async fn read_token_cannot_trigger_cleanup() {
-    let app = TestApp::new().await;
-    let user = UserBuilder::new().build(&app.pool).await;
-    let key = ApiKeyBuilder::new(user.id)
-        .read_only()
-        .build(&app.pool)
-        .await;
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn read_token_cannot_trigger_cleanup(pool: PgPool) {
+    let app = TestApp::new(pool.clone()).await;
+    let user = UserBuilder::new().build(&pool).await;
+    let key = ApiKeyBuilder::new(user.id).read_only().build(&pool).await;
 
     let response = app
         .server
@@ -510,14 +460,11 @@ async fn read_token_cannot_trigger_cleanup() {
     response.assert_status(StatusCode::FORBIDDEN);
 }
 
-#[tokio::test]
-async fn write_token_can_trigger_cleanup() {
-    let app = TestApp::new().await;
-    let user = UserBuilder::new().build(&app.pool).await;
-    let key = ApiKeyBuilder::new(user.id)
-        .read_write()
-        .build(&app.pool)
-        .await;
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn write_token_can_trigger_cleanup(pool: PgPool) {
+    let app = TestApp::new(pool.clone()).await;
+    let user = UserBuilder::new().build(&pool).await;
+    let key = ApiKeyBuilder::new(user.id).read_write().build(&pool).await;
 
     let response = app
         .server

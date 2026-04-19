@@ -4,17 +4,15 @@
 //! Download operations like retry and cancel interact with actors.
 
 use axum::http::StatusCode;
+use sqlx::PgPool;
 
 use crate::helpers::{ApiKeyBuilder, TestApp, UserBuilder};
 
-#[tokio::test]
-async fn list_downloads_returns_array() {
-    let app = TestApp::new().await;
-    let user = UserBuilder::new().build(&app.pool).await;
-    let key = ApiKeyBuilder::new(user.id)
-        .read_only()
-        .build(&app.pool)
-        .await;
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn list_downloads_returns_array(pool: PgPool) {
+    let app = TestApp::new(pool.clone()).await;
+    let user = UserBuilder::new().build(&pool).await;
+    let key = ApiKeyBuilder::new(user.id).read_only().build(&pool).await;
 
     let response = app
         .server
@@ -25,14 +23,11 @@ async fn list_downloads_returns_array() {
     response.assert_status_ok();
 }
 
-#[tokio::test]
-async fn list_downloads_with_status_filter() {
-    let app = TestApp::new().await;
-    let user = UserBuilder::new().build(&app.pool).await;
-    let key = ApiKeyBuilder::new(user.id)
-        .read_only()
-        .build(&app.pool)
-        .await;
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn list_downloads_with_status_filter(pool: PgPool) {
+    let app = TestApp::new(pool.clone()).await;
+    let user = UserBuilder::new().build(&pool).await;
+    let key = ApiKeyBuilder::new(user.id).read_only().build(&pool).await;
 
     let response = app
         .server
@@ -43,14 +38,11 @@ async fn list_downloads_with_status_filter() {
     response.assert_status_ok();
 }
 
-#[tokio::test]
-async fn list_downloads_with_invalid_status() {
-    let app = TestApp::new().await;
-    let user = UserBuilder::new().build(&app.pool).await;
-    let key = ApiKeyBuilder::new(user.id)
-        .read_only()
-        .build(&app.pool)
-        .await;
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn list_downloads_with_invalid_status(pool: PgPool) {
+    let app = TestApp::new(pool.clone()).await;
+    let user = UserBuilder::new().build(&pool).await;
+    let key = ApiKeyBuilder::new(user.id).read_only().build(&pool).await;
 
     let response = app
         .server
@@ -62,14 +54,11 @@ async fn list_downloads_with_invalid_status() {
     response.assert_status(StatusCode::BAD_REQUEST);
 }
 
-#[tokio::test]
-async fn get_download_not_found() {
-    let app = TestApp::new().await;
-    let user = UserBuilder::new().build(&app.pool).await;
-    let key = ApiKeyBuilder::new(user.id)
-        .read_only()
-        .build(&app.pool)
-        .await;
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn get_download_not_found(pool: PgPool) {
+    let app = TestApp::new(pool.clone()).await;
+    let user = UserBuilder::new().build(&pool).await;
+    let key = ApiKeyBuilder::new(user.id).read_only().build(&pool).await;
 
     let response = app
         .server
@@ -80,14 +69,11 @@ async fn get_download_not_found() {
     response.assert_status(StatusCode::NOT_FOUND);
 }
 
-#[tokio::test]
-async fn get_download_invalid_id() {
-    let app = TestApp::new().await;
-    let user = UserBuilder::new().build(&app.pool).await;
-    let key = ApiKeyBuilder::new(user.id)
-        .read_only()
-        .build(&app.pool)
-        .await;
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn get_download_invalid_id(pool: PgPool) {
+    let app = TestApp::new(pool.clone()).await;
+    let user = UserBuilder::new().build(&pool).await;
+    let key = ApiKeyBuilder::new(user.id).read_only().build(&pool).await;
 
     let response = app
         .server
@@ -98,14 +84,11 @@ async fn get_download_invalid_id() {
     response.assert_status(StatusCode::BAD_REQUEST);
 }
 
-#[tokio::test]
-async fn retry_download_not_found() {
-    let app = TestApp::new().await;
-    let user = UserBuilder::new().build(&app.pool).await;
-    let key = ApiKeyBuilder::new(user.id)
-        .read_write()
-        .build(&app.pool)
-        .await;
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn retry_download_not_found(pool: PgPool) {
+    let app = TestApp::new(pool.clone()).await;
+    let user = UserBuilder::new().build(&pool).await;
+    let key = ApiKeyBuilder::new(user.id).read_write().build(&pool).await;
 
     let response = app
         .server
@@ -116,14 +99,11 @@ async fn retry_download_not_found() {
     response.assert_status(StatusCode::NOT_FOUND);
 }
 
-#[tokio::test]
-async fn cancel_download_not_found() {
-    let app = TestApp::new().await;
-    let user = UserBuilder::new().build(&app.pool).await;
-    let key = ApiKeyBuilder::new(user.id)
-        .read_write()
-        .build(&app.pool)
-        .await;
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn cancel_download_not_found(pool: PgPool) {
+    let app = TestApp::new(pool.clone()).await;
+    let user = UserBuilder::new().build(&pool).await;
+    let key = ApiKeyBuilder::new(user.id).read_write().build(&pool).await;
 
     let response = app
         .server
@@ -134,14 +114,11 @@ async fn cancel_download_not_found() {
     response.assert_status(StatusCode::NOT_FOUND);
 }
 
-#[tokio::test]
-async fn delete_download_not_found() {
-    let app = TestApp::new().await;
-    let user = UserBuilder::new().build(&app.pool).await;
-    let key = ApiKeyBuilder::new(user.id)
-        .full_access()
-        .build(&app.pool)
-        .await;
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn delete_download_not_found(pool: PgPool) {
+    let app = TestApp::new(pool.clone()).await;
+    let user = UserBuilder::new().build(&pool).await;
+    let key = ApiKeyBuilder::new(user.id).full_access().build(&pool).await;
 
     let response = app
         .server
@@ -152,14 +129,11 @@ async fn delete_download_not_found() {
     response.assert_status(StatusCode::NOT_FOUND);
 }
 
-#[tokio::test]
-async fn bulk_retry_with_no_failed() {
-    let app = TestApp::new().await;
-    let user = UserBuilder::new().build(&app.pool).await;
-    let key = ApiKeyBuilder::new(user.id)
-        .read_write()
-        .build(&app.pool)
-        .await;
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn bulk_retry_with_no_failed(pool: PgPool) {
+    let app = TestApp::new(pool.clone()).await;
+    let user = UserBuilder::new().build(&pool).await;
+    let key = ApiKeyBuilder::new(user.id).read_write().build(&pool).await;
 
     let response = app
         .server
@@ -179,14 +153,11 @@ async fn bulk_retry_with_no_failed() {
 // Auth Tests for Download Endpoints
 // ============================================================================
 
-#[tokio::test]
-async fn retry_download_requires_write_scope() {
-    let app = TestApp::new().await;
-    let user = UserBuilder::new().build(&app.pool).await;
-    let key = ApiKeyBuilder::new(user.id)
-        .read_only()
-        .build(&app.pool)
-        .await;
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn retry_download_requires_write_scope(pool: PgPool) {
+    let app = TestApp::new(pool.clone()).await;
+    let user = UserBuilder::new().build(&pool).await;
+    let key = ApiKeyBuilder::new(user.id).read_only().build(&pool).await;
 
     let response = app
         .server
@@ -197,14 +168,11 @@ async fn retry_download_requires_write_scope() {
     response.assert_status(StatusCode::FORBIDDEN);
 }
 
-#[tokio::test]
-async fn cancel_download_requires_write_scope() {
-    let app = TestApp::new().await;
-    let user = UserBuilder::new().build(&app.pool).await;
-    let key = ApiKeyBuilder::new(user.id)
-        .read_only()
-        .build(&app.pool)
-        .await;
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn cancel_download_requires_write_scope(pool: PgPool) {
+    let app = TestApp::new(pool.clone()).await;
+    let user = UserBuilder::new().build(&pool).await;
+    let key = ApiKeyBuilder::new(user.id).read_only().build(&pool).await;
 
     let response = app
         .server
@@ -215,14 +183,11 @@ async fn cancel_download_requires_write_scope() {
     response.assert_status(StatusCode::FORBIDDEN);
 }
 
-#[tokio::test]
-async fn delete_download_requires_delete_scope() {
-    let app = TestApp::new().await;
-    let user = UserBuilder::new().build(&app.pool).await;
-    let key = ApiKeyBuilder::new(user.id)
-        .read_write()
-        .build(&app.pool)
-        .await;
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn delete_download_requires_delete_scope(pool: PgPool) {
+    let app = TestApp::new(pool.clone()).await;
+    let user = UserBuilder::new().build(&pool).await;
+    let key = ApiKeyBuilder::new(user.id).read_write().build(&pool).await;
 
     let response = app
         .server
@@ -233,14 +198,11 @@ async fn delete_download_requires_delete_scope() {
     response.assert_status(StatusCode::FORBIDDEN);
 }
 
-#[tokio::test]
-async fn bulk_retry_requires_write_scope() {
-    let app = TestApp::new().await;
-    let user = UserBuilder::new().build(&app.pool).await;
-    let key = ApiKeyBuilder::new(user.id)
-        .read_only()
-        .build(&app.pool)
-        .await;
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn bulk_retry_requires_write_scope(pool: PgPool) {
+    let app = TestApp::new(pool.clone()).await;
+    let user = UserBuilder::new().build(&pool).await;
+    let key = ApiKeyBuilder::new(user.id).read_only().build(&pool).await;
 
     let response = app
         .server
