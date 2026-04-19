@@ -605,7 +605,7 @@
         {
           "alias": "Buffers Allocated",
           "dsType": "prometheus",
-          "expr": "irate(pg_stat_bgwriter_buffers_alloc{instance=~'$instance'}[5m])",
+          "expr": "irate(pg_stat_bgwriter_buffers_alloc_total{instance=~'$instance'}[5m])",
           "format": "time_series",
           "groupBy": [
             {
@@ -657,111 +657,7 @@
         {
           "alias": "Buffers Allocated",
           "dsType": "prometheus",
-          "expr": "irate(pg_stat_bgwriter_buffers_backend_fsync{instance=~'$instance'}[5m])",
-          "format": "time_series",
-          "groupBy": [
-            {
-              "params": [
-                "$interval"
-              ],
-              "type": "time"
-            },
-            {
-              "params": [
-                "null"
-              ],
-              "type": "fill"
-            }
-          ],
-          "intervalFactor": 2,
-          "legendFormat": "buffers_backend_fsync",
-          "measurement": "postgresql",
-          "policy": "default",
-          "refId": "B",
-          "resultFormat": "time_series",
-          "select": [
-            [
-              {
-                "params": [
-                  "buffers_alloc"
-                ],
-                "type": "field"
-              },
-              {
-                "params": [],
-                "type": "mean"
-              },
-              {
-                "params": [],
-                "type": "difference"
-              }
-            ]
-          ],
-          "step": 240,
-          "tags": [
-            {
-              "key": "instance",
-              "operator": "=~",
-              "value": "/^$instance$/"
-            }
-          ]
-        },
-        {
-          "alias": "Buffers Allocated",
-          "dsType": "prometheus",
-          "expr": "irate(pg_stat_bgwriter_buffers_backend{instance=~'$instance'}[5m])",
-          "format": "time_series",
-          "groupBy": [
-            {
-              "params": [
-                "$interval"
-              ],
-              "type": "time"
-            },
-            {
-              "params": [
-                "null"
-              ],
-              "type": "fill"
-            }
-          ],
-          "intervalFactor": 2,
-          "legendFormat": "buffers_backend",
-          "measurement": "postgresql",
-          "policy": "default",
-          "refId": "C",
-          "resultFormat": "time_series",
-          "select": [
-            [
-              {
-                "params": [
-                  "buffers_alloc"
-                ],
-                "type": "field"
-              },
-              {
-                "params": [],
-                "type": "mean"
-              },
-              {
-                "params": [],
-                "type": "difference"
-              }
-            ]
-          ],
-          "step": 240,
-          "tags": [
-            {
-              "key": "instance",
-              "operator": "=~",
-              "value": "/^$instance$/"
-            }
-          ]
-        },
-        {
-          "alias": "Buffers Allocated",
-          "dsType": "prometheus",
-          "expr": "irate(pg_stat_bgwriter_buffers_clean{instance=~'$instance'}[5m])",
+          "expr": "irate(pg_stat_bgwriter_buffers_clean_total{instance=~'$instance'}[5m])",
           "format": "time_series",
           "groupBy": [
             {
@@ -813,7 +709,7 @@
         {
           "alias": "Buffers Allocated",
           "dsType": "prometheus",
-          "expr": "irate(pg_stat_bgwriter_buffers_checkpoint{instance=~'$instance'}[5m])",
+          "expr": "irate(pg_stat_checkpointer_buffers_written_total{instance=~'$instance'}[5m])",
           "format": "time_series",
           "groupBy": [
             {
@@ -830,7 +726,7 @@
             }
           ],
           "intervalFactor": 2,
-          "legendFormat": "buffers_checkpoint",
+          "legendFormat": "checkpointer_buffers_written",
           "measurement": "postgresql",
           "policy": "default",
           "refId": "E",
