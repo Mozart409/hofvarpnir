@@ -8,7 +8,10 @@ use tower_http::propagate_header::PropagateHeaderLayer;
 use tower_http::request_id::SetRequestIdLayer;
 use tower_http::trace::TraceLayer;
 
-use hof_core::{Config, RequestSpan, UlidRequestId, db, init_tracing, initialize, shutdown};
+use hof_core::{
+    Config, HttpResponseRecorder, RequestSpan, UlidRequestId, db, init_tracing, initialize,
+    shutdown,
+};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -87,7 +90,11 @@ async fn main() -> Result<()> {
         // 1. PropagateHeader: copy x-request-id from request to response
         .layer(PropagateHeaderLayer::new(x_request_id.clone()))
         // 2. Trace: create span (sees x-request-id set by SetRequestId)
-        .layer(TraceLayer::new_for_http().make_span_with(RequestSpan))
+        .layer(
+            TraceLayer::new_for_http()
+                .make_span_with(RequestSpan)
+                .on_response(HttpResponseRecorder),
+        )
         // 3. SetRequestId: generate ULID and set x-request-id header
         .layer(SetRequestIdLayer::new(x_request_id, UlidRequestId));
 

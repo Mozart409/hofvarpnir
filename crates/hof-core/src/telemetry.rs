@@ -4,18 +4,22 @@
 //! - Console output with optional JSON formatting (`LOG_FORMAT=json`)
 //! - Environment-based log filtering via `RUST_LOG`
 //! - Per-request ID generation and propagation via `x-request-id` header
-//! - OpenTelemetry trace export via OTLP/gRPC (when `OTEL_EXPORTER_OTLP_ENDPOINT` is set)
+//! - OpenTelemetry trace export via OTLP (when `OTEL_EXPORTER_OTLP_ENDPOINT` is set)
+//!   - Protocol configurable via `OTEL_EXPORTER_OTLP_PROTOCOL` (`grpc` or `http/protobuf`)
 //! - Log shipping to Grafana Loki with `trace_id` correlation (when `LOKI_URL` is set)
+//! - HTTP semantic convention attributes for service graph generation
 //!
 //! Both the OpenTelemetry and Loki pipelines are opt-in: if the respective env
 //! vars are unset the app behaves exactly as before.
 
-use http::Request;
+use std::time::Duration;
+
+use http::{Request, Response};
 use opentelemetry::trace::TracerProvider;
 use opentelemetry_sdk::Resource;
 use tower_http::request_id::{MakeRequestId, RequestId};
-use tower_http::trace::MakeSpan;
-use tracing::Level;
+use tower_http::trace::{MakeSpan, OnResponse};
+use tracing::{Level, Span};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, Layer, fmt};
@@ -53,7 +57,8 @@ impl Drop for TelemetryGuard {
 /// Reads configuration from environment variables:
 /// - `RUST_LOG` — filter directives (default: `info`)
 /// - `LOG_FORMAT` — `json` for structured JSON output, anything else for human-readable (default)
-/// - `OTEL_EXPORTER_OTLP_ENDPOINT` — if set, enables OTLP/gRPC trace export
+/// - `OTEL_EXPORTER_OTLP_ENDPOINT` — if set, enables OTLP trace export
+/// - `OTEL_EXPORTER_OTLP_PROTOCOL` — `grpc` (default) or `http/protobuf`
 /// - `OTEL_SERVICE_NAME` — service name reported to the collector (default: `hofvarpnir`)
 /// - `LOKI_URL` — if set, ships logs to Grafana Loki (e.g. `http://localhost:3100`)
 ///
@@ -122,11 +127,24 @@ where
     }
 
     let service_name = std::env::var("OTEL_SERVICE_NAME").unwrap_or_else(|_| "hofvarpnir".into());
+    let protocol = std::env::var("OTEL_EXPORTER_OTLP_PROTOCOL").unwrap_or_else(|_| "grpc".into());
 
-    let exporter = match opentelemetry_otlp::SpanExporterBuilder::new()
-        .with_tonic()
-        .build()
-    {
+    let exporter = match protocol.as_str() {
+        "grpc" => opentelemetry_otlp::SpanExporter::builder()
+            .with_tonic()
+            .build(),
+        "http/protobuf" => opentelemetry_otlp::SpanExporter::builder()
+            .with_http()
+            .build(),
+        other => {
+            eprintln!(
+                "Unsupported OTEL_EXPORTER_OTLP_PROTOCOL: {other}. Use 'grpc' or 'http/protobuf'"
+            );
+            return (None, None);
+        }
+    };
+
+    let exporter = match exporter {
         Ok(e) => e,
         Err(e) => {
             eprintln!("Failed to create OTLP span exporter: {e}");
@@ -196,24 +214,54 @@ impl MakeRequestId for UlidRequestId {
     }
 }
 
-/// Creates a tracing span for each HTTP request, including the `x-request-id` as a field.
+/// Creates a tracing span for each HTTP request using OpenTelemetry HTTP semantic conventions.
+///
+/// Attributes recorded:
+/// - `otel.kind` = "server" (required for service graph edge detection)
+/// - `http.request.method` — HTTP method (GET, POST, etc.)
+/// - `url.path` — request path
+/// - `url.query` — query string (if present)
+/// - `http.response.status_code` — recorded by [`HttpResponseRecorder`] on response
+/// - `request_id` — from `x-request-id` header
 #[derive(Clone, Copy, Debug)]
 pub struct RequestSpan;
 
 impl<B> MakeSpan<B> for RequestSpan {
-    fn make_span(&mut self, request: &Request<B>) -> tracing::Span {
+    fn make_span(&mut self, request: &Request<B>) -> Span {
         let request_id = request
             .headers()
             .get("x-request-id")
             .and_then(|v| v.to_str().ok())
             .unwrap_or("-");
 
+        let path = request.uri().path();
+        let query = request.uri().query().unwrap_or("");
+
         tracing::span!(
             Level::INFO,
-            "request",
-            method = %request.method(),
-            uri = %request.uri(),
+            "HTTP request",
+            "otel.kind" = "server",
+            "http.request.method" = %request.method(),
+            "url.path" = %path,
+            "url.query" = %query,
+            "http.response.status_code" = tracing::field::Empty,
             request_id = %request_id,
         )
+    }
+}
+
+/// Records HTTP response attributes on the request span.
+///
+/// Used with `tower_http::trace::TraceLayer` to record `http.response.status_code`
+/// after the response is generated, enabling proper error rate metrics in service graphs.
+#[derive(Clone, Copy, Debug)]
+pub struct HttpResponseRecorder;
+
+impl<B> OnResponse<B> for HttpResponseRecorder {
+    fn on_response(self, response: &Response<B>, _latency: Duration, span: &Span) {
+        span.record(
+            "http.response.status_code",
+            i64::from(response.status().as_u16()),
+        );
     }
 }
