@@ -26,6 +26,9 @@ services:
     image: prometheuscommunity/postgres-exporter:latest
     environment:
       DATA_SOURCE_NAME: postgresql://postgres:postgres@postgres:5432/hofvarpnir_dev?sslmode=disable
+    command:
+      - "--collector.stat_bgwriter"
+      - "--collector.stat_checkpointer"
     ports:
       - "9187:9187"
     networks:
