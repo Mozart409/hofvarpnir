@@ -2,6 +2,7 @@
 
 use chrono::{DateTime, Utc};
 use sqlx::postgres::PgPool;
+use tracing::instrument;
 use ulid::Ulid;
 
 use super::DbError;
@@ -25,6 +26,7 @@ pub struct CreateApiKey<'a> {
 /// # Errors
 ///
 /// Returns an error if the database operation fails (e.g., duplicate name for user).
+#[instrument(skip(pool, data), fields(otel.kind = "client", db.system = "postgresql"))]
 pub async fn create_api_key(pool: &PgPool, data: CreateApiKey<'_>) -> Result<ApiKey, DbError> {
     let id = Ulid::new();
     let row = sqlx::query_as::<_, ApiKeyRow>(
@@ -60,6 +62,7 @@ pub async fn create_api_key(pool: &PgPool, data: CreateApiKey<'_>) -> Result<Api
 /// # Errors
 ///
 /// Returns an error if the database operation fails.
+#[instrument(skip(pool), fields(otel.kind = "client", db.system = "postgresql"))]
 pub async fn list_api_keys(pool: &PgPool, user_id: Ulid) -> Result<Vec<ApiKey>, DbError> {
     let rows = sqlx::query_as::<_, ApiKeyRow>(
         r"
@@ -86,6 +89,7 @@ pub async fn list_api_keys(pool: &PgPool, user_id: Ulid) -> Result<Vec<ApiKey>, 
 /// # Errors
 ///
 /// Returns an error if the database operation fails.
+#[instrument(skip(pool, key_hash), fields(otel.kind = "client", db.system = "postgresql"))]
 pub async fn get_api_key_by_hash(pool: &PgPool, key_hash: &str) -> Result<Option<ApiKey>, DbError> {
     let row = sqlx::query_as::<_, ApiKeyRow>(
         r"
@@ -106,6 +110,7 @@ pub async fn get_api_key_by_hash(pool: &PgPool, key_hash: &str) -> Result<Option
 /// # Errors
 ///
 /// Returns an error if the database operation fails.
+#[instrument(skip(pool), fields(otel.kind = "client", db.system = "postgresql"))]
 pub async fn get_api_key(pool: &PgPool, key_id: Ulid) -> Result<Option<ApiKey>, DbError> {
     let row = sqlx::query_as::<_, ApiKeyRow>(
         r"
@@ -125,6 +130,7 @@ pub async fn get_api_key(pool: &PgPool, key_id: Ulid) -> Result<Option<ApiKey>, 
 ///
 /// This is a best-effort operation - failures are logged but don't propagate.
 /// Intended to be spawned as a background task.
+#[instrument(skip(pool), fields(otel.kind = "client", db.system = "postgresql"))]
 pub async fn touch_api_key_last_used(pool: &PgPool, key_id: Ulid, ip: Option<&str>) {
     let result = sqlx::query(
         r"
@@ -150,6 +156,7 @@ pub async fn touch_api_key_last_used(pool: &PgPool, key_id: Ulid, ip: Option<&st
 /// # Errors
 ///
 /// Returns an error if the key doesn't exist or the database operation fails.
+#[instrument(skip(pool, new_prefix, new_key_hash), fields(otel.kind = "client", db.system = "postgresql"))]
 pub async fn roll_api_key(
     pool: &PgPool,
     key_id: Ulid,
@@ -191,6 +198,7 @@ pub async fn roll_api_key(
 /// # Errors
 ///
 /// Returns an error if the key doesn't exist or the database operation fails.
+#[instrument(skip(pool), fields(otel.kind = "client", db.system = "postgresql"))]
 pub async fn delete_api_key(
     pool: &PgPool,
     key_id: Ulid,
@@ -225,6 +233,7 @@ pub async fn delete_api_key(
 /// # Errors
 ///
 /// Returns an error if the database operation fails.
+#[instrument(skip(pool), fields(otel.kind = "client", db.system = "postgresql"))]
 pub async fn list_api_key_events(
     pool: &PgPool,
     api_key_id: Ulid,
@@ -250,6 +259,7 @@ pub async fn list_api_key_events(
 /// Fire-and-forget API key event logging.
 ///
 /// Logs errors via tracing but never fails.
+#[instrument(skip(pool), fields(otel.kind = "client", db.system = "postgresql"))]
 async fn log_api_key_event(
     pool: &PgPool,
     api_key_id: Ulid,

@@ -235,6 +235,7 @@ impl Message<TriggerSourceMetadata> for JellyfinMetadataActor {
 
 impl JellyfinMetadataActor {
     /// Generate metadata for a specific source.
+    #[instrument(skip(self), fields(source_id = %source_id))]
     async fn generate_source_metadata(&self, source_id: Ulid) -> color_eyre::eyre::Result<()> {
         let source = db::get_source(&self.pool, source_id)
             .await
@@ -284,6 +285,7 @@ impl JellyfinMetadataActor {
     }
 
     /// Check all sources and generate missing metadata.
+    #[instrument(skip(self))]
     async fn check_all_sources(&self) -> MetadataCheckResult {
         let mut result = MetadataCheckResult {
             sources_checked: 0,

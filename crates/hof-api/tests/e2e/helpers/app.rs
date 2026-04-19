@@ -39,17 +39,10 @@ pub struct TestApp {
 }
 
 impl TestApp {
-    /// Create a new test application.
+    /// Create a new test application with the provided database pool.
     ///
-    /// Connects to the test database (`DATABASE_URL` env var) and starts minimal actors.
-    pub async fn new() -> Self {
-        let database_url =
-            std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for tests");
-
-        let pool = PgPool::connect(&database_url)
-            .await
-            .expect("Failed to connect to test database");
-
+    /// The pool is provided by `#[sqlx::test]` which manages database isolation.
+    pub async fn new(pool: PgPool) -> Self {
         // Create minimal actors for testing
         let (progress_tx, _progress_rx) = mpsc::channel::<DownloadProgress>(100);
 

@@ -404,6 +404,7 @@ impl SourceIndexerActor {
     }
 
     /// Process a single playlist entry.
+    #[instrument(skip(self, entry), fields(video_id = %entry.platform_video_id))]
     async fn process_entry(&self, entry: &PlaylistEntry, platform: &str) -> EntryOutcome {
         // First, check if we need to filter this entry based on title heuristics
         // (We can't do full filtering without fetching metadata for each video)

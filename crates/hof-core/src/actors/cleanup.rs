@@ -268,6 +268,7 @@ pub struct CleanupStatus {
 impl Message<GetCleanupStatus> for CleanupActor {
     type Reply = CleanupStatus;
 
+    #[instrument(skip_all)]
     async fn handle(
         &mut self,
         _msg: GetCleanupStatus,
@@ -284,6 +285,7 @@ impl Message<GetCleanupStatus> for CleanupActor {
 
 impl CleanupActor {
     /// Clean up videos past their retention period.
+    #[instrument(skip(self))]
     async fn cleanup_retention(&self) -> color_eyre::Result<(usize, i64)> {
         let videos = db::list_videos_past_retention(&self.pool, self.global_retention_days).await?;
 
@@ -317,6 +319,7 @@ impl CleanupActor {
     }
 
     /// Enforce storage quotas per profile.
+    #[instrument(skip(self))]
     async fn enforce_quotas(&self) -> color_eyre::Result<(usize, i64)> {
         // Get all profiles
         let profiles = db::list_profiles(&self.pool).await?;
@@ -445,6 +448,7 @@ impl CleanupActor {
     }
 
     /// Clean up orphaned yt-dlp temp files from all profile output directories.
+    #[instrument(skip(self))]
     async fn cleanup_temp_files(&self) -> color_eyre::Result<usize> {
         let profiles = db::list_profiles(&self.pool).await?;
 

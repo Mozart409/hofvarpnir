@@ -1,17 +1,15 @@
 //! System endpoint tests.
 
 use axum::http::StatusCode;
+use sqlx::PgPool;
 
 use crate::helpers::{ApiKeyBuilder, TestApp, UserBuilder};
 
-#[tokio::test]
-async fn system_status_returns_all_components() {
-    let app = TestApp::new().await;
-    let user = UserBuilder::new().build(&app.pool).await;
-    let key = ApiKeyBuilder::new(user.id)
-        .read_only()
-        .build(&app.pool)
-        .await;
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn system_status_returns_all_components(pool: PgPool) {
+    let app = TestApp::new(pool.clone()).await;
+    let user = UserBuilder::new().build(&pool).await;
+    let key = ApiKeyBuilder::new(user.id).read_only().build(&pool).await;
 
     let response = app
         .server
@@ -29,14 +27,11 @@ async fn system_status_returns_all_components() {
     assert!(body.get("timestamp").is_some());
 }
 
-#[tokio::test]
-async fn system_status_includes_statistics() {
-    let app = TestApp::new().await;
-    let user = UserBuilder::new().build(&app.pool).await;
-    let key = ApiKeyBuilder::new(user.id)
-        .read_only()
-        .build(&app.pool)
-        .await;
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn system_status_includes_statistics(pool: PgPool) {
+    let app = TestApp::new(pool.clone()).await;
+    let user = UserBuilder::new().build(&pool).await;
+    let key = ApiKeyBuilder::new(user.id).read_only().build(&pool).await;
 
     let response = app
         .server
@@ -55,14 +50,11 @@ async fn system_status_includes_statistics() {
     assert!(stats["failed"].is_number());
 }
 
-#[tokio::test]
-async fn trigger_cleanup_returns_result() {
-    let app = TestApp::new().await;
-    let user = UserBuilder::new().build(&app.pool).await;
-    let key = ApiKeyBuilder::new(user.id)
-        .read_write()
-        .build(&app.pool)
-        .await;
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn trigger_cleanup_returns_result(pool: PgPool) {
+    let app = TestApp::new(pool.clone()).await;
+    let user = UserBuilder::new().build(&pool).await;
+    let key = ApiKeyBuilder::new(user.id).read_write().build(&pool).await;
 
     let response = app
         .server
@@ -83,14 +75,11 @@ async fn trigger_cleanup_returns_result() {
     assert!(result["bytes_freed"].is_number());
 }
 
-#[tokio::test]
-async fn system_status_requires_read_scope() {
-    let app = TestApp::new().await;
-    let user = UserBuilder::new().build(&app.pool).await;
-    let key = ApiKeyBuilder::new(user.id)
-        .delete_only()
-        .build(&app.pool)
-        .await;
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn system_status_requires_read_scope(pool: PgPool) {
+    let app = TestApp::new(pool.clone()).await;
+    let user = UserBuilder::new().build(&pool).await;
+    let key = ApiKeyBuilder::new(user.id).delete_only().build(&pool).await;
 
     let response = app
         .server
@@ -101,14 +90,11 @@ async fn system_status_requires_read_scope() {
     response.assert_status(StatusCode::FORBIDDEN);
 }
 
-#[tokio::test]
-async fn trigger_cleanup_requires_write_scope() {
-    let app = TestApp::new().await;
-    let user = UserBuilder::new().build(&app.pool).await;
-    let key = ApiKeyBuilder::new(user.id)
-        .read_only()
-        .build(&app.pool)
-        .await;
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn trigger_cleanup_requires_write_scope(pool: PgPool) {
+    let app = TestApp::new(pool.clone()).await;
+    let user = UserBuilder::new().build(&pool).await;
+    let key = ApiKeyBuilder::new(user.id).read_only().build(&pool).await;
 
     let response = app
         .server
