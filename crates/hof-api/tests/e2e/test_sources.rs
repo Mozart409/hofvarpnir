@@ -1,17 +1,15 @@
 //! Source endpoint CRUD tests.
 
 use axum::http::StatusCode;
+use sqlx::PgPool;
 
 use crate::helpers::{ApiKeyBuilder, ProfileBuilder, SourceBuilder, TestApp, UserBuilder};
 
-#[tokio::test]
-async fn list_sources_returns_array() {
-    let app = TestApp::new().await;
-    let user = UserBuilder::new().build(&app.pool).await;
-    let key = ApiKeyBuilder::new(user.id)
-        .read_only()
-        .build(&app.pool)
-        .await;
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn list_sources_returns_array(pool: PgPool) {
+    let app = TestApp::new(pool.clone()).await;
+    let user = UserBuilder::new().build(&pool).await;
+    let key = ApiKeyBuilder::new(user.id).read_only().build(&pool).await;
 
     let response = app
         .server
@@ -22,15 +20,12 @@ async fn list_sources_returns_array() {
     response.assert_status_ok();
 }
 
-#[tokio::test]
-async fn create_source_returns_201() {
-    let app = TestApp::new().await;
-    let user = UserBuilder::new().build(&app.pool).await;
-    let profile = ProfileBuilder::new(user.id).build(&app.pool).await;
-    let key = ApiKeyBuilder::new(user.id)
-        .read_write()
-        .build(&app.pool)
-        .await;
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn create_source_returns_201(pool: PgPool) {
+    let app = TestApp::new(pool.clone()).await;
+    let user = UserBuilder::new().build(&pool).await;
+    let profile = ProfileBuilder::new(user.id).build(&pool).await;
+    let key = ApiKeyBuilder::new(user.id).read_write().build(&pool).await;
 
     let response = app
         .server
@@ -52,15 +47,12 @@ async fn create_source_returns_201() {
     assert!(body["id"].is_string());
 }
 
-#[tokio::test]
-async fn create_source_playlist() {
-    let app = TestApp::new().await;
-    let user = UserBuilder::new().build(&app.pool).await;
-    let profile = ProfileBuilder::new(user.id).build(&app.pool).await;
-    let key = ApiKeyBuilder::new(user.id)
-        .read_write()
-        .build(&app.pool)
-        .await;
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn create_source_playlist(pool: PgPool) {
+    let app = TestApp::new(pool.clone()).await;
+    let user = UserBuilder::new().build(&pool).await;
+    let profile = ProfileBuilder::new(user.id).build(&pool).await;
+    let key = ApiKeyBuilder::new(user.id).read_write().build(&pool).await;
 
     let response = app
         .server
@@ -86,14 +78,11 @@ async fn create_source_playlist() {
     assert_eq!(body["retention_days"], 60);
 }
 
-#[tokio::test]
-async fn create_source_invalid_profile() {
-    let app = TestApp::new().await;
-    let user = UserBuilder::new().build(&app.pool).await;
-    let key = ApiKeyBuilder::new(user.id)
-        .read_write()
-        .build(&app.pool)
-        .await;
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn create_source_invalid_profile(pool: PgPool) {
+    let app = TestApp::new(pool.clone()).await;
+    let user = UserBuilder::new().build(&pool).await;
+    let key = ApiKeyBuilder::new(user.id).read_write().build(&pool).await;
 
     let response = app
         .server
@@ -111,19 +100,16 @@ async fn create_source_invalid_profile() {
     response.assert_status(StatusCode::INTERNAL_SERVER_ERROR);
 }
 
-#[tokio::test]
-async fn get_source_returns_source() {
-    let app = TestApp::new().await;
-    let user = UserBuilder::new().build(&app.pool).await;
-    let profile = ProfileBuilder::new(user.id).build(&app.pool).await;
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn get_source_returns_source(pool: PgPool) {
+    let app = TestApp::new(pool.clone()).await;
+    let user = UserBuilder::new().build(&pool).await;
+    let profile = ProfileBuilder::new(user.id).build(&pool).await;
     let source = SourceBuilder::new(profile.id)
         .custom_name("Test Source")
-        .build(&app.pool)
+        .build(&pool)
         .await;
-    let key = ApiKeyBuilder::new(user.id)
-        .read_only()
-        .build(&app.pool)
-        .await;
+    let key = ApiKeyBuilder::new(user.id).read_only().build(&pool).await;
 
     let response = app
         .server
@@ -138,14 +124,11 @@ async fn get_source_returns_source() {
     assert_eq!(body["custom_name"], "Test Source");
 }
 
-#[tokio::test]
-async fn get_source_not_found() {
-    let app = TestApp::new().await;
-    let user = UserBuilder::new().build(&app.pool).await;
-    let key = ApiKeyBuilder::new(user.id)
-        .read_only()
-        .build(&app.pool)
-        .await;
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn get_source_not_found(pool: PgPool) {
+    let app = TestApp::new(pool.clone()).await;
+    let user = UserBuilder::new().build(&pool).await;
+    let key = ApiKeyBuilder::new(user.id).read_only().build(&pool).await;
 
     let response = app
         .server
@@ -156,16 +139,13 @@ async fn get_source_not_found() {
     response.assert_status(StatusCode::NOT_FOUND);
 }
 
-#[tokio::test]
-async fn update_source_partial() {
-    let app = TestApp::new().await;
-    let user = UserBuilder::new().build(&app.pool).await;
-    let profile = ProfileBuilder::new(user.id).build(&app.pool).await;
-    let source = SourceBuilder::new(profile.id).build(&app.pool).await;
-    let key = ApiKeyBuilder::new(user.id)
-        .read_write()
-        .build(&app.pool)
-        .await;
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn update_source_partial(pool: PgPool) {
+    let app = TestApp::new(pool.clone()).await;
+    let user = UserBuilder::new().build(&pool).await;
+    let profile = ProfileBuilder::new(user.id).build(&pool).await;
+    let source = SourceBuilder::new(profile.id).build(&pool).await;
+    let key = ApiKeyBuilder::new(user.id).read_write().build(&pool).await;
 
     let response = app
         .server
@@ -184,19 +164,16 @@ async fn update_source_partial() {
     assert_eq!(body["index_frequency_secs"], 1800);
 }
 
-#[tokio::test]
-async fn update_source_clear_custom_name() {
-    let app = TestApp::new().await;
-    let user = UserBuilder::new().build(&app.pool).await;
-    let profile = ProfileBuilder::new(user.id).build(&app.pool).await;
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn update_source_clear_custom_name(pool: PgPool) {
+    let app = TestApp::new(pool.clone()).await;
+    let user = UserBuilder::new().build(&pool).await;
+    let profile = ProfileBuilder::new(user.id).build(&pool).await;
     let source = SourceBuilder::new(profile.id)
         .custom_name("Original Name")
-        .build(&app.pool)
+        .build(&pool)
         .await;
-    let key = ApiKeyBuilder::new(user.id)
-        .read_write()
-        .build(&app.pool)
-        .await;
+    let key = ApiKeyBuilder::new(user.id).read_write().build(&pool).await;
 
     let response = app
         .server
@@ -214,16 +191,13 @@ async fn update_source_clear_custom_name() {
 // Note: The `enabled` field is not part of UpdateSourceRequest.
 // Sources cannot be disabled via the API (only via direct DB update).
 
-#[tokio::test]
-async fn delete_source_returns_204() {
-    let app = TestApp::new().await;
-    let user = UserBuilder::new().build(&app.pool).await;
-    let profile = ProfileBuilder::new(user.id).build(&app.pool).await;
-    let source = SourceBuilder::new(profile.id).build(&app.pool).await;
-    let key = ApiKeyBuilder::new(user.id)
-        .full_access()
-        .build(&app.pool)
-        .await;
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn delete_source_returns_204(pool: PgPool) {
+    let app = TestApp::new(pool.clone()).await;
+    let user = UserBuilder::new().build(&pool).await;
+    let profile = ProfileBuilder::new(user.id).build(&pool).await;
+    let source = SourceBuilder::new(profile.id).build(&pool).await;
+    let key = ApiKeyBuilder::new(user.id).full_access().build(&pool).await;
 
     let response = app
         .server
@@ -242,16 +216,13 @@ async fn delete_source_returns_204() {
     get_response.assert_status(StatusCode::NOT_FOUND);
 }
 
-#[tokio::test]
-async fn trigger_index_returns_accepted_or_conflict() {
-    let app = TestApp::new().await;
-    let user = UserBuilder::new().build(&app.pool).await;
-    let profile = ProfileBuilder::new(user.id).build(&app.pool).await;
-    let source = SourceBuilder::new(profile.id).build(&app.pool).await;
-    let key = ApiKeyBuilder::new(user.id)
-        .read_write()
-        .build(&app.pool)
-        .await;
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn trigger_index_returns_accepted_or_conflict(pool: PgPool) {
+    let app = TestApp::new(pool.clone()).await;
+    let user = UserBuilder::new().build(&pool).await;
+    let profile = ProfileBuilder::new(user.id).build(&pool).await;
+    let source = SourceBuilder::new(profile.id).build(&pool).await;
+    let key = ApiKeyBuilder::new(user.id).read_write().build(&pool).await;
 
     let response = app
         .server
@@ -267,14 +238,11 @@ async fn trigger_index_returns_accepted_or_conflict() {
     );
 }
 
-#[tokio::test]
-async fn trigger_index_source_not_found() {
-    let app = TestApp::new().await;
-    let user = UserBuilder::new().build(&app.pool).await;
-    let key = ApiKeyBuilder::new(user.id)
-        .read_write()
-        .build(&app.pool)
-        .await;
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn trigger_index_source_not_found(pool: PgPool) {
+    let app = TestApp::new(pool.clone()).await;
+    let user = UserBuilder::new().build(&pool).await;
+    let key = ApiKeyBuilder::new(user.id).read_write().build(&pool).await;
 
     let response = app
         .server
@@ -285,21 +253,18 @@ async fn trigger_index_source_not_found() {
     response.assert_status(StatusCode::NOT_FOUND);
 }
 
-#[tokio::test]
-async fn list_sources_filter_by_profile() {
-    let app = TestApp::new().await;
-    let user = UserBuilder::new().build(&app.pool).await;
-    let profile1 = ProfileBuilder::new(user.id).build(&app.pool).await;
-    let profile2 = ProfileBuilder::new(user.id).build(&app.pool).await;
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn list_sources_filter_by_profile(pool: PgPool) {
+    let app = TestApp::new(pool.clone()).await;
+    let user = UserBuilder::new().build(&pool).await;
+    let profile1 = ProfileBuilder::new(user.id).build(&pool).await;
+    let profile2 = ProfileBuilder::new(user.id).build(&pool).await;
 
     // Create sources for both profiles
-    SourceBuilder::new(profile1.id).build(&app.pool).await;
-    SourceBuilder::new(profile2.id).build(&app.pool).await;
+    SourceBuilder::new(profile1.id).build(&pool).await;
+    SourceBuilder::new(profile2.id).build(&pool).await;
 
-    let key = ApiKeyBuilder::new(user.id)
-        .read_only()
-        .build(&app.pool)
-        .await;
+    let key = ApiKeyBuilder::new(user.id).read_only().build(&pool).await;
 
     // Filter by profile1
     let response = app

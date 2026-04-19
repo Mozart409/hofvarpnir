@@ -1,6 +1,7 @@
 //! User database operations.
 
 use sqlx::postgres::PgPool;
+use tracing::instrument;
 use ulid::Ulid;
 
 use super::DbError;
@@ -27,6 +28,7 @@ pub struct UpdateUser<'a> {
 /// # Errors
 ///
 /// Returns an error if the database operation fails.
+#[instrument(skip(pool, data), fields(otel.kind = "client", db.system = "postgresql"))]
 pub async fn create_user(pool: &PgPool, data: CreateUser<'_>) -> Result<User, DbError> {
     let id = Ulid::new();
     let row = sqlx::query_as::<_, UserRow>(
@@ -51,6 +53,7 @@ pub async fn create_user(pool: &PgPool, data: CreateUser<'_>) -> Result<User, Db
 /// # Errors
 ///
 /// Returns `DbError::NotFound` if the user doesn't exist.
+#[instrument(skip(pool), fields(otel.kind = "client", db.system = "postgresql"))]
 pub async fn get_user(pool: &PgPool, id: Ulid) -> Result<User, DbError> {
     let row = sqlx::query_as::<_, UserRow>(
         r"
@@ -72,6 +75,7 @@ pub async fn get_user(pool: &PgPool, id: Ulid) -> Result<User, DbError> {
 /// # Errors
 ///
 /// Returns `DbError::NotFound` if the user doesn't exist.
+#[instrument(skip(pool), fields(otel.kind = "client", db.system = "postgresql"))]
 pub async fn get_user_by_email(pool: &PgPool, email: &str) -> Result<User, DbError> {
     let row = sqlx::query_as::<_, UserRow>(
         r"
@@ -93,6 +97,7 @@ pub async fn get_user_by_email(pool: &PgPool, email: &str) -> Result<User, DbErr
 /// # Errors
 ///
 /// Returns an error if the database operation fails.
+#[instrument(skip(pool), fields(otel.kind = "client", db.system = "postgresql"))]
 pub async fn list_users(pool: &PgPool) -> Result<Vec<User>, DbError> {
     let rows = sqlx::query_as::<_, UserRow>(
         r"
@@ -115,6 +120,7 @@ pub async fn list_users(pool: &PgPool) -> Result<Vec<User>, DbError> {
 /// # Errors
 ///
 /// Returns `DbError::NotFound` if the user doesn't exist.
+#[instrument(skip(pool, data), fields(otel.kind = "client", db.system = "postgresql"))]
 pub async fn update_user(pool: &PgPool, id: Ulid, data: UpdateUser<'_>) -> Result<User, DbError> {
     let row = sqlx::query_as::<_, UserRow>(
         r"
@@ -142,6 +148,7 @@ pub async fn update_user(pool: &PgPool, id: Ulid, data: UpdateUser<'_>) -> Resul
 /// # Errors
 ///
 /// Returns `DbError::NotFound` if the user doesn't exist.
+#[instrument(skip(pool), fields(otel.kind = "client", db.system = "postgresql"))]
 pub async fn delete_user(pool: &PgPool, id: Ulid) -> Result<(), DbError> {
     let result = sqlx::query("DELETE FROM users WHERE id = $1")
         .bind(id.to_string())

@@ -7,7 +7,7 @@ use std::time::Duration;
 use axum::{
     Form, Router,
     extract::{Path, State},
-    http::{StatusCode, header},
+    http::{HeaderMap, StatusCode, header},
     response::{
         IntoResponse, Redirect, Response,
         sse::{Event, KeepAlive, Sse},
@@ -590,10 +590,11 @@ async fn dashboard_page(
     session: Session,
 ) -> impl IntoResponse {
     let flash = take_flash(&session).await;
-    let (profiles_result, sources_result, videos_result) = tokio::join!(
+    let (profiles_result, sources_result, videos_result, source_names_result) = tokio::join!(
         db::list_profiles(&state.pool),
         db::list_sources(&state.pool),
-        db::list_videos(&state.pool, None)
+        db::list_videos(&state.pool, None),
+        db::get_source_names_for_videos(&state.pool)
     );
 
     let profiles = match profiles_result {
@@ -622,6 +623,17 @@ async fn dashboard_page(
         Ok(data) => data,
         Err(error) => {
             tracing::error!(%error, "failed to load videos for dashboard");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                error_page("Failed to load dashboard"),
+            );
+        }
+    };
+
+    let source_names = match source_names_result {
+        Ok(data) => data,
+        Err(error) => {
+            tracing::error!(%error, "failed to load source names for dashboard");
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 error_page("Failed to load dashboard"),
@@ -671,6 +683,7 @@ async fn dashboard_page(
                         completed,
                         failed,
                         &recent,
+                        &source_names,
                     ))
                 }
             }
@@ -680,6 +693,7 @@ async fn dashboard_page(
     (StatusCode::OK, page)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn dashboard_metrics_markup(
     profiles: usize,
     sources: usize,
@@ -688,6 +702,7 @@ fn dashboard_metrics_markup(
     completed: usize,
     failed: usize,
     recent: &[&Video],
+    source_names: &HashMap<Ulid, String>,
 ) -> Markup {
     html! {
         div class="grid gap-4 md:grid-cols-2 xl:grid-cols-4" {
@@ -708,9 +723,12 @@ fn dashboard_metrics_markup(
                 ul class="mt-4 space-y-3" {
                     @for video in recent {
                         li class="flex items-center justify-between gap-3 rounded-xl border border-slate-100 dark:border-slate-700 bg-slate-50/80 dark:bg-slate-800/80 px-3 py-2" {
-                            div class="min-w-0" {
+                            div class="min-w-0 flex-1" {
                                 p class="truncate text-sm font-medium text-slate-900 dark:text-slate-100" { (video.title) }
                                 p class="text-xs text-slate-500 dark:text-slate-400" { (video.platform) " / " (video.platform_video_id) }
+                            }
+                            @if let Some(source_name) = source_names.get(&video.id) {
+                                span class="shrink-0 truncate max-w-[10rem] text-xs text-slate-600 dark:text-slate-300" title=(source_name) { (source_name) }
                             }
                             (status_badge(&video.status))
                         }
@@ -730,14 +748,17 @@ async fn dashboard_events_sse(
     let stream = debounced_broadcast(rx).filter_map(move |()| {
         let pool = state.pool.clone();
         async move {
-            let (profiles_result, sources_result, videos_result) = tokio::join!(
-                db::list_profiles(&pool),
-                db::list_sources(&pool),
-                db::list_videos(&pool, None)
-            );
+            let (profiles_result, sources_result, videos_result, source_names_result) =
+                tokio::join!(
+                    db::list_profiles(&pool),
+                    db::list_sources(&pool),
+                    db::list_videos(&pool, None),
+                    db::get_source_names_for_videos(&pool)
+                );
             let profiles = profiles_result.ok()?;
             let sources = sources_result.ok()?;
             let videos = videos_result.ok()?;
+            let source_names = source_names_result.ok()?;
 
             let pending = videos
                 .iter()
@@ -770,6 +791,7 @@ async fn dashboard_events_sse(
                 completed,
                 failed,
                 &recent,
+                &source_names,
             )
             .into_string();
 
@@ -1520,6 +1542,7 @@ async fn trigger_index(
     _auth: AuthUser,
     State(state): State<AppState>,
     session: Session,
+    headers: HeaderMap,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     let Ok(source_id) = Ulid::from_string(id.trim()) else {
@@ -1530,10 +1553,23 @@ async fn trigger_index(
             .into_response();
     };
 
+    // Redirect back to the referring page, defaulting to /sources
+    let redirect_to = headers
+        .get(header::REFERER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|referer| referer.rsplit_once('/').map(|(_, path)| path))
+        .map_or("/sources", |path| {
+            if path == "schedule" {
+                "/schedule"
+            } else {
+                "/sources"
+            }
+        });
+
     match state.scheduler.ask(IndexSource { source_id }).await {
         Ok(()) => {
             set_flash(&session, "info", "Indexing triggered").await;
-            Redirect::to("/sources").into_response()
+            Redirect::to(redirect_to).into_response()
         }
         Err(error) => {
             tracing::error!(%error, "failed to trigger source index from web form");

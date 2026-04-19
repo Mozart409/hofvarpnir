@@ -1,6 +1,7 @@
 //! Profile database operations.
 
 use sqlx::postgres::PgPool;
+use tracing::instrument;
 use ulid::Ulid;
 
 use super::DbError;
@@ -40,6 +41,7 @@ pub struct UpdateProfile<'a> {
 /// # Errors
 ///
 /// Returns an error if the database operation fails.
+#[instrument(skip(pool, data), fields(otel.kind = "client", db.system = "postgresql"))]
 pub async fn create_profile(pool: &PgPool, data: CreateProfile<'_>) -> Result<Profile, DbError> {
     let id = Ulid::new();
     let row = sqlx::query_as::<_, ProfileRow>(
@@ -74,6 +76,7 @@ pub async fn create_profile(pool: &PgPool, data: CreateProfile<'_>) -> Result<Pr
 /// # Errors
 ///
 /// Returns `DbError::NotFound` if the profile doesn't exist.
+#[instrument(skip(pool), fields(otel.kind = "client", db.system = "postgresql"))]
 pub async fn get_profile(pool: &PgPool, id: Ulid) -> Result<Profile, DbError> {
     let row = sqlx::query_as::<_, ProfileRow>(
         r"
@@ -98,6 +101,7 @@ pub async fn get_profile(pool: &PgPool, id: Ulid) -> Result<Profile, DbError> {
 /// # Errors
 ///
 /// Returns an error if the database operation fails.
+#[instrument(skip(pool), fields(otel.kind = "client", db.system = "postgresql"))]
 pub async fn list_profiles_for_user(pool: &PgPool, user_id: Ulid) -> Result<Vec<Profile>, DbError> {
     let rows = sqlx::query_as::<_, ProfileRow>(
         r"
@@ -125,6 +129,7 @@ pub async fn list_profiles_for_user(pool: &PgPool, user_id: Ulid) -> Result<Vec<
 /// # Errors
 ///
 /// Returns an error if the database operation fails.
+#[instrument(skip(pool), fields(otel.kind = "client", db.system = "postgresql"))]
 pub async fn list_profiles(pool: &PgPool) -> Result<Vec<Profile>, DbError> {
     let rows = sqlx::query_as::<_, ProfileRow>(
         r"
@@ -150,6 +155,7 @@ pub async fn list_profiles(pool: &PgPool) -> Result<Vec<Profile>, DbError> {
 /// # Errors
 ///
 /// Returns `DbError::NotFound` if the profile doesn't exist.
+#[instrument(skip(pool, data), fields(otel.kind = "client", db.system = "postgresql"))]
 pub async fn update_profile(
     pool: &PgPool,
     id: Ulid,
@@ -196,6 +202,7 @@ pub async fn update_profile(
 /// # Errors
 ///
 /// Returns `DbError::NotFound` if the profile doesn't exist.
+#[instrument(skip(pool), fields(otel.kind = "client", db.system = "postgresql"))]
 pub async fn delete_profile(pool: &PgPool, id: Ulid) -> Result<(), DbError> {
     let result = sqlx::query("DELETE FROM profiles WHERE id = $1")
         .bind(id.to_string())
