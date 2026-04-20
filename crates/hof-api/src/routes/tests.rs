@@ -218,6 +218,7 @@ mod source_tests {
             cutoff_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
             retention_days: Some(60),
             entry_order: EntryOrder::Unknown,
+            entry_order_detected_at: None,
             last_indexed_at: None,
             last_error: None,
             index_error_count: 0,

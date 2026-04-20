@@ -43,7 +43,7 @@ pub struct UpdateChannelMetadata<'a> {
 // SQL fragment for selecting all source columns
 const SOURCE_COLUMNS: &str = r"
     id, profile_id, url, source_type, custom_name, enabled,
-    index_frequency_secs, cutoff_date, retention_days, entry_order,
+    index_frequency_secs, cutoff_date, retention_days, entry_order, entry_order_detected_at,
     last_indexed_at, last_error, index_error_count, created_at, updated_at,
     channel_id, channel_title, channel_description, channel_thumbnail_url, jellyfin_metadata_at
 ";
@@ -459,10 +459,16 @@ pub async fn update_source_entry_order(
     id: Ulid,
     entry_order: EntryOrder,
 ) -> Result<(), DbError> {
+    // Set detected_at timestamp when order is detected (not Unknown)
+    // Clear it when resetting to Unknown
     let result = sqlx::query(
         r"
         UPDATE sources
-        SET entry_order = $2
+        SET entry_order = $2,
+            entry_order_detected_at = CASE
+                WHEN $2 = 'unknown' THEN NULL
+                ELSE NOW()
+            END
         WHERE id = $1
         ",
     )

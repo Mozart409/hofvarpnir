@@ -46,6 +46,8 @@ pub struct Source {
     pub retention_days: Option<i32>,
     /// Detected ordering of entries in this source.
     pub entry_order: EntryOrder,
+    /// When entry order was last detected.
+    pub entry_order_detected_at: Option<DateTime<Utc>>,
     pub last_indexed_at: Option<DateTime<Utc>>,
     /// Last error encountered during indexing.
     pub last_error: Option<String>,
@@ -80,6 +82,7 @@ pub struct SourceRow {
     pub cutoff_date: NaiveDate,
     pub retention_days: Option<i32>,
     pub entry_order: EntryOrder,
+    pub entry_order_detected_at: Option<DateTime<Utc>>,
     pub last_indexed_at: Option<DateTime<Utc>>,
     pub last_error: Option<String>,
     pub index_error_count: i32,
@@ -108,6 +111,7 @@ impl TryFrom<SourceRow> for Source {
             cutoff_date: row.cutoff_date,
             retention_days: row.retention_days,
             entry_order: row.entry_order,
+            entry_order_detected_at: row.entry_order_detected_at,
             last_indexed_at: row.last_indexed_at,
             last_error: row.last_error,
             index_error_count: row.index_error_count,
