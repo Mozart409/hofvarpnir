@@ -204,7 +204,7 @@ mod source_tests {
     #[test]
     fn test_source_response_from_source() {
         use chrono::{NaiveDate, Utc};
-        use hof_core::domain::source::Source;
+        use hof_core::domain::source::{EntryOrder, Source};
         use ulid::Ulid;
 
         let source = Source {
@@ -217,6 +217,8 @@ mod source_tests {
             index_frequency_secs: 3600,
             cutoff_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
             retention_days: Some(60),
+            entry_order: EntryOrder::Unknown,
+            entry_order_detected_at: None,
             last_indexed_at: None,
             last_error: None,
             index_error_count: 0,
@@ -240,6 +242,7 @@ mod source_tests {
         assert_eq!(response.index_frequency_secs, 3600);
         assert_eq!(response.cutoff_date, "2024-01-01");
         assert_eq!(response.retention_days, Some(60));
+        assert!(matches!(response.entry_order, EntryOrder::Unknown));
         assert!(response.last_indexed_at.is_none());
     }
 

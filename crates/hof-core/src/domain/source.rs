@@ -12,6 +12,23 @@ pub enum SourceType {
     Playlist,
 }
 
+/// Detected ordering of entries in a playlist/channel.
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, sqlx::Type, ToSchema,
+)]
+#[sqlx(type_name = "entry_order", rename_all = "lowercase")]
+pub enum EntryOrder {
+    /// Not yet checked — trigger detection on next index.
+    #[default]
+    Unknown,
+    /// Oldest entries first.
+    Ascending,
+    /// Newest entries first.
+    Descending,
+    /// No consistent order detected — requires full scan.
+    Unordered,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Source {
     pub id: Ulid,
@@ -27,6 +44,10 @@ pub struct Source {
     pub cutoff_date: NaiveDate,
     /// Per-source retention override (days).
     pub retention_days: Option<i32>,
+    /// Detected ordering of entries in this source.
+    pub entry_order: EntryOrder,
+    /// When entry order was last detected.
+    pub entry_order_detected_at: Option<DateTime<Utc>>,
     pub last_indexed_at: Option<DateTime<Utc>>,
     /// Last error encountered during indexing.
     pub last_error: Option<String>,
@@ -60,6 +81,8 @@ pub struct SourceRow {
     pub index_frequency_secs: i64,
     pub cutoff_date: NaiveDate,
     pub retention_days: Option<i32>,
+    pub entry_order: EntryOrder,
+    pub entry_order_detected_at: Option<DateTime<Utc>>,
     pub last_indexed_at: Option<DateTime<Utc>>,
     pub last_error: Option<String>,
     pub index_error_count: i32,
@@ -87,6 +110,8 @@ impl TryFrom<SourceRow> for Source {
             index_frequency_secs: row.index_frequency_secs,
             cutoff_date: row.cutoff_date,
             retention_days: row.retention_days,
+            entry_order: row.entry_order,
+            entry_order_detected_at: row.entry_order_detected_at,
             last_indexed_at: row.last_indexed_at,
             last_error: row.last_error,
             index_error_count: row.index_error_count,

@@ -6,7 +6,7 @@ use tracing::instrument;
 use ulid::Ulid;
 
 use super::{DbError, MAX_INDEX_RETRIES};
-use crate::domain::source::{Source, SourceRow, SourceType};
+use crate::domain::source::{EntryOrder, Source, SourceRow, SourceType};
 
 /// Data required to create a new source.
 #[derive(Debug, Clone)]
@@ -43,7 +43,7 @@ pub struct UpdateChannelMetadata<'a> {
 // SQL fragment for selecting all source columns
 const SOURCE_COLUMNS: &str = r"
     id, profile_id, url, source_type, custom_name, enabled,
-    index_frequency_secs, cutoff_date, retention_days,
+    index_frequency_secs, cutoff_date, retention_days, entry_order, entry_order_detected_at,
     last_indexed_at, last_error, index_error_count, created_at, updated_at,
     channel_id, channel_title, channel_description, channel_thumbnail_url, jellyfin_metadata_at
 ";
@@ -446,6 +446,42 @@ pub async fn list_sources_needing_jellyfin_metadata(pool: &PgPool) -> Result<Vec
         .map(Source::try_from)
         .collect::<Result<Vec<_>, _>>()
         .map_err(DbError::from)
+}
+
+/// Update the detected entry order for a source.
+///
+/// # Errors
+///
+/// Returns `DbError::NotFound` if the source doesn't exist.
+#[instrument(skip(pool), fields(otel.kind = "client", db.system = "postgresql"))]
+pub async fn update_source_entry_order(
+    pool: &PgPool,
+    id: Ulid,
+    entry_order: EntryOrder,
+) -> Result<(), DbError> {
+    // Set detected_at timestamp when order is detected (not Unknown)
+    // Clear it when resetting to Unknown
+    let result = sqlx::query(
+        r"
+        UPDATE sources
+        SET entry_order = $2,
+            entry_order_detected_at = CASE
+                WHEN $2 = 'unknown' THEN NULL
+                ELSE NOW()
+            END
+        WHERE id = $1
+        ",
+    )
+    .bind(id.to_string())
+    .bind(entry_order)
+    .execute(pool)
+    .await?;
+
+    if result.rows_affected() == 0 {
+        return Err(DbError::NotFound);
+    }
+
+    Ok(())
 }
 
 /// Delete a source.

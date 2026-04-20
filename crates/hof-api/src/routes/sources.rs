@@ -20,7 +20,7 @@ use hof_core::{
     db::{self, CreateSource, UpdateSource},
     domain::{
         api_key::ApiKeyScope,
-        source::{Source, SourceType},
+        source::{EntryOrder, Source, SourceType},
     },
 };
 
@@ -36,6 +36,7 @@ pub fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(get_source, update_source, delete_source))
         .routes(routes!(trigger_index))
         .routes(routes!(trigger_metadata))
+        .routes(routes!(reset_entry_order))
 }
 
 // ============================================================================
@@ -65,6 +66,8 @@ pub struct SourceResponse {
     pub cutoff_date: String,
     /// Per-source retention override (days).
     pub retention_days: Option<i32>,
+    /// Detected entry ordering for this source.
+    pub entry_order: EntryOrder,
     pub last_indexed_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -82,6 +85,7 @@ impl From<Source> for SourceResponse {
             index_frequency_secs: s.index_frequency_secs,
             cutoff_date: s.cutoff_date.to_string(),
             retention_days: s.retention_days,
+            entry_order: s.entry_order,
             last_indexed_at: s.last_indexed_at,
             created_at: s.created_at,
             updated_at: s.updated_at,
@@ -714,6 +718,88 @@ pub async fn trigger_metadata(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ErrorResponse {
                     error: send_err.to_string(),
+                }),
+            )
+                .into_response()
+        }
+    }
+}
+
+// ============================================================================
+// Reset Entry Order
+// ============================================================================
+
+/// Reset entry order detection for a source.
+///
+/// Sets the `entry_order` back to `Unknown`, triggering re-detection on next index.
+#[utoipa::path(
+    post,
+    path = "/api/sources/{id}/reset-order",
+    params(
+        ("id" = String, Path, description = "Source ID (ULID)")
+    ),
+    responses(
+        (status = 200, description = "Entry order reset successfully", body = SourceResponse),
+        (status = 400, body = ApiErrorResponse, description = "Invalid source ID format"),
+        (status = 401, body = ApiErrorResponse, description = "Unauthorized"),
+        (status = 404, body = ApiErrorResponse, description = "Source not found"),
+        (status = 500, body = ApiErrorResponse, description = "Internal server error"),
+    ),
+    security(
+        ("api_key" = [])
+    ),
+    tag = "sources"
+)]
+pub async fn reset_entry_order(
+    State(state): State<AppState>,
+    auth: Auth,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    if let Err(e) = auth.require_scope(ApiKeyScope::Write) {
+        return e.into_response();
+    }
+
+    let Ok(source_id) = Ulid::from_string(&id) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Invalid source ID format".to_string(),
+            }),
+        )
+            .into_response();
+    };
+
+    // Reset entry order to Unknown
+    if let Err(e) = db::update_source_entry_order(&state.pool, source_id, EntryOrder::Unknown).await
+    {
+        if matches!(e, db::DbError::NotFound) {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse {
+                    error: "Source not found".to_string(),
+                }),
+            )
+                .into_response();
+        }
+        tracing::error!(error = %e, "Failed to reset entry order");
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "Failed to reset entry order".to_string(),
+            }),
+        )
+            .into_response();
+    }
+
+    // Return updated source
+    match db::get_source(&state.pool, source_id).await {
+        Ok(source) => (StatusCode::OK, Json(SourceResponse::from(source))).into_response(),
+        Err(e) => {
+            tracing::error!(error = %e, "Failed to get source after reset");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "Entry order reset but failed to fetch updated source".to_string(),
                 }),
             )
                 .into_response()

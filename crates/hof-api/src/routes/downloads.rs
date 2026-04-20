@@ -263,6 +263,10 @@ pub async fn list_downloads(
 ///
 /// **Note:** This is a long-lived connection. Clients should handle reconnection
 /// if the connection drops.
+///
+/// # Errors
+///
+/// Returns `ApiError::Forbidden` if the authentication lacks the `Read` scope.
 #[utoipa::path(
     get,
     path = "/progress",

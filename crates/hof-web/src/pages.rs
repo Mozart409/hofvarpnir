@@ -30,7 +30,7 @@ use hof_core::{
         activity::{ActivityEventType, ActivitySeverity},
         api_key::{ApiKey, ApiKeyEventType, ApiKeyScope},
         profile::{OutputPreset, Profile, Quality},
-        source::{Source, SourceType},
+        source::{EntryOrder, Source, SourceType},
         system::IssueSeverity,
         video::{DownloadProgress, Video, VideoStatus},
     },
@@ -279,6 +279,8 @@ pub fn router(state: AppState) -> Router {
         .route("/sources/{id}/toggle", post(toggle_source_enabled))
         .route("/sources/{id}/index", post(trigger_index))
         .route("/sources/{id}/metadata", post(trigger_metadata))
+        .route("/web/sources/events", get(sources_events_sse))
+        .route("/web/sources/{id}/events", get(source_detail_events_sse))
         .route("/downloads", get(downloads_page))
         .route("/downloads/{id}/retry", post(retry_download))
         .route("/downloads/{id}/cancel", post(cancel_download))
@@ -939,6 +941,67 @@ async fn activity_events_sse(
     )
 }
 
+async fn sources_events_sse(
+    auth: AuthUser,
+    State(state): State<AppState>,
+) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    let rx = state.broadcaster.subscribe_invalidate();
+    let user_id = auth.user_id;
+
+    let stream = debounced_broadcast(rx).filter_map(move |()| {
+        let pool = state.pool.clone();
+        async move {
+            let profiles = db::list_profiles_for_user(&pool, user_id).await.ok()?;
+            let all_sources = db::list_sources(&pool).await.ok()?;
+
+            let profile_ids: std::collections::HashSet<_> = profiles.iter().map(|p| p.id).collect();
+            let mut sources: Vec<_> = all_sources
+                .into_iter()
+                .filter(|s| profile_ids.contains(&s.profile_id))
+                .collect();
+            sources.sort_by_key(|s| s.display_name().to_lowercase());
+
+            let fragment = sources_list_markup(&sources).into_string();
+            Some(Ok(Event::default().event("sources-update").data(fragment)))
+        }
+    });
+
+    Sse::new(stream).keep_alive(
+        KeepAlive::new()
+            .interval(Duration::from_secs(15))
+            .text("keep-alive"),
+    )
+}
+
+async fn source_detail_events_sse(
+    _auth: AuthUser,
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    let source_id = Ulid::from_string(id.trim()).ok();
+    let rx = state.broadcaster.subscribe_invalidate();
+
+    let stream = debounced_broadcast(rx).filter_map(move |()| {
+        let pool = state.pool.clone();
+        async move {
+            let source_id = source_id?;
+            let source = db::get_source(&pool, source_id).await.ok()?;
+            let videos = db::list_videos_for_source(&pool, source_id).await.ok()?;
+
+            let fragment = source_detail_content_markup(&source, &videos).into_string();
+            Some(Ok(Event::default()
+                .event("source-detail-update")
+                .data(fragment)))
+        }
+    });
+
+    Sse::new(stream).keep_alive(
+        KeepAlive::new()
+            .interval(Duration::from_secs(15))
+            .text("keep-alive"),
+    )
+}
+
 async fn profiles_page(
     auth: AuthUser,
     State(state): State<AppState>,
@@ -1272,13 +1335,9 @@ async fn sources_page(
 
             section class="mt-8 rounded-2xl border border-slate-200 dark:border-slate-700 bg-white/80 dark:bg-slate-800/80 p-6 shadow-sm" {
                 h2 class="text-lg font-semibold text-slate-900 dark:text-slate-100" { "Existing Sources" }
-                @if sources.is_empty() {
-                    p class="mt-3 text-sm text-slate-500 dark:text-slate-400" { "No sources yet." }
-                } @else {
-                    div class="mt-4 space-y-4" {
-                        @for source in &sources {
-                            (source_editor(source))
-                        }
+                div hx-ext="sse" sse-connect="/web/sources/events" {
+                    div id="sources-list" sse-swap="sources-update" hx-swap="innerHTML" {
+                        (sources_list_markup(&sources))
                     }
                 }
             }
@@ -2204,6 +2263,8 @@ async fn source_detail_page(
         }
     };
 
+    let events_url = format!("/web/sources/{source_id}/events");
+
     let page = layout(
         &format!("Source: {}", source.display_name()),
         NavItem::Sources,
@@ -2213,8 +2274,11 @@ async fn source_detail_page(
                     "← Back to Sources"
                 }
             }
-            (source_detail_header(&source, videos.len()))
-            (source_videos_table(&videos))
+            div hx-ext="sse" sse-connect=(events_url) {
+                div id="source-detail-content" sse-swap="source-detail-update" hx-swap="innerHTML" {
+                    (source_detail_content_markup(&source, &videos))
+                }
+            }
         },
     );
 
@@ -3966,6 +4030,30 @@ fn source_editor(source: &Source) -> Markup {
     }
 }
 
+fn sources_list_markup(sources: &[Source]) -> Markup {
+    html! {
+        @if sources.is_empty() {
+            p class="mt-3 text-sm text-slate-500 dark:text-slate-400" { "No sources yet." }
+        } @else {
+            div class="mt-4 space-y-4" {
+                @for source in sources {
+                    (source_editor(source))
+                }
+            }
+        }
+    }
+}
+
+fn source_detail_content_markup(
+    source: &Source,
+    videos: &[hof_core::domain::video::Video],
+) -> Markup {
+    html! {
+        (source_detail_header(source, videos.len()))
+        (source_videos_table(videos))
+    }
+}
+
 fn source_detail_header(source: &Source, video_count: usize) -> Markup {
     html! {
         section class="rounded-2xl border border-slate-200 dark:border-slate-700 bg-white/80 dark:bg-slate-800/80 p-6 shadow-sm" {
@@ -3986,6 +4074,9 @@ fn source_detail_header(source: &Source, video_count: usize) -> Markup {
                         }
                         span class="rounded bg-slate-100 dark:bg-slate-700 px-2 py-1" {
                             (format!("{video_count} videos"))
+                        }
+                        span class=(entry_order_badge_class(source.entry_order)) {
+                            (entry_order_label(source.entry_order))
                         }
                         @if let Some(indexed_at) = source.last_indexed_at {
                             span class="rounded bg-slate-100 dark:bg-slate-700 px-2 py-1" {
@@ -4189,6 +4280,29 @@ const fn source_type_label(source_type: &SourceType) -> &'static str {
     match source_type {
         SourceType::Channel => "Channel",
         SourceType::Playlist => "Playlist",
+    }
+}
+
+const fn entry_order_label(order: EntryOrder) -> &'static str {
+    match order {
+        EntryOrder::Unknown => "yt-dlp: Unknown",
+        EntryOrder::Ascending => "yt-dlp: Oldest first",
+        EntryOrder::Descending => "yt-dlp: Newest first",
+        EntryOrder::Unordered => "yt-dlp: Unordered",
+    }
+}
+
+const fn entry_order_badge_class(order: EntryOrder) -> &'static str {
+    match order {
+        EntryOrder::Unknown => {
+            "rounded bg-amber-100 dark:bg-amber-900/50 text-amber-900 dark:text-amber-100 px-2 py-1"
+        }
+        EntryOrder::Ascending | EntryOrder::Descending => {
+            "rounded bg-slate-100 dark:bg-slate-700 px-2 py-1"
+        }
+        EntryOrder::Unordered => {
+            "rounded bg-orange-100 dark:bg-orange-900/50 text-orange-900 dark:text-orange-100 px-2 py-1"
+        }
     }
 }
 
