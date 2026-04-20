@@ -28,8 +28,7 @@ pre-commit:
       run: actionlint
       stage_fixed: true
     - name: keep-sorted
-      glob: "flake.nix"
-      run: keep-sorted flake.nix
+      run: keep-sorted {staged_files}
       stage_fixed: true
     - name: css-build
       glob: "{crates/hof-web/src/**/*.rs,crates/hof-web/assets/input.css}"

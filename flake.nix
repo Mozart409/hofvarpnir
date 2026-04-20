@@ -116,33 +116,36 @@
       };
 
       commonDevPackages = with pkgs; [
-        git
-        rust
-        cargo-workspaces
-        opentofu
-        sqlx-cli
+        # keep-sorted start
+
         actionlint
         bacon
+        bun
         cargo-audit
         cargo-deny
         cargo-outdated
         cargo-watch
-        bacon
+        cargo-workspaces
         cocogitto
         deadbranch
+        ffmpeg
+        git
         just
         keep-sorted
+        lazydocker
         lefthook
         nodejs_24
+        opentofu
         playwright-driver.browsers
         podman-compose
+        podman-tui
         postgresql_17
+        rust
+        sqlx-cli
         sqruff
         tailwindcss_4
-        ffmpeg
         yt-dlp
-        lazydocker
-        podman-tui
+        # keep-sorted end
       ];
 
       linuxDevPackages = with pkgs; [
