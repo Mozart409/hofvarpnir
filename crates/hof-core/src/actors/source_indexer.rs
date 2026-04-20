@@ -279,8 +279,18 @@ impl SourceIndexerActor {
                 .push(format!("Channel metadata update failed: {e}"));
         }
 
-        // Detect entry order if unknown
-        let entry_order = if self.source.entry_order == EntryOrder::Unknown {
+        // Detect entry order if unknown or if detection is stale (>30 days old)
+        let needs_detection =
+            self.source.entry_order == EntryOrder::Unknown || self.needs_order_redetection();
+
+        let entry_order = if needs_detection {
+            if self.source.entry_order != EntryOrder::Unknown {
+                info!(
+                    previous_order = ?self.source.entry_order,
+                    detected_at = ?self.source.entry_order_detected_at,
+                    "Re-detecting entry order (stale detection)"
+                );
+            }
             let detected = self.detect_entry_order(&index_result.entries).await;
             // Persist the detected order
             if let Err(e) =
@@ -607,6 +617,15 @@ impl SourceIndexerActor {
         }
     }
 
+    /// Check if entry order detection is stale and needs re-detection.
+    fn needs_order_redetection(&self) -> bool {
+        should_redetect_order(
+            self.source.entry_order,
+            self.source.entry_order_detected_at,
+            Utc::now(),
+        )
+    }
+
     /// Enqueue a video for download.
     async fn enqueue_video(&self, video_id: Ulid) {
         // Get the video from database
@@ -751,6 +770,28 @@ fn determine_order_from_dates(
     }
 }
 
+/// Check if entry order detection should be re-run.
+///
+/// Re-detection is needed if:
+/// - Entry order is not `Unknown` (already detected), AND
+/// - Detection timestamp is `None` (legacy data) or older than 30 days
+const REDETECTION_DAYS: i64 = 30;
+
+fn should_redetect_order(
+    entry_order: EntryOrder,
+    detected_at: Option<chrono::DateTime<Utc>>,
+    now: chrono::DateTime<Utc>,
+) -> bool {
+    if entry_order == EntryOrder::Unknown {
+        return false;
+    }
+
+    match detected_at {
+        None => true, // No timestamp means legacy data, re-detect
+        Some(ts) => (now - ts).num_days() >= REDETECTION_DAYS,
+    }
+}
+
 /// Heuristic check if an entry is likely a `YouTube` Short.
 fn is_likely_short(entry: &PlaylistEntry) -> bool {
     // Common indicators in title
@@ -858,5 +899,74 @@ mod tests {
             determine_order_from_dates(None, None),
             EntryOrder::Unordered
         );
+    }
+
+    // ========================================================================
+    // Re-detection tests
+    // ========================================================================
+
+    #[test]
+    fn test_redetect_unknown_order_never_needs_redetection() {
+        let now = Utc::now();
+        // Unknown order should not trigger re-detection (it needs initial detection)
+        assert!(!should_redetect_order(EntryOrder::Unknown, None, now));
+        assert!(!should_redetect_order(EntryOrder::Unknown, Some(now), now));
+    }
+
+    #[test]
+    fn test_redetect_no_timestamp_needs_redetection() {
+        let now = Utc::now();
+        // Detected order with no timestamp (legacy) should trigger re-detection
+        assert!(should_redetect_order(EntryOrder::Ascending, None, now));
+        assert!(should_redetect_order(EntryOrder::Descending, None, now));
+        assert!(should_redetect_order(EntryOrder::Unordered, None, now));
+    }
+
+    #[test]
+    fn test_redetect_fresh_detection_no_redetection() {
+        let now = Utc::now();
+        let detected_recently = now - chrono::Duration::days(10);
+        // Detection within 30 days should not trigger re-detection
+        assert!(!should_redetect_order(
+            EntryOrder::Ascending,
+            Some(detected_recently),
+            now
+        ));
+    }
+
+    #[test]
+    fn test_redetect_stale_detection_needs_redetection() {
+        let now = Utc::now();
+        let detected_31_days_ago = now - chrono::Duration::days(31);
+        // Detection older than 30 days should trigger re-detection
+        assert!(should_redetect_order(
+            EntryOrder::Descending,
+            Some(detected_31_days_ago),
+            now
+        ));
+    }
+
+    #[test]
+    fn test_redetect_exactly_30_days_needs_redetection() {
+        let now = Utc::now();
+        let detected_30_days_ago = now - chrono::Duration::days(30);
+        // Exactly 30 days should trigger re-detection (>= 30)
+        assert!(should_redetect_order(
+            EntryOrder::Ascending,
+            Some(detected_30_days_ago),
+            now
+        ));
+    }
+
+    #[test]
+    fn test_redetect_29_days_no_redetection() {
+        let now = Utc::now();
+        let detected_29_days_ago = now - chrono::Duration::days(29);
+        // 29 days should not trigger re-detection
+        assert!(!should_redetect_order(
+            EntryOrder::Ascending,
+            Some(detected_29_days_ago),
+            now
+        ));
     }
 }
