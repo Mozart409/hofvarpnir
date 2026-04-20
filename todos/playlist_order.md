@@ -49,32 +49,34 @@ pub enum EntryOrder {
 
 ## Phase 3: Order Detection Logic
 
-- [ ] Add `detect_entry_order()` function in `source_indexer.rs`
+- [x] Add `detect_entry_order()` function in `source_indexer.rs`
   - Sample first and last entries from playlist
   - Fetch metadata for both to get `published_at`
   - Compare timestamps to determine order
   - Return `Unordered` if timestamps equal, missing, or entries < 2
-- [ ] Handle edge cases:
+- [x] Add `determine_order_from_dates()` pure function for testability
+- [x] Handle edge cases:
   - Playlists with < 2 entries → `Unordered`
   - Missing `published_at` on sampled entries → `Unordered`
   - Equal timestamps → `Unordered`
+- [x] Unit tests for `determine_order_from_dates()` (6 tests)
 
 ## Phase 4: Integrate Detection into Indexer
 
-- [ ] In `execute_indexing()`, after `index_source()` returns:
+- [x] In `execute_indexing()`, after `index_source()` returns:
   - If `source.entry_order == Unknown`, run detection
   - Persist detected order to database
-- [ ] Adjust entry processing based on order:
+- [x] Adjust entry processing based on order:
   - `Descending`: current logic (iterate forward, early-terminate on cutoff)
   - `Ascending`: reverse entry list before processing, same early-terminate logic
   - `Unordered`: no early termination, process all entries
-  - `Unknown`: should not reach processing (detection runs first)
+  - `Unknown`: triggers detection first, then uses detected order
 
 ## Phase 5: API & Web Exposure
 
-- [ ] Add `entry_order` to source API responses (`SourceResponse`)
-- [ ] Display order in web UI (read-only, informational)
-- [ ] Optional: Add API endpoint to manually reset order to `Unknown` (trigger re-detection)
+- [x] Add `entry_order` to source API responses (`SourceResponse`)
+- [x] Display order in web UI (read-only, badge in source detail header)
+- [x] API endpoint to manually reset order to `Unknown` (`POST /api/sources/{id}/reset-order`)
 
 ## Phase 6: Testing
 

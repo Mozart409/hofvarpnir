@@ -241,6 +241,7 @@ mod source_tests {
         assert_eq!(response.index_frequency_secs, 3600);
         assert_eq!(response.cutoff_date, "2024-01-01");
         assert_eq!(response.retention_days, Some(60));
+        assert!(matches!(response.entry_order, EntryOrder::Unknown));
         assert!(response.last_indexed_at.is_none());
     }
 

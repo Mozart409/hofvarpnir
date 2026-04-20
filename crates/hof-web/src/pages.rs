@@ -30,7 +30,7 @@ use hof_core::{
         activity::{ActivityEventType, ActivitySeverity},
         api_key::{ApiKey, ApiKeyEventType, ApiKeyScope},
         profile::{OutputPreset, Profile, Quality},
-        source::{Source, SourceType},
+        source::{EntryOrder, Source, SourceType},
         system::IssueSeverity,
         video::{DownloadProgress, Video, VideoStatus},
     },
@@ -3987,6 +3987,9 @@ fn source_detail_header(source: &Source, video_count: usize) -> Markup {
                         span class="rounded bg-slate-100 dark:bg-slate-700 px-2 py-1" {
                             (format!("{video_count} videos"))
                         }
+                        span class=(entry_order_badge_class(source.entry_order)) {
+                            (entry_order_label(source.entry_order))
+                        }
                         @if let Some(indexed_at) = source.last_indexed_at {
                             span class="rounded bg-slate-100 dark:bg-slate-700 px-2 py-1" {
                                 "Last indexed: " (format_time_ago(indexed_at))
@@ -4189,6 +4192,29 @@ const fn source_type_label(source_type: &SourceType) -> &'static str {
     match source_type {
         SourceType::Channel => "Channel",
         SourceType::Playlist => "Playlist",
+    }
+}
+
+const fn entry_order_label(order: EntryOrder) -> &'static str {
+    match order {
+        EntryOrder::Unknown => "Order: Unknown",
+        EntryOrder::Ascending => "Order: Oldest first",
+        EntryOrder::Descending => "Order: Newest first",
+        EntryOrder::Unordered => "Order: Mixed",
+    }
+}
+
+const fn entry_order_badge_class(order: EntryOrder) -> &'static str {
+    match order {
+        EntryOrder::Unknown => {
+            "rounded bg-amber-100 dark:bg-amber-900/50 text-amber-900 dark:text-amber-100 px-2 py-1"
+        }
+        EntryOrder::Ascending | EntryOrder::Descending => {
+            "rounded bg-slate-100 dark:bg-slate-700 px-2 py-1"
+        }
+        EntryOrder::Unordered => {
+            "rounded bg-orange-100 dark:bg-orange-900/50 text-orange-900 dark:text-orange-100 px-2 py-1"
+        }
     }
 }
 
