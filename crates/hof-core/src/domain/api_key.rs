@@ -38,11 +38,13 @@ pub struct ApiKey {
 
 impl ApiKey {
     /// Check if the API key has expired.
+    #[must_use]
     pub fn is_expired(&self) -> bool {
         self.expires_at.is_some_and(|expires| expires <= Utc::now())
     }
 
     /// Check if the API key has a specific scope.
+    #[must_use]
     pub fn has_scope(&self, scope: ApiKeyScope) -> bool {
         self.scopes.contains(&scope)
     }

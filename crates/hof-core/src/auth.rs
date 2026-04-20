@@ -69,6 +69,7 @@ pub struct GeneratedApiKey {
 ///
 /// Returns the full token (to show user once), a display prefix, and the SHA-256 hash for storage.
 /// Format: `hof_sk_<32 random alphanumeric chars>` (total ~39 chars).
+#[must_use]
 pub fn generate_api_key() -> GeneratedApiKey {
     let random_part = Alphanumeric.sample_string(&mut rand::rng(), API_KEY_RANDOM_LENGTH);
     let token = format!("{API_KEY_PREFIX}{random_part}");
@@ -85,6 +86,7 @@ pub fn generate_api_key() -> GeneratedApiKey {
 /// Hash an API key token using SHA-256.
 ///
 /// Used for both storing new keys and looking up keys on incoming requests.
+#[must_use]
 pub fn hash_api_key(token: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(token.as_bytes());
