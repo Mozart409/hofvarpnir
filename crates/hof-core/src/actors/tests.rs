@@ -383,7 +383,7 @@ mod video_filter_tests {
     use chrono::{NaiveDate, Utc};
 
     use crate::domain::profile::{OutputPreset, Profile, Quality};
-    use crate::domain::source::{Source, SourceType};
+    use crate::domain::source::{EntryOrder, Source, SourceType};
     use crate::ytdlp::VideoMetadata;
     use ulid::Ulid;
 
@@ -416,6 +416,7 @@ mod video_filter_tests {
             index_frequency_secs: 3600,
             cutoff_date: cutoff,
             retention_days: None,
+            entry_order: EntryOrder::Unknown,
             last_indexed_at: None,
             last_error: None,
             index_error_count: 0,
@@ -606,7 +607,7 @@ mod domain_tests {
     use ulid::Ulid;
 
     use crate::domain::profile::Quality;
-    use crate::domain::source::{Source, SourceType};
+    use crate::domain::source::{EntryOrder, Source, SourceType};
     use crate::domain::video::VideoStatus;
 
     #[test]
@@ -645,6 +646,7 @@ mod domain_tests {
             index_frequency_secs: 3600,
             cutoff_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
             retention_days: None,
+            entry_order: EntryOrder::Unknown,
             last_indexed_at: None,
             last_error: None,
             index_error_count: 0,
@@ -673,6 +675,7 @@ mod domain_tests {
             index_frequency_secs: 3600,
             cutoff_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
             retention_days: None,
+            entry_order: EntryOrder::Unknown,
             last_indexed_at: None,
             last_error: None,
             index_error_count: 0,
@@ -701,6 +704,7 @@ mod domain_tests {
             index_frequency_secs: 3600,
             cutoff_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
             retention_days: None,
+            entry_order: EntryOrder::Unknown,
             last_indexed_at: None,
             last_error: None,
             index_error_count: 0,
@@ -751,6 +755,7 @@ mod domain_tests {
             index_frequency_secs: 3600,
             cutoff_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
             retention_days: None,
+            entry_order: EntryOrder::Unknown,
             last_indexed_at: None,
             last_error: None,
             index_error_count: 0,
