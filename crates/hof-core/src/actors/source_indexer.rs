@@ -18,7 +18,7 @@ use ulid::Ulid;
 
 use crate::db::{self, CreateVideo, UpdateChannelMetadata};
 use crate::domain::profile::Profile;
-use crate::domain::source::Source;
+use crate::domain::source::{EntryOrder, Source};
 use crate::domain::video::VideoStatus;
 use crate::jellyfin::{self, JellyfinMetadata};
 use crate::ytdlp::{PlaylistEntry, VideoMetadata, YtdlpClient, YtdlpError};
@@ -279,9 +279,34 @@ impl SourceIndexerActor {
                 .push(format!("Channel metadata update failed: {e}"));
         }
 
+        // Detect entry order if unknown
+        let entry_order = if self.source.entry_order == EntryOrder::Unknown {
+            let detected = self.detect_entry_order(&index_result.entries).await;
+            // Persist the detected order
+            if let Err(e) =
+                db::update_source_entry_order(&self.pool, self.source.id, detected).await
+            {
+                warn!(error = %e, "Failed to persist detected entry order");
+            } else {
+                info!(order = ?detected, "Detected and persisted entry order");
+            }
+            detected
+        } else {
+            self.source.entry_order
+        };
+
+        // Prepare entries based on detected order
+        // For ascending order (oldest first), reverse to get newest first for cutoff logic
+        let entries: Vec<&PlaylistEntry> = match entry_order {
+            EntryOrder::Ascending => index_result.entries.iter().rev().collect(),
+            _ => index_result.entries.iter().collect(),
+        };
+
+        // Early termination is only valid for ordered playlists
+        let use_early_termination = entry_order != EntryOrder::Unordered;
+
         // Process each entry.
         // We stop early once we hit several consecutive videos before the cutoff date.
-        // Entry ordering is provided by the yt-dlp indexing layer.
         const MAX_CONSECUTIVE_BEFORE_CUTOFF: usize = 3;
         let mut consecutive_before_cutoff = 0;
 
@@ -289,10 +314,12 @@ impl SourceIndexerActor {
             source_id = %self.source.id,
             source_type = ?self.source.source_type,
             platform = %index_result.platform,
+            entry_order = ?entry_order,
+            use_early_termination,
             "Configured entry processing strategy"
         );
 
-        for entry in &index_result.entries {
+        for entry in entries {
             match self.process_entry(entry, &index_result.platform).await {
                 EntryOutcome::New(video_id) => {
                     result.new_videos += 1;
@@ -322,7 +349,9 @@ impl SourceIndexerActor {
                     result.record_filtered(&reason);
                     consecutive_before_cutoff += 1;
 
-                    if consecutive_before_cutoff >= MAX_CONSECUTIVE_BEFORE_CUTOFF {
+                    if use_early_termination
+                        && consecutive_before_cutoff >= MAX_CONSECUTIVE_BEFORE_CUTOFF
+                    {
                         info!(
                             consecutive = consecutive_before_cutoff,
                             "Stopping early: found {} consecutive videos before cutoff date",
@@ -612,6 +641,81 @@ impl SourceIndexerActor {
             error!(error = %e, video_id = %video_id, "Failed to enqueue download");
         }
     }
+
+    /// Detect the entry order of a playlist by comparing publish dates of first and last entries.
+    ///
+    /// Returns:
+    /// - `Ascending` if oldest entries come first
+    /// - `Descending` if newest entries come first
+    /// - `Unordered` if order cannot be determined (< 2 entries, missing dates, or equal dates)
+    #[instrument(skip(self, entries), fields(entry_count = entries.len()))]
+    async fn detect_entry_order(&self, entries: &[PlaylistEntry]) -> EntryOrder {
+        // Need at least 2 entries to determine order
+        if entries.len() < 2 {
+            debug!("Cannot detect order: fewer than 2 entries");
+            return EntryOrder::Unordered;
+        }
+
+        let first_entry = &entries[0];
+        let last_entry = &entries[entries.len() - 1];
+
+        debug!(
+            first_video_id = %first_entry.platform_video_id,
+            last_video_id = %last_entry.platform_video_id,
+            "Fetching metadata to detect entry order"
+        );
+
+        // Fetch metadata for first entry
+        let first_metadata = match self.ytdlp.fetch_video_metadata(&first_entry.url).await {
+            Ok(m) => m,
+            Err(e) => {
+                warn!(error = %e, "Failed to fetch first entry metadata for order detection");
+                return EntryOrder::Unordered;
+            }
+        };
+
+        // Fetch metadata for last entry
+        let last_metadata = match self.ytdlp.fetch_video_metadata(&last_entry.url).await {
+            Ok(m) => m,
+            Err(e) => {
+                warn!(error = %e, "Failed to fetch last entry metadata for order detection");
+                return EntryOrder::Unordered;
+            }
+        };
+
+        // Compare publish dates
+        let order =
+            determine_order_from_dates(first_metadata.published_at, last_metadata.published_at);
+
+        match order {
+            EntryOrder::Ascending => {
+                info!(
+                    first_date = ?first_metadata.published_at,
+                    last_date = ?last_metadata.published_at,
+                    "Detected ascending order (oldest first)"
+                );
+            }
+            EntryOrder::Descending => {
+                info!(
+                    first_date = ?first_metadata.published_at,
+                    last_date = ?last_metadata.published_at,
+                    "Detected descending order (newest first)"
+                );
+            }
+            EntryOrder::Unordered => {
+                debug!(
+                    first_date = ?first_metadata.published_at,
+                    last_date = ?last_metadata.published_at,
+                    "Cannot determine order from dates"
+                );
+            }
+            EntryOrder::Unknown => {
+                // Should not happen from determine_order_from_dates
+            }
+        }
+
+        order
+    }
 }
 
 /// Outcome of processing a single entry.
@@ -628,6 +732,23 @@ enum EntryOutcome {
     RateLimited(String),
     /// Error occurred.
     Error(String),
+}
+
+/// Determine entry order from two publish dates (first and last entry).
+///
+/// Returns:
+/// - `Ascending` if first < last (oldest first)
+/// - `Descending` if first > last (newest first)
+/// - `Unordered` if dates are equal or either is missing
+fn determine_order_from_dates(
+    first_date: Option<chrono::DateTime<Utc>>,
+    last_date: Option<chrono::DateTime<Utc>>,
+) -> EntryOrder {
+    match (first_date, last_date) {
+        (Some(first), Some(last)) if first < last => EntryOrder::Ascending,
+        (Some(first), Some(last)) if first > last => EntryOrder::Descending,
+        _ => EntryOrder::Unordered,
+    }
 }
 
 /// Heuristic check if an entry is likely a `YouTube` Short.
@@ -651,6 +772,8 @@ fn is_likely_short(entry: &PlaylistEntry) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use chrono::TimeZone;
+
     use super::*;
 
     #[test]
@@ -672,5 +795,68 @@ mod tests {
             thumbnail_url: None,
         };
         assert!(!is_likely_short(&regular_entry));
+    }
+
+    #[test]
+    fn test_determine_order_ascending() {
+        // First entry is older than last entry -> ascending (oldest first)
+        let first = Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap();
+        let last = Utc.with_ymd_and_hms(2024, 6, 1, 0, 0, 0).unwrap();
+
+        assert_eq!(
+            determine_order_from_dates(Some(first), Some(last)),
+            EntryOrder::Ascending
+        );
+    }
+
+    #[test]
+    fn test_determine_order_descending() {
+        // First entry is newer than last entry -> descending (newest first)
+        let first = Utc.with_ymd_and_hms(2024, 6, 1, 0, 0, 0).unwrap();
+        let last = Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap();
+
+        assert_eq!(
+            determine_order_from_dates(Some(first), Some(last)),
+            EntryOrder::Descending
+        );
+    }
+
+    #[test]
+    fn test_determine_order_equal_dates() {
+        // Same date -> unordered
+        let date = Utc.with_ymd_and_hms(2024, 3, 15, 12, 0, 0).unwrap();
+
+        assert_eq!(
+            determine_order_from_dates(Some(date), Some(date)),
+            EntryOrder::Unordered
+        );
+    }
+
+    #[test]
+    fn test_determine_order_missing_first_date() {
+        let last = Utc.with_ymd_and_hms(2024, 6, 1, 0, 0, 0).unwrap();
+
+        assert_eq!(
+            determine_order_from_dates(None, Some(last)),
+            EntryOrder::Unordered
+        );
+    }
+
+    #[test]
+    fn test_determine_order_missing_last_date() {
+        let first = Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap();
+
+        assert_eq!(
+            determine_order_from_dates(Some(first), None),
+            EntryOrder::Unordered
+        );
+    }
+
+    #[test]
+    fn test_determine_order_both_dates_missing() {
+        assert_eq!(
+            determine_order_from_dates(None, None),
+            EntryOrder::Unordered
+        );
     }
 }
