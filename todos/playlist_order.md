@@ -35,17 +35,17 @@ pub enum EntryOrder {
 
 ## Phase 1: Schema & Domain Types
 
-- [ ] Add `EntryOrder` enum to `crates/hof-core/src/domain/source.rs`
-- [ ] Create migration: add `entry_order` column to `sources` table
-- [ ] Update `Source` and `SourceRow` structs with new field
-- [ ] Update `TryFrom<SourceRow>` implementation
-- [ ] Run `just prepare` to update SQLx offline data
+- [x] Add `EntryOrder` enum to `crates/hof-core/src/domain/source.rs`
+- [x] Create migration: add `entry_order` column to `sources` table
+- [x] Update `Source` and `SourceRow` structs with new field
+- [x] Update `TryFrom<SourceRow>` implementation
+- [x] Run `just prepare` to update SQLx offline data
 
 ## Phase 2: Database Layer
 
-- [ ] Add `db::update_source_entry_order()` function
-- [ ] Update `db::create_source()` to include `entry_order` (default `Unknown`)
-- [ ] Update `db::get_source()` and related queries to include new column
+- [x] Add `db::update_source_entry_order()` function
+- [x] Update `db::create_source()` to include `entry_order` (default `Unknown`) — handled by DB default
+- [x] Update `db::get_source()` and related queries to include new column — via `SOURCE_COLUMNS`
 
 ## Phase 3: Order Detection Logic
 
