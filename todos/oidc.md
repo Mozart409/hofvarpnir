@@ -399,7 +399,7 @@ info!(
 4. ~~**Web auth routes**~~ - `/auth/oidc/login`, `/auth/oidc/callback`, updated `/logout` ✅
 5. ~~**Login page UI**~~ - SSO button (conditional) ✅
 6. ~~**Documentation**~~ - README.md, AGENTS.md, deployment examples ✅
-7. **Tests** - Integration tests with mocked provider
+7. ~~**Tests**~~ - Unit tests for config, client tests with wiremock, flow state tests ✅
 
 ---
 
