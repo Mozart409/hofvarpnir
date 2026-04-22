@@ -298,14 +298,11 @@ OIDC_DISCOVERY_TIMEOUT=30                   # Default: 30 seconds
 # OIDC_DISCOVERY_TIMEOUT=30                  # Discovery HTTP timeout in seconds (default: 30)
 ```
 
-### Feature Flag
+### Always Enabled
 
-```toml
-# In Cargo.toml
-[features]
-default = []
-oidc = ["openidconnect"]
-```
+OIDC module is always compiled in. Runtime behavior controlled by env vars:
+- If `OIDC_ISSUER` is set: OIDC login enabled, SSO button shown
+- If `OIDC_ISSUER` is not set: OIDC disabled, password-only login
 
 ---
 
