@@ -2,6 +2,7 @@
 
 mod activity;
 mod api_key;
+mod oidc;
 mod profile;
 mod source;
 mod user;
@@ -13,6 +14,7 @@ use sqlx::postgres::{PgPool, PgPoolOptions};
 
 pub use activity::*;
 pub use api_key::*;
+pub use oidc::*;
 pub use profile::*;
 pub use source::*;
 pub use user::*;

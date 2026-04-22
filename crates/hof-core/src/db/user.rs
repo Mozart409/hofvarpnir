@@ -8,11 +8,13 @@ use super::DbError;
 use crate::domain::user::{User, UserRow};
 
 /// Data required to create a new user.
+///
+/// `password_hash` is optional for OIDC-only users.
 #[derive(Debug, Clone)]
 pub struct CreateUser<'a> {
     pub email: &'a str,
     pub name: &'a str,
-    pub password_hash: &'a str,
+    pub password_hash: Option<&'a str>,
 }
 
 /// Data for updating an existing user.
@@ -182,7 +184,7 @@ mod tests {
             CreateUser {
                 email: "test@example.com",
                 name: "Test User",
-                password_hash: "$argon2id$v=19$m=16,t=2,p=1$dGVzdHNhbHQ$test",
+                password_hash: Some("$argon2id$v=19$m=16,t=2,p=1$dGVzdHNhbHQ$test"),
             },
         )
         .await
@@ -210,7 +212,7 @@ mod tests {
             CreateUser {
                 email: "crud@example.com",
                 name: "CRUD User",
-                password_hash: "$argon2id$v=19$m=16,t=2,p=1$dGVzdHNhbHQ$test",
+                password_hash: Some("$argon2id$v=19$m=16,t=2,p=1$dGVzdHNhbHQ$test"),
             },
         )
         .await
