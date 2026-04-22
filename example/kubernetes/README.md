@@ -40,6 +40,21 @@ Edit `configmap.yaml` to adjust:
 - `RATE_LIMIT_DELAY_SECS` - Delay between rate-limited requests (default: 60)
 - `RUST_LOG` - Logging level configuration
 
+#### OIDC Authentication (Optional)
+
+To enable OIDC single sign-on, add these to `configmap.yaml` (for non-sensitive values) or `secret.yaml` (for `OIDC_CLIENT_SECRET`):
+
+| Variable | Description | Example |
+|----------|-------------|---------|
+| `OIDC_ISSUER` | OIDC provider URL | `https://auth.example.com` |
+| `OIDC_CLIENT_ID` | OAuth2 client ID | `hofvarpnir` |
+| `OIDC_CLIENT_SECRET` | OAuth2 client secret | (add to secret.yaml) |
+| `OIDC_SCOPES` | Requested scopes | `openid,profile,email` |
+| `OIDC_AUTO_PROVISION` | Auto-create users | `true` |
+| `OIDC_REDIRECT_BASE_URL` | Callback base URL | `https://hof.example.com` |
+| `OIDC_LOGOUT_REDIRECT` | Enable provider logout | `false` |
+| `OIDC_DISCOVERY_TIMEOUT` | Discovery timeout (sec) | `30` |
+
 ### Secrets
 
 **For production**, replace `secret.yaml` with a proper secret management solution:
