@@ -396,9 +396,10 @@ info!(
 1. ~~**Database migration**~~ - `oidc_identities` table + nullable password_hash ✅
 2. ~~**Update `.env.example`**~~ - Add OIDC env vars with documentation ✅
 3. ~~**Core OIDC module**~~ - Config, client, discovery, token exchange ✅
-4. **Web auth routes** - `/auth/oidc/login`, `/auth/oidc/callback`, updated `/logout`
-5. **Login page UI** - SSO button (conditional)
-6. **Tests** - Integration tests with mocked provider
+4. ~~**Web auth routes**~~ - `/auth/oidc/login`, `/auth/oidc/callback`, updated `/logout` ✅
+5. ~~**Login page UI**~~ - SSO button (conditional) ✅
+6. ~~**Documentation**~~ - README.md, AGENTS.md, deployment examples ✅
+7. **Tests** - Integration tests with mocked provider
 
 ---
 
