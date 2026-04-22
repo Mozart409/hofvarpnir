@@ -15,6 +15,7 @@ pub mod db;
 pub mod domain;
 pub mod jellyfin;
 pub mod metrics;
+pub mod oidc;
 pub mod startup;
 pub mod telemetry;
 pub mod ytdlp;

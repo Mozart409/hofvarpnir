@@ -7,9 +7,11 @@ use tokio::sync::broadcast;
 use tower_http::propagate_header::PropagateHeaderLayer;
 use tower_http::request_id::SetRequestIdLayer;
 use tower_http::trace::TraceLayer;
+use tracing::info;
 
 use hof_core::{
     Config, HttpResponseRecorder, RequestSpan, UlidRequestId, db, init_tracing, initialize,
+    oidc::{OidcClient, OidcConfig},
     shutdown,
 };
 
@@ -67,6 +69,20 @@ async fn main() -> Result<()> {
         actor_system.broadcaster.clone(),
     );
 
+    // Initialize OIDC client if configured
+    let oidc_client: Option<Arc<OidcClient>> = if OidcConfig::is_configured() {
+        match init_oidc().await {
+            Ok(client) => client,
+            Err(e) => {
+                tracing::error!(error = %e, "Failed to initialize OIDC client, continuing without OIDC");
+                None
+            }
+        }
+    } else {
+        info!("OIDC not configured (OIDC_ISSUER not set)");
+        None
+    };
+
     // Create session layer
     let session_layer = hof_web::session_layer(pool).await?;
 
@@ -83,7 +99,7 @@ async fn main() -> Result<()> {
         ))
         .nest("/api", api_router)
         .nest("/docs", hof_api::scalar_router(openapi))
-        .merge(hof_web::router(api_state))
+        .merge(hof_web::router(api_state, oidc_client.as_ref()))
         .layer(session_layer)
         .layer(axum::middleware::from_fn(hof_web::middleware::http_metrics))
         // Layer order (axum applies bottom-up, so outermost layer is last):
@@ -126,4 +142,23 @@ async fn main() -> Result<()> {
     tracing::info!("Server shutdown complete");
 
     Ok(())
+}
+
+/// Initialize OIDC client if configured.
+///
+/// Discovers the OIDC provider metadata and creates a client.
+///
+/// # Errors
+///
+/// Returns an error if OIDC is configured but discovery fails.
+async fn init_oidc() -> Result<Option<Arc<OidcClient>>> {
+    let Some(config) = OidcConfig::from_env() else {
+        return Ok(None);
+    };
+
+    info!(issuer = %config.issuer_url, "Discovering OIDC provider");
+    let client = OidcClient::discover(config).await?;
+    info!("OIDC client initialized successfully");
+
+    Ok(Some(Arc::new(client)))
 }

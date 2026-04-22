@@ -71,6 +71,8 @@ feature-depth = 1
 # output a note when they are encountered.
 ignore = [
     { id = "RUSTSEC-2024-0436", reason = "paste used transitively, waiting for upstream fix" },
+    { id = "RUSTSEC-2023-0071", reason = "rsa Marvin Attack: used by openidconnect for JWT signature verification only (not key generation). No fixed version available yet. See: https://github.com/RustCrypto/RSA/issues/390" },
+    { crate = "lofty@0.23.3", reason = "yanked version pulled in by yt-dlp crate. Tracked in yt-dlp issue." },
     #"RUSTSEC-0000-0000",
     #{ id = "RUSTSEC-0000-0000", reason = "you can specify a reason the advisory is ignored" },
     #"a-crate-that-is-yanked@0.1.1", # you can also ignore yanked crate versions if you wish

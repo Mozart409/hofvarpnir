@@ -261,10 +261,14 @@ struct DownloadsQuery {
     per_page: Option<i64>,
 }
 
-pub fn router(state: AppState) -> Router {
+pub fn router(state: AppState, oidc_enabled: bool) -> Router {
     Router::new()
         // Auth routes (no session required)
-        .route("/login", get(login_page).post(login))
+        .route(
+            "/login",
+            get(move |session: Session| async move { login_page(session, oidc_enabled).await })
+                .post(login),
+        )
         .route("/register", get(register_page).post(register))
         .route("/logout", post(logout))
         // Protected routes
@@ -318,13 +322,13 @@ async fn index() -> Redirect {
 // Auth Pages
 // ============================================================================
 
-async fn login_page(session: Session) -> impl IntoResponse {
+async fn login_page(session: Session, oidc_enabled: bool) -> impl IntoResponse {
     // If already logged in, redirect to dashboard
     if let Ok(Some(_)) = session.get::<String>("user_id").await {
         return Redirect::to("/dashboard").into_response();
     }
 
-    auth_layout("Login", login_form(None)).into_response()
+    auth_layout("Login", login_form(None, oidc_enabled)).into_response()
 }
 
 async fn login(
@@ -332,20 +336,39 @@ async fn login(
     session: Session,
     Form(form): Form<LoginForm>,
 ) -> impl IntoResponse {
+    // Check if OIDC is enabled for error form rendering
+    let oidc_enabled = hof_core::oidc::OidcConfig::is_configured();
+
     // Try to find user by email
     let Ok(user) = db::get_user_by_email(&state.pool, &form.email).await else {
-        return auth_layout("Login", login_form(Some("Invalid email or password"))).into_response();
+        return auth_layout(
+            "Login",
+            login_form(Some("Invalid email or password"), oidc_enabled),
+        )
+        .into_response();
     };
 
-    // Verify password
-    if hof_core::auth::verify_password(&form.password, &user.password_hash).is_err() {
-        return auth_layout("Login", login_form(Some("Invalid email or password"))).into_response();
+    // Verify password (OIDC-only users have no password)
+    let password_valid = user.password_hash.as_ref().is_some_and(|hash| {
+        !hash.is_empty() && hof_core::auth::verify_password(&form.password, hash).is_ok()
+    });
+
+    if !password_valid {
+        return auth_layout(
+            "Login",
+            login_form(Some("Invalid email or password"), oidc_enabled),
+        )
+        .into_response();
     }
 
     // Create session
     if let Err(e) = AuthUser::login(&session, user.id).await {
         tracing::error!(error = ?e, "Failed to create session");
-        return auth_layout("Login", login_form(Some("Failed to create session"))).into_response();
+        return auth_layout(
+            "Login",
+            login_form(Some("Failed to create session"), oidc_enabled),
+        )
+        .into_response();
     }
 
     Redirect::to("/dashboard").into_response()
@@ -405,7 +428,7 @@ async fn register(
         db::CreateUser {
             email: &form.email,
             name: &form.name,
-            password_hash: &password_hash,
+            password_hash: Some(&password_hash),
         },
     )
     .await
@@ -428,13 +451,51 @@ async fn register(
     Redirect::to("/dashboard").into_response()
 }
 
-async fn logout(session: Session) -> impl IntoResponse {
+async fn logout(State(_state): State<AppState>, session: Session) -> impl IntoResponse {
+    // Check if OIDC is configured with logout redirect
+    let oidc_config = hof_core::oidc::OidcConfig::from_env();
+    let logout_redirect = oidc_config.as_ref().is_some_and(|c| c.logout_redirect);
+
+    // Clear local session first
     let _ = AuthUser::logout(&session).await;
+
+    // If OIDC logout redirect is enabled, we would redirect to the provider
+    // Note: Full implementation would need to track the ID token and provider logout URL
+    // For now, we just redirect to login page after clearing session
+    if logout_redirect {
+        // In a full implementation, this would redirect to the provider's end_session_endpoint
+        // using the stored ID token hint. The OIDC client would provide the logout URL.
+        tracing::info!("OIDC logout redirect is enabled - local session cleared");
+    }
+
     Redirect::to("/login")
 }
 
-fn login_form(error: Option<&str>) -> Markup {
+fn login_form(error: Option<&str>, oidc_enabled: bool) -> Markup {
     html! {
+        @if oidc_enabled {
+            div class="space-y-4" {
+                a
+                    href="/auth/oidc/login"
+                    class="w-full inline-flex items-center justify-center gap-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 px-4 py-2.5 text-sm font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-600 transition"
+                {
+                    svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" {
+                        path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4" {}
+                        polyline points="10 17 15 12 10 7" {}
+                        line x1="15" y1="12" x2="3" y2="12" {}
+                    }
+                    "Sign in with SSO"
+                }
+            }
+            div class="relative my-6" {
+                div class="absolute inset-0 flex items-center" {
+                    div class="w-full border-t border-slate-300 dark:border-slate-600" {}
+                }
+                div class="relative flex justify-center text-sm" {
+                    span class="bg-white dark:bg-slate-800 px-2 text-slate-500 dark:text-slate-400" { "Or continue with email" }
+                }
+            }
+        }
         form method="post" action="/login" class="space-y-6" {
             @if let Some(err) = error {
                 div class="rounded-lg bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-800 p-4 text-sm text-red-700 dark:text-red-300" {

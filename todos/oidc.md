@@ -12,7 +12,7 @@ Single OIDC provider support for Hofvarpnir, configured via environment variable
 
 ---
 
-## Phase 1: Database Schema
+## Phase 1: Database Schema ✅
 
 ### New Table
 
@@ -74,7 +74,7 @@ Decision: Skip for MVP. The presence of `password_hash` and `oidc_identities` ro
 
 ---
 
-## Phase 2: Core OIDC Module (`hof-core`)
+## Phase 2: Core OIDC Module (`hof-core`) ✅
 
 ### New Files
 
@@ -266,7 +266,7 @@ struct OidcFlowState {
 
 ---
 
-## Phase 4: Configuration
+## Phase 4: Configuration ✅
 
 ### Environment Variables
 
@@ -393,9 +393,9 @@ info!(
 
 ## Implementation Order
 
-1. **Database migration** - `oidc_identities` table + nullable password_hash
-2. **Update `.env.example`** - Add OIDC env vars with documentation
-3. **Core OIDC module** - Config, client, discovery, token exchange
+1. ~~**Database migration**~~ - `oidc_identities` table + nullable password_hash ✅
+2. ~~**Update `.env.example`**~~ - Add OIDC env vars with documentation ✅
+3. ~~**Core OIDC module**~~ - Config, client, discovery, token exchange ✅
 4. **Web auth routes** - `/auth/oidc/login`, `/auth/oidc/callback`, updated `/logout`
 5. **Login page UI** - SSO button (conditional)
 6. **Tests** - Integration tests with mocked provider

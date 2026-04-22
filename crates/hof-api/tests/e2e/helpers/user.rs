@@ -42,7 +42,7 @@ impl UserBuilder {
             db::CreateUser {
                 name: &self.name,
                 email: &self.email,
-                password_hash: "test_hash_not_used",
+                password_hash: Some("test_hash_not_used"),
             },
         )
         .await
