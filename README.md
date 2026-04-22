@@ -15,11 +15,11 @@ A self-hosted video archival system that downloads videos from YouTube (and othe
 - **Real-time progress**: SSE-based live download progress in both web and TUI
 - **Observability**: OpenTelemetry traces (Tempo), log shipping (Loki), Prometheus metrics, and Grafana dashboards
 - **Dark Mode**: Tailwindcss darkmode
+- **OIDC Authentication**: Single sign-on via OpenID Connect (Keycloak, Auth0, Azure AD, Google, Okta, Pocket-ID, etc.)
 
 ## Planned
 
 - **TUI**: Terminal-based management interface
-- **OIDC**: Implement Oauth2 for e.g. [PocketID](https://github.com/pocket-id/pocket-id)
 - **Keyboard Shortcuts**: Vim motions
 
 ## Tech Stack
@@ -87,6 +87,21 @@ Configuration is loaded from environment variables:
 | `LOKI_URL`                    | Grafana Loki endpoint for log shipping | - (disabled) |
 | `METRICS_ENABLED`             | Enable Prometheus metrics endpoint     | false        |
 | `LOG_FORMAT`                  | Log output format (`json` or default)  | default      |
+
+### OIDC Authentication (Optional)
+
+To enable OIDC single sign-on, set these environment variables:
+
+| Variable                  | Description                                              | Default                   |
+| ------------------------- | -------------------------------------------------------- | ------------------------- |
+| `OIDC_ISSUER`             | OIDC provider issuer URL (required to enable OIDC)       | - (disabled)              |
+| `OIDC_CLIENT_ID`          | OAuth2 client ID from your OIDC provider                 | -                         |
+| `OIDC_CLIENT_SECRET`      | OAuth2 client secret from your OIDC provider           | -                         |
+| `OIDC_SCOPES`             | Comma-separated scopes to request                        | `openid,profile,email`    |
+| `OIDC_AUTO_PROVISION`     | Auto-create users on first OIDC login                   | `true`                    |
+| `OIDC_REDIRECT_BASE_URL`  | Override base URL for callback (e.g., `https://hof.example.com`) | - (derived from request) |
+| `OIDC_LOGOUT_REDIRECT`    | Enable RP-initiated logout                              | `false`                   |
+| `OIDC_DISCOVERY_TIMEOUT`  | Discovery HTTP timeout in seconds                       | `30`                      |
 
 ## Development
 
