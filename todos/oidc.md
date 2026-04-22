@@ -25,6 +25,7 @@ CREATE TABLE oidc_identities (
     subject         TEXT NOT NULL,              -- OIDC 'sub' claim (unique per issuer)
     email           TEXT,                       -- Cached from ID token
     name            TEXT,                       -- Cached from ID token
+    picture         TEXT,                       -- Cached avatar URL from ID token
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE (issuer, subject)
@@ -32,6 +33,20 @@ CREATE TABLE oidc_identities (
 
 CREATE INDEX idx_oidc_identities_user ON oidc_identities(user_id);
 CREATE INDEX idx_oidc_identities_lookup ON oidc_identities(issuer, subject);
+
+-- Auto-update updated_at on row change
+CREATE OR REPLACE FUNCTION update_updated_at_column()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = NOW();
+    RETURN NEW;
+END;
+$$ language 'plpgsql';
+
+CREATE TRIGGER update_oidc_identities_updated_at
+    BEFORE UPDATE ON oidc_identities
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at_column();
 ```
 
 ### Modify Users Table
@@ -39,7 +54,23 @@ CREATE INDEX idx_oidc_identities_lookup ON oidc_identities(issuer, subject);
 ```sql
 -- Make password_hash nullable for OIDC-only users
 ALTER TABLE users ALTER COLUMN password_hash DROP NOT NULL;
+
+-- Ensure user has at least one auth method (password OR oidc identity)
+-- Note: This is enforced at application level, not DB constraint,
+-- because it requires cross-table check (user must have password_hash OR oidc_identity)
 ```
+
+### Auth Method Tracking (Optional)
+
+Consider adding to users table for clearer auth state:
+
+```sql
+-- Track primary auth method (informational, not enforced)
+ALTER TABLE users ADD COLUMN auth_method TEXT DEFAULT 'password';
+-- Values: 'password', 'oidc', 'both'
+```
+
+Decision: Skip for MVP. The presence of `password_hash` and `oidc_identities` rows is sufficient.
 
 ---
 
@@ -74,10 +105,11 @@ pub struct OidcConfig {
     pub issuer_url: String,
     pub client_id: String,
     pub client_secret: String,
-    pub scopes: Vec<String>,        // Default: ["openid", "profile", "email"]
-    pub auto_provision: bool,       // Default: true
+    pub scopes: Vec<String>,            // Default: ["openid", "profile", "email"]
+    pub auto_provision: bool,           // Default: true
     pub redirect_base_url: Option<String>,  // Override for redirect URI base
-    pub logout_redirect: bool,      // Default: false (RP-initiated logout)
+    pub logout_redirect: bool,          // Default: false (RP-initiated logout)
+    pub discovery_timeout: Duration,    // Default: 30s
 }
 
 impl OidcConfig {
@@ -100,8 +132,36 @@ pub struct OidcIdentity {
     pub subject: String,
     pub email: Option<String>,
     pub name: Option<String>,
+    pub picture: Option<String>,    // Avatar URL from ID token
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+```
+
+### Error Type
+
+```rust
+// error.rs
+#[derive(Debug, thiserror::Error)]
+pub enum OidcError {
+    #[error("OIDC not configured")]
+    NotConfigured,
+    #[error("Discovery failed: {0}")]
+    DiscoveryFailed(String),
+    #[error("Invalid state parameter")]
+    InvalidState,
+    #[error("Invalid nonce")]
+    InvalidNonce,
+    #[error("Token exchange failed: {0}")]
+    TokenExchangeFailed(String),
+    #[error("Invalid ID token: {0}")]
+    InvalidToken(String),
+    #[error("Missing required claim: {0}")]
+    MissingClaim(String),
+    #[error("Account not found and auto-provision disabled")]
+    AccountNotFound,
+    #[error("Database error: {0}")]
+    Database(#[from] sqlx::Error),
 }
 ```
 
@@ -183,15 +243,26 @@ pub async fn delete_identity(pool: &PgPool, id: Ulid, user_id: Ulid) -> Result<b
 
 ### Session State for OIDC
 
+Uses existing `tower-sessions` with PostgreSQL backend (`tower-sessions-sqlx-store`).
+
 ```rust
-// Store in session during OIDC flow
+// Store in session during OIDC flow (key: "oidc_flow")
+#[derive(Serialize, Deserialize)]
 struct OidcFlowState {
     state: String,              // CSRF token
     nonce: String,              // Replay protection
-    pkce_verifier: String,      // Base64-encoded
+    pkce_verifier: String,      // Base64-encoded (~64 bytes)
     return_to: Option<String>,  // Post-login redirect
+    created_at: DateTime<Utc>,  // For expiration check
 }
 ```
+
+**Session size**: ~200 bytes for OIDC flow state. Well within session limits.
+
+**Cleanup**: 
+- Flow state expires after 5 minutes (check `created_at` in callback)
+- Remove `oidc_flow` key from session after successful/failed callback
+- Abandoned flows cleaned up by session expiration (existing tower-sessions behavior)
 
 ---
 
@@ -210,6 +281,7 @@ OIDC_SCOPES=openid,profile,email            # Default: openid profile email
 OIDC_AUTO_PROVISION=true                    # Default: true (create user on first login)
 OIDC_REDIRECT_BASE_URL=https://hof.example.com  # Default: derived from request
 OIDC_LOGOUT_REDIRECT=true                   # Default: false (redirect to provider on logout)
+OIDC_DISCOVERY_TIMEOUT=30                   # Default: 30 seconds
 ```
 
 ### `.env.example` Addition
@@ -223,6 +295,7 @@ OIDC_LOGOUT_REDIRECT=true                   # Default: false (redirect to provid
 # OIDC_AUTO_PROVISION=true                   # Create user on first OIDC login (default: true)
 # OIDC_REDIRECT_BASE_URL=https://hof.example.com  # Override callback URL base
 # OIDC_LOGOUT_REDIRECT=false                 # Redirect to provider on logout (default: false)
+# OIDC_DISCOVERY_TIMEOUT=30                  # Discovery HTTP timeout in seconds (default: 30)
 ```
 
 ### Feature Flag
@@ -256,7 +329,7 @@ oidc = ["openidconnect"]
 ### Token Handling
 
 - Never store raw ID tokens long-term
-- Cache only necessary claims (`sub`, `email`, `name`) in `oidc_identities`
+- Cache only necessary claims (`sub`, `email`, `name`, `picture`) in `oidc_identities`
 - Validate `iss`, `aud`, `exp`, `iat`, `nonce` claims
 - `openidconnect` crate handles signature verification automatically
 
@@ -275,6 +348,49 @@ oidc = ["openidconnect"]
 
 - `OIDC_CLIENT_SECRET` managed by deployment platform (K8s secrets, Docker secrets, etc.)
 - Never log or expose in error messages
+
+### Rate Limiting
+
+- `/auth/oidc/login`: 10 requests/minute per IP (prevent redirect flood)
+- `/auth/oidc/callback`: 20 requests/minute per IP (allow retries)
+- Use existing rate limiting infrastructure if available, or `tower-governor`
+
+### Audit Logging
+
+Log OIDC events with `tracing` for security monitoring:
+
+```rust
+// Successful login
+info!(
+    user_id = %user.id,
+    issuer = %identity.issuer,
+    subject = %identity.subject,
+    "OIDC login successful"
+);
+
+// Failed login
+warn!(
+    issuer = %config.issuer_url,
+    error = %e,
+    "OIDC login failed"
+);
+
+// New account provisioned
+info!(
+    user_id = %user.id,
+    email = %user.email,
+    issuer = %identity.issuer,
+    "OIDC user auto-provisioned"
+);
+
+// Identity linked to existing account
+info!(
+    user_id = %user.id,
+    email = %user.email,
+    issuer = %identity.issuer,
+    "OIDC identity linked to existing user"
+);
+```
 
 ---
 
@@ -295,14 +411,32 @@ oidc = ["openidconnect"]
 
 - `OidcConfig::from_env()` parsing
 - State/nonce generation
+- Flow state expiration check
 
 ### Integration Tests
 
-- Mock OIDC provider with `wiremock`
+Mock OIDC provider with `wiremock`:
+
+```rust
+// Required mock endpoints:
+// 1. Discovery: GET /.well-known/openid-configuration
+// 2. JWKS: GET /jwks (public keys for token verification)
+// 3. Token: POST /token (code exchange)
+// 4. (Optional) Userinfo: GET /userinfo
+```
+
+**Test cases:**
 - Full login flow: initiate -> callback -> session created
 - Auto-provision: new user created on first login
-- Existing user: lookup by (issuer, subject) succeeds
-- Error cases: expired token, invalid state, invalid nonce
+- Email match: OIDC identity linked to existing user
+- Existing identity: lookup by (issuer, subject) succeeds
+- Error cases:
+  - Expired token
+  - Invalid state
+  - Invalid nonce
+  - Missing email claim
+  - JWKS verification failure (invalid signature)
+  - Discovery timeout
 
 ### Manual Testing
 
@@ -329,3 +463,7 @@ Note: `openidconnect` is MIT licensed, which is in the allowed list in `deny.tom
    - `name`: Fall back to email username (part before `@`) if `name`/`preferred_username` claims missing
 
 3. **Account linking**: On first OIDC login, if a user with matching email exists, link the OIDC identity to that account (instead of creating a new user). This allows existing password users to transition to SSO.
+
+4. **Password for OIDC-only users**: OIDC-only users (no password_hash) can set a password later via account settings. This gives them a fallback if OIDC provider is unavailable.
+
+5. **Auth method enforcement**: At application level, prevent deleting the last auth method (can't unlink OIDC if no password, can't remove password if no OIDC identity).
