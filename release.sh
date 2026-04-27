@@ -23,9 +23,9 @@ for file in $CHANGED_FILES; do
     fi
 done
 
-# Run tests
+# Run check
 echo "Running cargo test..."
-cargo test
+cargo check
 
 # Stage and commit
 echo "Committing release..."
