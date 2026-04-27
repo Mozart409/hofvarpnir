@@ -425,6 +425,17 @@ Optional (observability):
 - `METRICS_ENABLED` - Set to `true` to enable Prometheus metrics at `/metrics`
 - `LOG_FORMAT` - Set to `json` for structured JSON log output
 
+Optional (OIDC Authentication):
+
+- `OIDC_ISSUER` - OIDC provider issuer URL (e.g., `https://auth.example.com`). If not set, OIDC is disabled.
+- `OIDC_CLIENT_ID` - OAuth2 client ID from your OIDC provider
+- `OIDC_CLIENT_SECRET` - OAuth2 client secret from your OIDC provider
+- `OIDC_SCOPES` - Comma-separated scopes (default: `openid,profile,email`)
+- `OIDC_AUTO_PROVISION` - Create user on first OIDC login (default: `true`)
+- `OIDC_REDIRECT_BASE_URL` - Override base URL for callback (e.g., `https://hof.example.com`)
+- `OIDC_LOGOUT_REDIRECT` - Enable RP-initiated logout (default: `false`)
+- `OIDC_DISCOVERY_TIMEOUT` - OIDC discovery HTTP timeout in seconds (default: `30`)
+
 ## Language Standards
 
 - **Edition**: 2024

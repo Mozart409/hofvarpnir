@@ -42,6 +42,19 @@ Copy `.env.example` to `.env` and adjust as needed:
 | `DEFAULT_OUTPUT_DIR` | `/data/downloads` | Download directory inside container |
 | `RUST_LOG` | `info,hofvarpnir=debug,sqlx=warn` | Logging configuration |
 
+#### OIDC Authentication (Optional)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `OIDC_ISSUER` | - | OIDC provider URL (e.g., `https://auth.example.com`) - enables OIDC when set |
+| `OIDC_CLIENT_ID` | - | OAuth2 client ID |
+| `OIDC_CLIENT_SECRET` | - | OAuth2 client secret |
+| `OIDC_SCOPES` | `openid,profile,email` | Requested scopes |
+| `OIDC_AUTO_PROVISION` | `true` | Auto-create users on first login |
+| `OIDC_REDIRECT_BASE_URL` | - | Callback base URL (e.g., `https://hof.example.com`) |
+| `OIDC_LOGOUT_REDIRECT` | `false` | Enable provider logout redirect |
+| `OIDC_DISCOVERY_TIMEOUT` | `30` | Discovery timeout in seconds |
+
 ### Volumes
 
 | Mount | Description |
