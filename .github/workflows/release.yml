@@ -112,16 +112,19 @@ jobs:
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           MAJOR_MINOR=$(echo "${VERSION}" | cut -d. -f1,2)
+          REPO="ghcr.io/${REPO_RAW,,}"
 
           # Build the multi-arch manifest from local archives
           buildah manifest create hofvarpnir
           buildah manifest add hofvarpnir docker-archive:container-amd64/result
           buildah manifest add hofvarpnir docker-archive:container-arm64/result
 
-          # Push to each tag
-          for TAG in "${VERSION}" "${MAJOR_MINOR}" "latest"; do
-            buildah manifest push --all hofvarpnir "docker://ghcr.io/${REPO_RAW,,}:${TAG}"
-          done
+          # Push once to the version tag
+          buildah manifest push --all hofvarpnir "docker://${REPO}:${VERSION}"
+
+          # Tag the pushed manifest for other tags (no re-push of images)
+          skopeo copy --all "docker://${REPO}:${VERSION}" "docker://${REPO}:${MAJOR_MINOR}"
+          skopeo copy --all "docker://${REPO}:${VERSION}" "docker://${REPO}:latest"
 
   release:
     needs: [build, container-manifest]
