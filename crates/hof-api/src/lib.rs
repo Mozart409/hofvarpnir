@@ -14,7 +14,7 @@ pub mod routes;
 
 use std::sync::Arc;
 
-use axum::{Json, Router, http::StatusCode, response::IntoResponse, routing::get};
+use axum::{Json, Router, routing::get};
 use hof_core::actors::cleanup::CleanupActor;
 use hof_core::actors::download_supervisor::DownloadSupervisor;
 use hof_core::actors::jellyfin_metadata::JellyfinMetadataActor;
@@ -192,33 +192,21 @@ struct ApiDoc;
 /// * `state` - Shared application state
 pub fn router(state: AppState) -> (Router, utoipa::openapi::OpenApi) {
     let (router, mut api) = OpenApiRouter::with_openapi(ApiDoc::openapi())
-        .nest("/health", health::router())
-        .nest("/v1/profiles", profiles::router())
-        .nest("/v1/sources", sources::router())
-        .nest("/v1/downloads", downloads::router())
-        .nest("/v1/activity", activity::router())
-        .nest("/v1/system", system::router())
+        .nest("/api/health", health::router())
+        .nest("/api/v1/profiles", profiles::router())
+        .nest("/api/v1/sources", sources::router())
+        .nest("/api/v1/downloads", downloads::router())
+        .nest("/api/v1/activity", activity::router())
+        .nest("/api/v1/system", system::router())
         .split_for_parts();
 
     // Apply modifiers (security scheme, server URL)
     SecurityAddon.modify(&mut api);
     ServerAddon.modify(&mut api);
 
-    // Add fallback for unmatched API routes
-    let router = router.fallback(api_not_found).with_state(state);
+    let router = router.with_state(state);
 
     (router, api)
-}
-
-/// Handler for API 404 Not Found responses.
-async fn api_not_found() -> impl IntoResponse {
-    (
-        StatusCode::NOT_FOUND,
-        Json(auth::ApiErrorResponse {
-            error: "not_found".to_string(),
-            message: "The requested API endpoint does not exist".to_string(),
-        }),
-    )
 }
 
 /// Build the Scalar `OpenAPI` documentation router.
