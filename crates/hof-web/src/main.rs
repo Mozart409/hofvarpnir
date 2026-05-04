@@ -97,7 +97,7 @@ async fn main() -> Result<()> {
                 move || async move { handle.render() }
             }),
         ))
-        .nest("/api", api_router)
+        .merge(api_router)
         .nest("/docs", hof_api::scalar_router(openapi))
         .merge(hof_web::router(api_state, oidc_client.as_ref()))
         .layer(session_layer)

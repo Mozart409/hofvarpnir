@@ -14,6 +14,7 @@ mod helpers;
 mod test_auth;
 mod test_downloads;
 mod test_health;
+mod test_openapi;
 mod test_profiles;
 mod test_sources;
 mod test_system;

@@ -107,9 +107,11 @@ impl TestApp {
             broadcaster,
         );
 
-        // Build the API router
-        let (api_router, _openapi) = hof_api::router(state);
-        let app = Router::new().nest("/api", api_router);
+        // Build the API router with docs
+        let (api_router, openapi) = hof_api::router(state);
+        let app = Router::new()
+            .merge(api_router)
+            .nest("/docs", hof_api::scalar_router(openapi));
 
         let server = TestServer::new(app);
 
