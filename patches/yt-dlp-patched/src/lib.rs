@@ -1,4 +1,4 @@
-#![doc = include_str!("../README.md")]
+//! Rust bindings for yt-dlp video downloader.
 
 use std::fmt::{self, Display};
 use std::path::{Path, PathBuf};

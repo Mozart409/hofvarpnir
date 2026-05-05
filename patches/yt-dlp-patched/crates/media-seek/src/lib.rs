@@ -1,4 +1,4 @@
-#![doc = include_str!("../README.md")]
+//! A library for parsing container indices and seeking within media streams.
 
 pub(crate) mod audio;
 mod detect;
