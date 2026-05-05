@@ -210,16 +210,19 @@ pub struct PlaylistEntry {
     pub thumbnail_url: Option<String>,
 }
 
-impl From<&YtPlaylistEntry> for PlaylistEntry {
+impl PlaylistEntry {
+    /// Try to create a `PlaylistEntry` from a yt-dlp entry.
+    /// Returns `None` if the entry has no URL (unavailable/private video).
     #[allow(clippy::cast_possible_truncation)]
-    fn from(entry: &YtPlaylistEntry) -> Self {
-        Self {
+    fn try_from_yt(entry: &YtPlaylistEntry) -> Option<Self> {
+        let url = entry.url.as_ref()?;
+        Some(Self {
             platform_video_id: entry.id.clone(),
             title: entry.title.clone(),
-            url: entry.url.clone(),
+            url: url.clone(),
             duration_secs: entry.duration.map(|d| d as i64),
             thumbnail_url: entry.thumbnail.clone(),
-        }
+        })
     }
 }
 
@@ -252,11 +255,18 @@ impl IndexResult {
             playlist.entries.first().and_then(|e| e.thumbnail.clone())
         };
 
+        // Filter out entries without URLs (unavailable/private videos)
+        let entries: Vec<PlaylistEntry> = playlist
+            .entries
+            .iter()
+            .filter_map(PlaylistEntry::try_from_yt)
+            .collect();
+
         Self {
             platform: platform.to_string(),
             title: playlist.title.clone(),
             description: playlist.description.clone(),
-            entries: playlist.entries.iter().map(PlaylistEntry::from).collect(),
+            entries,
             total_count: playlist.video_count,
             channel_id: playlist.uploader_id.clone(),
             channel_name: playlist.uploader.clone(),

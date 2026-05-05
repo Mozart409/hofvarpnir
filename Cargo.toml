@@ -74,3 +74,7 @@ option_if_let_else = "allow"
 significant_drop_tightening = "allow"
 redundant_pub_crate = "allow"
 
+# Patch yt-dlp crate to make PlaylistEntry.url optional (fixes JSON parse errors
+# for unavailable/private videos in playlists)
+[patch.crates-io]
+yt-dlp = { path = "patches/yt-dlp-patched" }
