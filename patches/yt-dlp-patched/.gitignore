@@ -1,0 +1,66 @@
+# IDE / Editor
+.idea/
+.vscode/
+*.iml
+.fleet/
+.zed/
+*.code-workspace
+.direnv/
+.mise.toml
+.tool-versions
+
+# OS artefacts
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# Rust / Cargo
+target/
+**/*.rs.bk
+
+# Secret / environment
+.env
+.env.*
+!.env.example
+!.env.sample
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Runtime outputs
+libs/
+temp/
+
+# Reports / audit
+AUDIT.md
+REPORT.md
+
+# Profiling artefacts
+profiling-libs/
+profiling-output/
+profile.json.gz
+dhat-heap.json
+heaptrack.profiling.*
+flamegraph.svg
+perf.data
+perf.data.old
+*.folded
+massif.out.*
+callgrind.out.*
+
+# Logs
+*.log
+logs/
+
+# Benchmark / criterion artefacts
+criterion/
+
+# Fixtures generation artefacts
+# Original video, got from yt-dlp -f "bestvideo[height<=144]+bestaudio/best[height<=144]" "https://www.youtube.com/watch?v=gXtp6C-3JKo"
+tests/fixtures/media/original_video.webm
