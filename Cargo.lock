@@ -2294,9 +2294,9 @@ dependencies = [
 
 [[package]]
 name = "lofty"
-version = "0.23.3"
+version = "0.24.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6d0c107dba5af049cf1c36b646fc1ba0cd2705f40d766d2c4c64f1b797c5fbed"
+checksum = "dec4feeff6c7d75093278133a06e827d7af6d2bfe20b0f331f9d10338a5ec7ca"
 dependencies = [
  "byteorder",
  "data-encoding",
@@ -2422,8 +2422,6 @@ dependencies = [
 [[package]]
 name = "media-seek"
 version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bbe0e43b318d814c09360b4c525ef4caa324f079be72936efc73b8cf216ec2e3"
 dependencies = [
  "futures-util",
  "thiserror 2.0.18",
@@ -6309,8 +6307,6 @@ dependencies = [
 [[package]]
 name = "yt-dlp"
 version = "2.7.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0c61b9d8cf9a6f06c2a841d03b2b2107c8a4bfff628ddc62a3378500cfa76441"
 dependencies = [
  "async-trait",
  "cfg-if",
@@ -6428,9 +6424,9 @@ dependencies = [
 
 [[package]]
 name = "zip"
-version = "8.5.0"
+version = "8.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2726508a48f38dceb22b35ecbbd2430efe34ff05c62bd3285f965d7911b33464"
+checksum = "2d04a6b5381502aa6087c94c669499eb1602eb9c5e8198e534de571f7154809b"
 dependencies = [
  "crc32fast",
  "flate2",
