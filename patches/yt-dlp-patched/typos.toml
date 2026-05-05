@@ -1,0 +1,14 @@
+[files]
+extend-exclude = ["tests/fixtures/"]
+
+[default.extend-words]
+# MP4 parser box type name
+trak = "trak"
+# AVI parser index chunk name
+indx = "indx"
+# "seeked" is intentional in seek-stream context (past participle of "seek" for I/O seeking)
+seeked = "seeked"
+# YouTube video ID fragment used in test fixtures ("Z-Nwo-ypKtM")
+Nwo = "Nwo"
+# Rust trait naming convention (matches dyn_clone crate's Clonable wording)
+Clonable = "Clonable"

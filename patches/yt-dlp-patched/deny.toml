@@ -1,0 +1,74 @@
+# This template contains all of the possible sections and their default values
+
+# Note that all fields that take a lint level have these possible values:
+# * deny - An error will be produced and the check will fail
+# * warn - A warning will be produced, but the check will not fail
+# * allow - No warning or error will be produced, though in some cases a note
+# will be
+
+[graph]
+targets = []
+all-features = true
+no-default-features = false
+
+[output]
+feature-depth = 1
+
+[licenses]
+allow = [
+    # Public domain / dedication (no restrictions)
+    "0BSD",
+    "CC0-1.0",
+    "Unlicense",
+    # Permissive (minimal restrictions)
+    "BSL-1.0",
+    "ISC",
+    "MIT",
+    "MIT-0",
+    "Zlib",
+    # Permissive with attribution / notice
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "CDLA-Permissive-2.0",
+    "OpenSSL",
+    "Unicode-3.0",
+    # Weak copyleft
+    "LGPL-2.1-or-later",
+    # Strong copyleft
+    "GPL-3.0-only",
+]
+confidence-threshold = 0.8
+exceptions = []
+
+[[licenses.clarify]]
+crate = "ring"
+expression = "MIT AND ISC AND OpenSSL"
+license-files = [{ path = "LICENSE", hash = 0xbd0eed23 }]
+
+[licenses.private]
+ignore = false
+registries = []
+
+[bans]
+multiple-versions = "warn"
+wildcards = "allow"
+highlight = "all"
+workspace-default-features = "allow"
+external-default-features = "allow"
+allow = []
+allow-workspace = false
+deny = []
+skip = []
+skip-tree = []
+
+[sources]
+unknown-registry = "warn"
+unknown-git = "warn"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = ["https://github.com/boul2gom/lofty-rs"]
+
+[sources.allow-org]
+github = []
+gitlab = []
+bitbucket = []

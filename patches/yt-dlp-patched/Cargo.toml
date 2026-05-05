@@ -1,0 +1,176 @@
+[workspace]
+members = [".", "crates/media-seek"]
+resolver = "2"
+
+[workspace.metadata.release]
+consolidate-commits = false
+shared-version = false
+sign-commit = true
+sign-tag = true
+
+[package]
+name = "yt-dlp"
+edition = "2024"
+version = "2.7.2"
+
+authors = ["boul2gom <contact@boul2gom.fr>"]
+description = "🎬️ A Rust library (with auto dependencies installation) for Youtube downloading"
+
+license = "GPL-3.0-only"
+readme = "README.md"
+documentation = "https://docs.rs/yt-dlp"
+homepage = "https://github.com/boul2gom/yt-dlp"
+repository = "https://github.com/boul2gom/yt-dlp"
+
+categories = ["api-bindings", "asynchronous", "multimedia", "multimedia::audio", "multimedia::video"]
+keywords = ["youtube", "downloader", "async", "yt-dlp", "youtube-dl"]
+
+[profile.release]
+debug = true
+
+[package.metadata.docs.rs]
+features = ["cache-memory", "cache-redb", "hooks", "webhooks", "statistics", "profiling", "live-recording", "live-streaming"]
+targets = ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc", "aarch64-apple-darwin"]
+
+[package.metadata.release]
+tag-name = "v{{version}}"
+tag-message = "🔖 v{{version}}"
+pre-release-commit-message = "🔖 v{{version}}"
+
+pre-release-replacements = [
+  # Matches: yt-dlp = "x.y.z"
+  {file="README.md", search='yt-dlp = "[\d.]+"', replace='yt-dlp = "{{version}}"', min=1},
+  # Matches: yt-dlp = { version = "x.y.z", ... } — covers all feature combinations
+  {file="README.md", search='(yt-dlp = \{ version = )"[\d.]+"', replace='$1"{{version}}"', min=1},
+  {file="PROFILING.md", search='(yt-dlp = \{ version = )"[\d.]+"', replace='$1"{{version}}"', min=1},
+]
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[features]
+default = ["reqwest/default", "cache-memory"]
+
+hooks = []
+webhooks = []
+statistics = []
+
+# In-memory Moka cache backend (no persistence). Enable with features = ["cache-memory"].
+cache-memory = ["dep:moka"]
+# JSON file cache backend (human-readable, debug-oriented). Enable with features = ["cache-json"].
+cache-json = []
+# Redb embedded cache backend (production file-based). Enable with features = ["cache-redb"].
+cache-redb = ["dep:redb"]
+# Redis cache backend (distributed/server). Enable with features = ["cache-redis"].
+cache-redis = ["dep:redis"]
+
+# Live fragment streaming via HLS (reqwest). Enable with features = ["live-streaming"].
+live-streaming = ["dep:m3u8-rs"]
+# Live stream recording via HLS (reqwest + ffmpeg fallback). Enable with features = ["live-recording"].
+live-recording = ["dep:m3u8-rs"]
+
+rustls = ["reqwest/rustls"]
+hickory-dns = ["reqwest/hickory-dns"]
+
+profiling = ["dep:dhat"]
+
+[dependencies]
+# The `cargo-outdated` tool is used with: `cargo outdated --root-deps-only`
+
+# Workspace crates
+media-seek = { version = "0.4.0", path = "crates/media-seek" }
+
+# Runtime and async
+tokio = { version = "1.52.1", features = ["rt-multi-thread", "macros", "fs", "time", "process", "io-util"], default-features = false }
+reqwest = { version = "0.13.2", features = ["json", "stream", "http2", "charset", "gzip", "brotli"], default-features = false }
+tokio-stream = { version = "0.1.18", features = ["sync"] }
+futures-util = "0.3.32"
+async-trait = "0.1.89"
+tokio-util = "0.7.18"
+
+# Cache backends (optional)
+redis = { version = "1.2.0", optional = true, features = ["tokio-comp", "aio"] }
+moka = { version = "0.12.15", optional = true, features = ["future"] }
+redb = { version = "4.1.0", optional = true }
+
+# Heap profiler (optional, enabled via the "profiling" feature)
+dhat = { version = "0.3", optional = true }
+
+# Serialization
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+serde_with = "3.18.0"
+
+# Error handling
+derive_more = { version = "2.1.1", features = ["constructor", "display", "from", "into", "debug"] }
+thiserror = "2.0.18"
+
+# Audio and video
+m3u8-rs = { version = "6.0.0", optional = true }
+mp4ameta = "0.13.0"
+id3 = "1.16.4"
+lofty = "0.24"
+
+# Compression and archives
+zip = { version = "8.5.1", default-features = false, features = ["deflate"] }
+tar = "0.4.45"
+xz2 = "0.1.7"
+
+# Hashing
+sha2 = "0.11.0"
+
+# Date and time
+chrono = "0.4.44"
+
+# Text and pattern matching
+regex = "1.12.3"
+url = "2.5.8"
+
+# Type utilities
+ordered-float = { version = "5.3.0", features = ["serde"] }
+uuid = { version = "1.23.1", features = ["v4"] }
+typed-builder = "0.23.2"
+downcast-rs = "2.0.2"
+dyn-clone = "1.0.20"
+rand = "0.10.1"
+
+# General utilities
+tempfile = "3.27.0"
+cfg-if = "1.0.4"
+
+# Logging
+tracing = "0.1.44"
+
+[dev-dependencies]
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+indicatif = "0.18.4"
+console = "0.16.3"
+
+# Test infrastructure
+wiremock = "0.6"
+pretty_assertions = "1.4"
+assert_matches = "1.5"
+test-log = { version = "0.2", features = ["trace"] }
+tokio-test = "0.4"
+
+# ==================== Examples ====================
+
+[[example]]
+name = "compare"
+
+[[example]]
+name = "profiling"
+
+# ==================== Test Harnesses ====================
+
+[[test]]
+name = "unit"
+path = "tests/unit.rs"
+
+[[test]]
+name = "integration"
+path = "tests/integration.rs"
+
+[[test]]
+name = "e2e"
+path = "tests/e2e.rs"
+
