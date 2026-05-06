@@ -22,7 +22,12 @@ jobs:
       - name: Setup Nix
         uses: DeterminateSystems/nix-installer-action@main
       - name: Setup Nix cache
-        uses: DeterminateSystems/flakehub-cache-action@main
+        uses: actions/cache@v4
+        with:
+          path: /nix/store
+          key: ${{ runner.os }}-${{ matrix.target }}-nix-${{ hashFiles('flake.lock', 'flake.nix') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.target }}-nix-
       - name: Build binaries
         run: |
           nix develop .#default --command cargo build --release --bin hofvarpnir --bin hofvarpnir-tui
@@ -56,7 +61,12 @@ jobs:
       - name: Setup Nix
         uses: DeterminateSystems/nix-installer-action@main
       - name: Setup Nix cache
-        uses: DeterminateSystems/flakehub-cache-action@main
+        uses: actions/cache@v4
+        with:
+          path: /nix/store
+          key: ${{ runner.os }}-${{ matrix.arch }}-nix-${{ hashFiles('flake.lock', 'flake.nix') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.arch }}-nix-
       - name: Build container
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
