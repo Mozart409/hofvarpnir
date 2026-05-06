@@ -28,6 +28,17 @@ jobs:
           key: ${{ runner.os }}-${{ matrix.target }}-nix-${{ hashFiles('flake.lock', 'flake.nix') }}
           restore-keys: |
             ${{ runner.os }}-${{ matrix.target }}-nix-
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.target }}-cargo-
       - name: Build binaries
         run: |
           nix develop .#default --command cargo build --release --bin hofvarpnir --bin hofvarpnir-tui
