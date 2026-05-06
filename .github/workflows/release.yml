@@ -5,7 +5,7 @@ on:
       - 'v*.*.*'
 jobs:
   build:
-    timeout-minutes: 60
+    timeout-minutes: 90
     strategy:
       matrix:
         include:
@@ -21,24 +21,11 @@ jobs:
       - uses: actions/checkout@v6
       - name: Setup Nix
         uses: DeterminateSystems/nix-installer-action@main
-      - name: Setup Nix cache
-        uses: actions/cache@v4
+      - name: Setup Cachix
+        uses: cachix/cachix-action@v15
         with:
-          path: /nix/store
-          key: ${{ runner.os }}-${{ matrix.target }}-nix-${{ hashFiles('flake.lock', 'flake.nix') }}
-          restore-keys: |
-            ${{ runner.os }}-${{ matrix.target }}-nix-
-      - name: Cache Cargo
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            target/
-          key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-${{ matrix.target }}-cargo-
+          name: hofvarpnir
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
       - name: Build binaries
         run: |
           nix develop .#default --command cargo build --release --bin hofvarpnir --bin hofvarpnir-tui
@@ -54,7 +41,7 @@ jobs:
           name: hofvarpnir-${{ matrix.target }}
           path: hofvarpnir-${{ matrix.target }}-${{ github.ref_name }}.tar.gz
   container:
-    timeout-minutes: 60
+    timeout-minutes: 90
     strategy:
       matrix:
         include:
@@ -71,13 +58,11 @@ jobs:
       - uses: actions/checkout@v6
       - name: Setup Nix
         uses: DeterminateSystems/nix-installer-action@main
-      - name: Setup Nix cache
-        uses: actions/cache@v4
+      - name: Setup Cachix
+        uses: cachix/cachix-action@v15
         with:
-          path: /nix/store
-          key: ${{ runner.os }}-${{ matrix.arch }}-nix-${{ hashFiles('flake.lock', 'flake.nix') }}
-          restore-keys: |
-            ${{ runner.os }}-${{ matrix.arch }}-nix-
+          name: hofvarpnir
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
       - name: Build container
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
