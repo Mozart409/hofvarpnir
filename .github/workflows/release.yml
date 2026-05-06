@@ -1,13 +1,11 @@
 name: Release
-
 on:
   push:
     tags:
       - 'v*.*.*'
-
 jobs:
   build:
-    timeout-minutes: 30
+    timeout-minutes: 60
     strategy:
       matrix:
         include:
@@ -21,32 +19,26 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@v6
-
       - name: Setup Nix
         uses: DeterminateSystems/nix-installer-action@main
-
       - name: Setup Nix cache
         uses: DeterminateSystems/flakehub-cache-action@main
-
       - name: Build binaries
         run: |
           nix develop .#default --command cargo build --release --bin hofvarpnir --bin hofvarpnir-tui
           mkdir -p dist
           cp target/release/hofvarpnir dist/hofvarpnir-${{ matrix.target }}
           cp target/release/hofvarpnir-tui dist/hofvarpnir-tui-${{ matrix.target }}
-
       - name: Create tarball
         run: |
           tar -czf hofvarpnir-${{ matrix.target }}-${{ github.ref_name }}.tar.gz -C dist .
-
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
           name: hofvarpnir-${{ matrix.target }}
           path: hofvarpnir-${{ matrix.target }}-${{ github.ref_name }}.tar.gz
-
   container:
-    timeout-minutes: 30
+    timeout-minutes: 60
     strategy:
       matrix:
         include:
@@ -61,13 +53,10 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@v6
-
       - name: Setup Nix
         uses: DeterminateSystems/nix-installer-action@main
-
       - name: Setup Nix cache
         uses: DeterminateSystems/flakehub-cache-action@main
-
       - name: Build container
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
@@ -76,18 +65,16 @@ jobs:
           OCI_IMAGE_CREATED="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           export OCI_IMAGE_CREATED
           nix build --impure .#container
-
       - name: Upload container image
         uses: actions/upload-artifact@v7
         with:
           name: container-${{ matrix.arch }}
           path: result
           retention-days: 1
-
   container-manifest:
     needs: container
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 10
     permissions:
       contents: read
       packages: write
@@ -97,14 +84,12 @@ jobs:
         uses: actions/download-artifact@v8
         with:
           pattern: container-*
-
       - name: Login to GHCR
         uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Create and push multi-arch manifests
         env:
           REPO_RAW: ${{ github.repository }}
@@ -125,26 +110,22 @@ jobs:
           # Tag the pushed manifest for other tags (no re-push of images)
           skopeo copy --all "docker://${REPO}:${VERSION}" "docker://${REPO}:${MAJOR_MINOR}"
           skopeo copy --all "docker://${REPO}:${VERSION}" "docker://${REPO}:latest"
-
   release:
     needs: [build, container-manifest]
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v6
-
       - name: Download artifacts
         uses: actions/download-artifact@v8
         with:
           path: artifacts
-
       - name: Derive image tag
         id: vars
         run: |
           echo "image_tag=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
-
       - name: Create GitHub Release
         id: create_release
         uses: softprops/action-gh-release@v3
@@ -160,7 +141,6 @@ jobs:
             ```bash
             docker pull ghcr.io/${{ github.repository }}:${{ steps.vars.outputs.image_tag }}
             ```
-
       - name: Upload release assets
         uses: softprops/action-gh-release@v3
         with:
