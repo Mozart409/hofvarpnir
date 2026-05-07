@@ -7,6 +7,37 @@ on:
     tags-ignore:
       - 'v*.*.*'
 jobs:
+  build:
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    timeout-minutes: 60
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v6
+      - name: Setup Nix
+        uses: DeterminateSystems/nix-installer-action@main
+      - name: Setup Cachix
+        uses: cachix/cachix-action@v15
+        with:
+          name: hofvarpnir
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+      - name: Build binary
+        run: nix develop .#default --command cargo build --release --bin hofvarpnir
+      - name: Upload binary
+        uses: actions/upload-artifact@v7
+        with:
+          name: binary-${{ matrix.target }}
+          path: target/release/hofvarpnir
+          retention-days: 1
   lint:
     runs-on: ubuntu-latest
     timeout-minutes: 90
@@ -59,22 +90,30 @@ jobs:
       - name: Run tests
         run: nix develop .#default --command cargo test --all-features -- --include-ignored
   container:
+    needs: build
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-    timeout-minutes: 120
+    timeout-minutes: 30
     strategy:
       matrix:
         include:
           - runner: ubuntu-latest
             arch: amd64
+            target: x86_64-unknown-linux-gnu
           - runner: ubuntu-24.04-arm
             arch: arm64
+            target: aarch64-unknown-linux-gnu
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
-      actions: write
+      actions: read
       id-token: write
     steps:
       - uses: actions/checkout@v6
+      - name: Download binary
+        uses: actions/download-artifact@v8
+        with:
+          name: binary-${{ matrix.target }}
+          path: ./bin
       - name: Setup Nix
         uses: DeterminateSystems/nix-installer-action@main
       - name: Setup Cachix
@@ -82,8 +121,12 @@ jobs:
         with:
           name: hofvarpnir
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
-      - name: Build container
-        run: nix build .#container
+      - name: Build container from binary
+        run: |
+          chmod +x ./bin/hofvarpnir
+          HOFVARPNIR_BINARY="$(pwd)/bin/hofvarpnir"
+          export HOFVARPNIR_BINARY
+          nix build --impure .#containerFromBinary
       - name: Upload container image
         uses: actions/upload-artifact@v7
         with:
@@ -91,7 +134,7 @@ jobs:
           path: result
           retention-days: 1
   container-manifest:
-    needs: [lint, test, container]
+    needs: [lint, test, build, container]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 10
