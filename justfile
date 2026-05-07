@@ -1,7 +1,7 @@
 # https://just.systems
 
-set unstable := true
-set dotenv-load := true
+set unstable
+set dotenv-load
 
 default:
     @just --list
@@ -106,3 +106,6 @@ build-oci: clear
 
 trivy: clear build-oci
     trivy image --input result --scanners vuln
+
+push-oci: build-oci
+    podman load < result && podman push hofvarpnir:latest homelab-harbor.dropbear-butterfly.ts.net/oyabu/hofvarpnir:dev
