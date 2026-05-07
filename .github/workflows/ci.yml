@@ -31,7 +31,7 @@ jobs:
           name: hofvarpnir
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
       - name: Build binary
-        run: nix develop .#default --command cargo build --release --bin hofvarpnir
+        run: nix develop .#ci --command cargo build --release --bin hofvarpnir
       - name: Upload binary
         uses: actions/upload-artifact@v7
         with:
