@@ -41,7 +41,7 @@ jobs:
           name: hofvarpnir-${{ matrix.target }}
           path: hofvarpnir-${{ matrix.target }}-${{ github.ref_name }}.tar.gz
   container:
-    timeout-minutes: 90
+    timeout-minutes: 120
     strategy:
       matrix:
         include:
