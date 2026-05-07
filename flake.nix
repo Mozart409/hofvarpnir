@@ -85,6 +85,14 @@
       containerGid = "1000";
       licenseBundle = pkgs.writeTextDir "licenses/THIRD_PARTY_LICENSES.md" (builtins.readFile ./THIRD_PARTY_LICENSES.md);
 
+      # Pre-built binary path for CI (requires --impure)
+      hofvarpnirBinaryPath = builtins.getEnv "HOFVARPNIR_BINARY";
+      hofvarpnirFromBinary = pkgs.runCommand "hofvarpnir-from-binary" {} ''
+        mkdir -p $out/bin
+        cp ${hofvarpnirBinaryPath} $out/bin/hofvarpnir
+        chmod +x $out/bin/hofvarpnir
+      '';
+
       imageVersion =
         if ociImageVersion != ""
         then ociImageVersion
@@ -168,7 +176,7 @@
           hofvarpnir = hofvarpnir;
         }
         // pkgs.lib.optionalAttrs (system == "x86_64-linux" || system == "aarch64-linux") {
-          # OCI container image (Linux only)
+          # OCI container image (Linux only) - builds Rust via Crane
           # Build: nix build .#container
           # Load:  podman load < result
           # Push:  skopeo copy docker-archive:result docker://ghcr.io/user/hofvarpnir:tag
@@ -179,6 +187,102 @@
             contents = [
               # The application binary
               hofvarpnir
+
+              # License bundle for mixed-license image contents
+              licenseBundle
+
+              # Required runtime dependencies
+              pkgs.yt-dlp
+              pkgs.ffmpeg-headless
+
+              # TLS/SSL certificates for HTTPS connections
+              pkgs.cacert
+
+              # Minimal shell utilities for debugging (optional, remove for smaller image)
+              pkgs.busybox
+            ];
+
+            # Enable fakeroot for chown support
+            enableFakechroot = true;
+            fakeRootCommands = ''
+              # Create user and group
+              mkdir -p ./etc
+              echo "${containerUser}:x:${containerUid}:${containerGid}::/home/${containerUser}:/bin/sh" > ./etc/passwd
+              echo "${containerUser}:x:${containerGid}:" > ./etc/group
+
+              # Create home directory
+              mkdir -p ./home/${containerUser}
+              chown ${containerUid}:${containerGid} ./home/${containerUser}
+
+              # Create downloads directory (will be mounted as volume)
+              mkdir -p ./data/downloads
+              chown ${containerUid}:${containerGid} ./data/downloads
+
+              # Create incomplete downloads directory
+              mkdir -p ./data/incomplete
+              chown ${containerUid}:${containerGid} ./data/incomplete
+
+              # Create tmp directory
+              mkdir -p ./tmp
+              chmod 1777 ./tmp
+            '';
+
+            config = {
+              # Run as the application binary
+              Cmd = ["/bin/hofvarpnir"];
+
+              # Run as non-root user
+              User = "${containerUid}:${containerGid}";
+
+              # Expose the web server port
+              ExposedPorts = {
+                "3000/tcp" = {};
+              };
+
+              # Environment variables
+              Env = [
+                "SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
+                "HOME=/home/${containerUser}"
+                "PORT=3000"
+                "RUST_LOG=info"
+                "YTDLP_PATH=${pkgs.yt-dlp}/bin/yt-dlp"
+                "DEFAULT_OUTPUT_DIR=/data/downloads"
+              ];
+
+              # Volume mount points for persistence
+              Volumes = {
+                # Main downloads directory - mount this for Jellyfin/Syncthing access
+                "/data/downloads" = {};
+                # Incomplete downloads - can be ephemeral or persistent
+                "/data/incomplete" = {};
+              };
+
+              # Working directory
+              WorkingDir = "/home/${containerUser}";
+
+              # Labels for metadata
+              Labels = commonLabels;
+
+              # Health check - uses wget from busybox
+              Healthcheck = {
+                Test = ["CMD" "wget" "-q" "--spider" "http://localhost:3000/api/health/ready"];
+                Interval = 30 * 1000000000; # 30 seconds in nanoseconds
+                Timeout = 10 * 1000000000; # 10 seconds
+                Retries = 3;
+                StartPeriod = 60 * 1000000000; # 60 seconds
+              };
+            };
+          };
+
+          # OCI container from pre-built binary (for CI - no Rust compilation)
+          # Build: HOFVARPNIR_BINARY=/path/to/binary nix build --impure .#containerFromBinary
+          containerFromBinary = pkgs.dockerTools.buildLayeredImage {
+            name = "hofvarpnir";
+            tag = "latest";
+
+            contents = [
+              # Pre-built application binary (from CI artifacts)
+              hofvarpnirFromBinary
 
               # License bundle for mixed-license image contents
               licenseBundle

@@ -35,27 +35,41 @@ jobs:
       - name: Create tarball
         run: |
           tar -czf hofvarpnir-${{ matrix.target }}-${{ github.ref_name }}.tar.gz -C dist .
-      - name: Upload artifact
+      - name: Upload tarball
         uses: actions/upload-artifact@v7
         with:
           name: hofvarpnir-${{ matrix.target }}
           path: hofvarpnir-${{ matrix.target }}-${{ github.ref_name }}.tar.gz
+      - name: Upload binary for container
+        uses: actions/upload-artifact@v7
+        with:
+          name: binary-${{ matrix.target }}
+          path: target/release/hofvarpnir
+          retention-days: 1
   container:
-    timeout-minutes: 120
+    needs: build
+    timeout-minutes: 30
     strategy:
       matrix:
         include:
           - runner: ubuntu-latest
             arch: amd64
+            target: x86_64-unknown-linux-gnu
           - runner: ubuntu-24.04-arm
             arch: arm64
+            target: aarch64-unknown-linux-gnu
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
-      actions: write
+      actions: read
       id-token: write
     steps:
       - uses: actions/checkout@v6
+      - name: Download binary
+        uses: actions/download-artifact@v8
+        with:
+          name: binary-${{ matrix.target }}
+          path: ./bin
       - name: Setup Nix
         uses: DeterminateSystems/nix-installer-action@main
       - name: Setup Cachix
@@ -63,14 +77,17 @@ jobs:
         with:
           name: hofvarpnir
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
-      - name: Build container
+      - name: Build container from binary
         run: |
+          chmod +x ./bin/hofvarpnir
           VERSION="${GITHUB_REF_NAME#v}"
+          HOFVARPNIR_BINARY="$(pwd)/bin/hofvarpnir"
+          export HOFVARPNIR_BINARY
           export OCI_IMAGE_VERSION="$VERSION"
           export OCI_IMAGE_REVISION="${{ github.sha }}"
           OCI_IMAGE_CREATED="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           export OCI_IMAGE_CREATED
-          nix build --impure .#container
+          nix build --impure .#containerFromBinary
       - name: Upload container image
         uses: actions/upload-artifact@v7
         with:
