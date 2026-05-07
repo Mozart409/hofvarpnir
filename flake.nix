@@ -371,6 +371,16 @@
           };
         };
 
+      # Minimal shell for CI builds (Rust + essentials only)
+      devShells.ci = pkgs.mkShell {
+        buildInputs = with pkgs; [
+          rust
+          pkg-config
+          openssl
+        ];
+        SQLX_OFFLINE = "true";
+      };
+
       # to use other shells, run:
       # nix develop . --command fish
       devShells.default = pkgs.mkShell {
