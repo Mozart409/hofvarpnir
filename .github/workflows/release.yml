@@ -48,7 +48,7 @@ jobs:
           retention-days: 1
   container:
     needs: build
-    timeout-minutes: 30
+    timeout-minutes: 90
     strategy:
       matrix:
         include:
