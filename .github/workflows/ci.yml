@@ -60,7 +60,7 @@ jobs:
         run: nix develop .#default --command cargo test --all-features -- --include-ignored
   container:
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-    timeout-minutes: 90
+    timeout-minutes: 120
     strategy:
       matrix:
         include:
