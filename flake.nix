@@ -86,10 +86,15 @@
       licenseBundle = pkgs.writeTextDir "licenses/THIRD_PARTY_LICENSES.md" (builtins.readFile ./THIRD_PARTY_LICENSES.md);
 
       # Pre-built binary path for CI (requires --impure)
+      # Uses builtins.path to import the binary into the Nix store at eval time
       hofvarpnirBinaryPath = builtins.getEnv "HOFVARPNIR_BINARY";
+      hofvarpnirBinaryStore =
+        if hofvarpnirBinaryPath != ""
+        then builtins.path {path = hofvarpnirBinaryPath; name = "hofvarpnir";}
+        else throw "HOFVARPNIR_BINARY env var must be set when building containerFromBinary";
       hofvarpnirFromBinary = pkgs.runCommand "hofvarpnir-from-binary" {} ''
         mkdir -p $out/bin
-        cp ${hofvarpnirBinaryPath} $out/bin/hofvarpnir
+        cp ${hofvarpnirBinaryStore} $out/bin/hofvarpnir
         chmod +x $out/bin/hofvarpnir
       '';
 
