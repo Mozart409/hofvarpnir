@@ -6,6 +6,9 @@ on:
     branches: [main]
     tags-ignore:
       - 'v*.*.*'
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   build:
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
