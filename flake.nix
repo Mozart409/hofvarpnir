@@ -26,7 +26,7 @@
       ociImageRevision = builtins.getEnv "OCI_IMAGE_REVISION";
       ociImageCreated = builtins.getEnv "OCI_IMAGE_CREATED";
 
-      rust = pkgs.rust-bin.nightly."2026-02-15".default.override {
+      rust = pkgs.rust-bin.stable."1.95.0".default.override {
         extensions = ["rustfmt" "clippy" "rust-src"];
       };
 
