@@ -100,8 +100,15 @@ ci: clear mig-run
     cargo test --all-features
     cargo clippy --all-targets --all-features -- -D warnings
 
+# Check Nix cache availability
+cache-check-x86: clear
+    nix build .#devShells.x86_64-linux.ci --dry-run
+
+cache-check-arm: clear
+    nix build .#devShells.aarch64-linux.ci --dry-run
+
 build-oci: clear
-    nix flake update 
+    nix flake update
     nix build .#container
 
 trivy: clear build-oci
