@@ -146,7 +146,6 @@ jobs:
       packages: write
       actions: read
     steps:
-      - uses: actions/checkout@v6
       - name: Download container images
         uses: actions/download-artifact@v8
         with:
@@ -160,19 +159,10 @@ jobs:
       - name: Create and push multi-arch manifest
         env:
           REPO: ${{ github.repository }}
-          REVISION: ${{ github.sha }}
         run: |
           REPO_LOWER="${REPO,,}"
-          CREATED="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          annotation_args=()
-          while IFS= read -r annotation; do
-            annotation_args+=(--annotation "${annotation}")
-          done < <(jq -r 'to_entries[] | "\(.key)=\(.value)"' oci-labels.json)
-          annotation_args+=(--annotation "org.opencontainers.image.version=dev")
-          annotation_args+=(--annotation "org.opencontainers.image.revision=${REVISION}")
-          annotation_args+=(--annotation "org.opencontainers.image.created=${CREATED}")
 
-          buildah manifest create "${annotation_args[@]}" hofvarpnir
+          buildah manifest create hofvarpnir
           buildah manifest add hofvarpnir docker-archive:container-amd64/result
           buildah manifest add hofvarpnir docker-archive:container-arm64/result
 
