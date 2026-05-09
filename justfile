@@ -87,7 +87,7 @@ css-build:
     tailwindcss -i input.css -o app.css --minify
 
 # Testing
-test: clear
+test: clear up
     cargo test --all-features
 
 # E2E API tests (parallel by default)
