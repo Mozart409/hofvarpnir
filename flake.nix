@@ -90,7 +90,11 @@
       hofvarpnirBinaryPath = builtins.getEnv "HOFVARPNIR_BINARY";
       hofvarpnirBinaryStore =
         if hofvarpnirBinaryPath != ""
-        then builtins.path {path = hofvarpnirBinaryPath; name = "hofvarpnir";}
+        then
+          builtins.path {
+            path = hofvarpnirBinaryPath;
+            name = "hofvarpnir";
+          }
         else throw "HOFVARPNIR_BINARY env var must be set when building containerFromBinary";
       hofvarpnirFromBinary = pkgs.runCommand "hofvarpnir-from-binary" {} ''
         mkdir -p $out/bin
@@ -168,6 +172,7 @@
         trivy
         opencode
         claude-code
+        cachix
       ];
 
       darwinDevPackages = with pkgs; [
