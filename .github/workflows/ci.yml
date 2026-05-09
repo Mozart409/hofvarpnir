@@ -165,4 +165,11 @@ jobs:
           buildah manifest create hofvarpnir
           buildah manifest add hofvarpnir docker-archive:container-amd64/result
           buildah manifest add hofvarpnir docker-archive:container-arm64/result
-          buildah manifest push --all hofvarpnir "docker://ghcr.io/${REPO_LOWER}:dev"
+
+          # Docker rejects GHCR tags that are published only as OCI indexes.
+          buildah manifest push --all --format v2s2 hofvarpnir "docker://ghcr.io/${REPO_LOWER}:dev"
+
+          # Keep a pure OCI variant available for OCI-native consumers.
+          buildah manifest push --all --format oci hofvarpnir "docker://ghcr.io/${REPO_LOWER}:dev-oci"
+
+          docker manifest inspect "ghcr.io/${REPO_LOWER}:dev" >/dev/null
