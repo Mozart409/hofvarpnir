@@ -1,0 +1,10 @@
+{
+  "org.opencontainers.image.authors": "Mozart409",
+  "org.opencontainers.image.description": "Video archival system with yt-dlp",
+  "org.opencontainers.image.documentation": "https://github.com/Mozart409/hofvarpnir#readme",
+  "org.opencontainers.image.licenses": "SEE LICENSES",
+  "org.opencontainers.image.source": "https://github.com/Mozart409/hofvarpnir",
+  "org.opencontainers.image.title": "hofvarpnir",
+  "org.opencontainers.image.url": "https://github.com/Mozart409/hofvarpnir",
+  "org.opencontainers.image.vendor": "Mozart409"
+}
