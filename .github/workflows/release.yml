@@ -5,7 +5,7 @@ on:
       - 'v*.*.*'
 jobs:
   build:
-    timeout-minutes: 90
+    timeout-minutes: 30
     strategy:
       matrix:
         include:
@@ -48,7 +48,7 @@ jobs:
           retention-days: 1
   container:
     needs: build
-    timeout-minutes: 90
+    timeout-minutes: 30
     strategy:
       matrix:
         include:
