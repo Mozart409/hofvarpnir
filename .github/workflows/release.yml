@@ -103,6 +103,7 @@ jobs:
       packages: write
       actions: read
     steps:
+      - uses: actions/checkout@v6
       - name: Download container images
         uses: actions/download-artifact@v8
         with:
@@ -121,9 +122,17 @@ jobs:
           VERSION="${GITHUB_REF_NAME#v}"
           MAJOR_MINOR=$(echo "${VERSION}" | cut -d. -f1,2)
           REPO="ghcr.io/${REPO_RAW,,}"
+          CREATED="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          annotation_args=()
+          while IFS= read -r annotation; do
+            annotation_args+=(--annotation "${annotation}")
+          done < <(jq -r 'to_entries[] | "\(.key)=\(.value)"' oci-labels.json)
+          annotation_args+=(--annotation "org.opencontainers.image.version=${VERSION}")
+          annotation_args+=(--annotation "org.opencontainers.image.revision=${REVISION}")
+          annotation_args+=(--annotation "org.opencontainers.image.created=${CREATED}")
 
           # Build the multi-arch manifest from local archives
-          buildah manifest create hofvarpnir
+          buildah manifest create "${annotation_args[@]}" hofvarpnir
           buildah manifest add hofvarpnir docker-archive:container-amd64/result
           buildah manifest add hofvarpnir docker-archive:container-arm64/result
 

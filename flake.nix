@@ -118,15 +118,8 @@
         then ociImageCreated
         else defaultCreated;
 
-      commonLabels = {
-        "org.opencontainers.image.title" = "hofvarpnir";
-        "org.opencontainers.image.description" = "Video archival system with yt-dlp";
-        "org.opencontainers.image.url" = "https://github.com/Mozart409/hofvarpnir";
-        "org.opencontainers.image.source" = "https://github.com/Mozart409/hofvarpnir";
-        "org.opencontainers.image.documentation" = "https://github.com/Mozart409/hofvarpnir#readme";
-        "org.opencontainers.image.licenses" = "SEE LICENSES";
-        "org.opencontainers.image.authors" = "Mozart409";
-        "org.opencontainers.image.vendor" = "Mozart409";
+      staticOciLabels = builtins.fromJSON (builtins.readFile ./oci-labels.json);
+      commonLabels = staticOciLabels // {
         "org.opencontainers.image.version" = imageVersion;
         "org.opencontainers.image.revision" = imageRevision;
         "org.opencontainers.image.created" = imageCreated;
