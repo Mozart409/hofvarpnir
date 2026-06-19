@@ -12,7 +12,7 @@ clear:
 # Podman commands
 up: clear
     podman-compose -f containers/compose.dev.yml up -d --build --remove-orphans
-    sleep 2
+    sleep 1
 
 down: clear
     podman-compose -f containers/compose.dev.yml down

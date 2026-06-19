@@ -136,6 +136,10 @@
         cargo-outdated
         cargo-watch
         cargo-workspaces
+        # clang and cmake are build dependencies for aws-lc-sys,
+        # which is the cryptography backend pulled in by rustls >= 0.23.40
+        clang
+        cmake
         cocogitto
         deadbranch
         ffmpeg
