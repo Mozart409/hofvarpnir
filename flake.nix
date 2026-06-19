@@ -119,11 +119,13 @@
         else defaultCreated;
 
       staticOciLabels = builtins.fromJSON (builtins.readFile ./oci-labels.json);
-      commonLabels = staticOciLabels // {
-        "org.opencontainers.image.version" = imageVersion;
-        "org.opencontainers.image.revision" = imageRevision;
-        "org.opencontainers.image.created" = imageCreated;
-      };
+      commonLabels =
+        staticOciLabels
+        // {
+          "org.opencontainers.image.version" = imageVersion;
+          "org.opencontainers.image.revision" = imageRevision;
+          "org.opencontainers.image.created" = imageCreated;
+        };
 
       commonDevPackages = with pkgs; [
         # keep-sorted start
@@ -134,6 +136,7 @@
         cargo-audit
         cargo-deny
         cargo-outdated
+        cargo-shear
         cargo-watch
         cargo-workspaces
         # clang and cmake are build dependencies for aws-lc-sys,
