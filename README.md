@@ -9,6 +9,8 @@ A self-hosted video archival system that downloads videos from YouTube (and othe
 - **Multi-platform support**: YouTube and other platforms via yt-dlp auto-detection
 - **Web UI**: Modern web interface built with htmx and Tailwind CSS
 - **Automatic scheduling**: Per-source indexing frequency
+- **Resilient indexing**: Age-restricted, private, and unavailable videos are skipped and the scan continues, so a single problem entry never aborts indexing of the rest of a channel/playlist
+- **Health monitoring**: Surface sources that are enabled but persistently failing to index
 - **Quality presets**: Configurable download quality
 - **Retention policies**: Automatic cleanup with per-source and per-profile settings
 - **Deduplication**: Videos downloaded once regardless of multiple source references
@@ -70,6 +72,14 @@ Key endpoints:
 - `GET /api/v1/downloads` - List and manage downloads
 - `GET /api/v1/downloads/progress` - SSE stream for live progress (JSON)
 - `GET /web/v1/downloads/progress` - SSE stream for live progress (HTML)
+- `GET /api/v1/activity` - System activity log (indexing, downloads, errors)
+- `GET /api/v1/activity/unhealthy-sources` - Sources persistently failing to index (configurable `min_errors` threshold)
+
+### Indexing resilience
+
+When indexing a channel or playlist, a video that cannot be fetched (age-restricted, private, removed, or otherwise unavailable) is **skipped**, and indexing continues with the remaining entries. Age-restriction in particular is treated as a permanent, per-video condition — distinct from rate limiting, which pauses indexing of the source. This prevents a single age-restricted video from silently blocking discovery of every other video in the source.
+
+Use `GET /api/v1/activity/unhealthy-sources` to find sources that are enabled but stuck on errors (e.g. repeated rate limiting). It reports the consecutive-error streak since each source's last successful index.
 
 ## Configuration
 
