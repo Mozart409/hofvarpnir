@@ -185,7 +185,7 @@
           default = hofvarpnir;
           hofvarpnir = hofvarpnir;
         }
-        // pkgs.lib.optionalAttrs (system == "x86_64-linux" || system == "aarch64-linux") {
+        // pkgs.lib.optionalAttrs (system == "x86_64-linux" || system == "aarch64-linux") ({
           # OCI container image (Linux only) - builds Rust via Crane
           # Build: nix build .#container
           # Load:  podman load < result
@@ -283,7 +283,11 @@
               };
             };
           };
-
+        }
+        # Impure, CI-only image built from a pre-compiled binary. Only exposed
+        # when HOFVARPNIR_BINARY is set so pure evaluation (flakehub-push,
+        # `nix flake check`) never forces the `throw` in hofvarpnirBinaryStore.
+        // pkgs.lib.optionalAttrs (hofvarpnirBinaryPath != "") {
           # OCI container from pre-built binary (for CI - no Rust compilation)
           # Build: HOFVARPNIR_BINARY=/path/to/binary nix build --impure .#containerFromBinary
           containerFromBinary = pkgs.dockerTools.buildLayeredImage {
@@ -379,7 +383,7 @@
               };
             };
           };
-        };
+        });
 
       # Minimal shell for CI builds (Rust + essentials only)
       devShells.ci = pkgs.mkShell {
