@@ -1,0 +1,21 @@
+name: update-flake-lock
+on:
+  workflow_dispatch: # manual trigger
+  schedule:
+    - cron: "0 4 * * 1" # weekly, Monday 04:00 UTC
+permissions:
+  contents: write
+  pull-requests: write
+jobs:
+  lockfile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/nix-installer-action@main
+      - uses: DeterminateSystems/update-flake-lock@main
+        with:
+          pr-title: "chore(deps): update flake.lock"
+          commit-msg: "chore(deps): update flake.lock"
+          pr-labels: |
+            dependencies
+            nix
