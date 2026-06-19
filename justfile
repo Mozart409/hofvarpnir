@@ -88,7 +88,7 @@ css-build:
 
 # Testing
 test: clear up
-    cargo test --all-features
+    cargo test --all-features -- --include-ignored
 
 # E2E API tests (parallel by default)
 e2e: clear mig-run
@@ -97,7 +97,7 @@ e2e: clear mig-run
 # CI simulation (requires database)
 ci: clear mig-run
     SQLX_OFFLINE=true cargo build --release
-    cargo test --all-features
+    cargo test --all-features -- --include-ignored
     cargo clippy --all-targets --all-features -- -D warnings
 
 # Check Nix cache availability
