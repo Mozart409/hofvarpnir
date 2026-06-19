@@ -129,7 +129,9 @@ jobs:
           chmod +x ./bin/hofvarpnir
           HOFVARPNIR_BINARY="$(pwd)/bin/hofvarpnir"
           export HOFVARPNIR_BINARY
-          nix build --impure .#containerFromBinary
+          # --fallback: build a dependency from source if its binary-cache
+          # substitute fails (e.g. a corrupted NAR on cache.nixos.org).
+          nix build --impure --fallback .#containerFromBinary
       - name: Upload container image
         uses: actions/upload-artifact@v7
         with:
