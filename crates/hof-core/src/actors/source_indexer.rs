@@ -370,6 +370,15 @@ impl SourceIndexerActor {
                         break;
                     }
                 }
+                EntryOutcome::AgeRestricted(reason) => {
+                    info!(
+                        video_id = %entry.platform_video_id,
+                        reason = %reason,
+                        "Entry age-restricted, skipping but continuing index"
+                    );
+                    result.record_filtered(&reason);
+                    consecutive_before_cutoff = 0; // Not a cutoff filter
+                }
                 EntryOutcome::RateLimited(reason) => {
                     warn!(
                         video_id = %entry.platform_video_id,
@@ -477,6 +486,11 @@ impl SourceIndexerActor {
             Ok(m) => m,
             Err(YtdlpError::VideoUnavailable(msg)) => {
                 return EntryOutcome::Filtered(format!("unavailable: {msg}"));
+            }
+            Err(YtdlpError::AgeRestricted(msg)) => {
+                // Permanent, per-video condition: skip this entry but keep
+                // indexing the rest of the source (do NOT abort like rate limits).
+                return EntryOutcome::AgeRestricted(format!("age-restricted: {msg}"));
             }
             Err(YtdlpError::RateLimited(msg)) => {
                 // Don't create videos when rate limited - we need proper metadata
@@ -747,6 +761,8 @@ enum EntryOutcome {
     Filtered(String),
     /// Video was filtered because it's before the cutoff date.
     BeforeCutoff(String),
+    /// Video is age-restricted - skip it but continue indexing the source.
+    AgeRestricted(String),
     /// Rate limited - should stop indexing this source.
     RateLimited(String),
     /// Error occurred.
