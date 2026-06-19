@@ -87,7 +87,9 @@ jobs:
           export OCI_IMAGE_REVISION="${{ github.sha }}"
           OCI_IMAGE_CREATED="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           export OCI_IMAGE_CREATED
-          nix build --impure .#containerFromBinary
+          # --fallback: build a dependency from source if its binary-cache
+          # substitute fails (e.g. a corrupted NAR on cache.nixos.org).
+          nix build --impure --fallback .#containerFromBinary
       - name: Upload container image
         uses: actions/upload-artifact@v7
         with:
