@@ -128,6 +128,58 @@ fn parse_primary_counts(counts: &str) -> Option<(usize, usize, usize)> {
     Some((new_videos, existing_videos, filtered_total))
 }
 
+/// A source that is currently failing to index.
+///
+/// Reports the streak of consecutive `SourceError` events recorded since the
+/// source's most recent successful index (`SourceIndexed`), or since the
+/// beginning of its history if it has never succeeded. Used for health
+/// monitoring of "enabled but silently erroring" sources.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct UnhealthySource {
+    pub source_id: Ulid,
+    pub custom_name: Option<String>,
+    pub url: String,
+    pub enabled: bool,
+    /// Number of consecutive `SourceError` events since the last success.
+    pub consecutive_errors: i64,
+    /// Timestamp of the first error in the current failing streak.
+    pub first_error_at: DateTime<Utc>,
+    /// Timestamp of the most recent error.
+    pub last_error_at: DateTime<Utc>,
+    /// Message of the most recent error, if available.
+    pub last_error_message: Option<String>,
+}
+
+/// Database row representation for `UnhealthySource` (with String source id).
+#[derive(Debug, sqlx::FromRow)]
+pub struct UnhealthySourceRow {
+    pub source_id: String,
+    pub custom_name: Option<String>,
+    pub url: String,
+    pub enabled: bool,
+    pub consecutive_errors: i64,
+    pub first_error_at: DateTime<Utc>,
+    pub last_error_at: DateTime<Utc>,
+    pub last_error_message: Option<String>,
+}
+
+impl TryFrom<UnhealthySourceRow> for UnhealthySource {
+    type Error = ulid::DecodeError;
+
+    fn try_from(row: UnhealthySourceRow) -> Result<Self, Self::Error> {
+        Ok(Self {
+            source_id: Ulid::from_string(&row.source_id)?,
+            custom_name: row.custom_name,
+            url: row.url,
+            enabled: row.enabled,
+            consecutive_errors: row.consecutive_errors,
+            first_error_at: row.first_error_at,
+            last_error_at: row.last_error_at,
+            last_error_message: row.last_error_message,
+        })
+    }
+}
+
 /// Database row representation for `ActivityEvent` (with String ids).
 #[derive(Debug, sqlx::FromRow)]
 pub struct ActivityEventRow {

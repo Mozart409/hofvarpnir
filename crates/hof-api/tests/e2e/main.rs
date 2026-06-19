@@ -11,6 +11,7 @@
 
 mod helpers;
 
+mod test_activity;
 mod test_auth;
 mod test_downloads;
 mod test_health;

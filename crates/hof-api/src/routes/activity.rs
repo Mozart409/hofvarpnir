@@ -18,7 +18,10 @@ use utoipa_axum::{router::OpenApiRouter, routes};
 use hof_core::{
     db,
     domain::{
-        activity::{ActivityEvent, ActivityEventType, ActivitySeverity, SourceIndexingSummary},
+        activity::{
+            ActivityEvent, ActivityEventType, ActivitySeverity, SourceIndexingSummary,
+            UnhealthySource,
+        },
         api_key::ApiKeyScope,
     },
 };
@@ -30,7 +33,9 @@ use crate::{
 
 /// Build the activity router.
 pub fn router() -> OpenApiRouter<AppState> {
-    OpenApiRouter::new().routes(routes!(list_activity))
+    OpenApiRouter::new()
+        .routes(routes!(list_activity))
+        .routes(routes!(list_unhealthy_sources))
 }
 
 // ============================================================================
@@ -97,6 +102,56 @@ pub struct ActivityListResponse {
     pub total: i64,
     pub limit: i64,
     pub offset: i64,
+}
+
+/// Query parameters for listing unhealthy sources.
+#[derive(Debug, Deserialize)]
+pub struct UnhealthySourcesQuery {
+    /// Minimum number of consecutive errors for a source to be reported
+    /// (default: 3, min: 1).
+    #[serde(default = "default_min_errors")]
+    pub min_errors: i64,
+}
+
+const fn default_min_errors() -> i64 {
+    3
+}
+
+/// Response body for an unhealthy (persistently erroring) source.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct UnhealthySourceResponse {
+    pub source_id: String,
+    pub custom_name: Option<String>,
+    pub url: String,
+    pub enabled: bool,
+    pub consecutive_errors: i64,
+    pub first_error_at: DateTime<Utc>,
+    pub last_error_at: DateTime<Utc>,
+    pub last_error_message: Option<String>,
+}
+
+impl From<UnhealthySource> for UnhealthySourceResponse {
+    fn from(source: UnhealthySource) -> Self {
+        Self {
+            source_id: source.source_id.to_string(),
+            custom_name: source.custom_name,
+            url: source.url,
+            enabled: source.enabled,
+            consecutive_errors: source.consecutive_errors,
+            first_error_at: source.first_error_at,
+            last_error_at: source.last_error_at,
+            last_error_message: source.last_error_message,
+        }
+    }
+}
+
+/// Response for the unhealthy-sources report.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct UnhealthySourcesResponse {
+    pub sources: Vec<UnhealthySourceResponse>,
+    pub total: usize,
+    /// The `min_errors` threshold that was applied.
+    pub threshold: i64,
 }
 
 /// Error response body.
@@ -215,6 +270,64 @@ pub async fn list_activity(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ErrorResponse {
                     error: "Failed to list activity events".to_string(),
+                }),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// List unhealthy sources.
+///
+/// Returns sources that are enabled but persistently failing to index — those
+/// with at least `min_errors` consecutive `SourceError` events since their last
+/// successful index. Useful for surfacing silent indexing failures that
+/// otherwise only appear buried in the activity log.
+#[utoipa::path(
+    get,
+    path = "/unhealthy-sources",
+    tag = "activity",
+    params(
+        ("min_errors" = Option<i64>, Query, description = "Minimum consecutive errors to report (default: 3, min: 1)")
+    ),
+    responses(
+        (status = 200, description = "List of unhealthy sources", body = UnhealthySourcesResponse),
+        (status = 401, description = "Unauthorized", body = ApiErrorResponse),
+        (status = 403, description = "Forbidden - insufficient scope", body = ApiErrorResponse),
+        (status = 500, description = "Internal server error", body = ErrorResponse)
+    )
+)]
+pub async fn list_unhealthy_sources(
+    State(state): State<AppState>,
+    auth: Auth,
+    Query(query): Query<UnhealthySourcesQuery>,
+) -> impl IntoResponse {
+    if let Err(e) = auth.require_scope(ApiKeyScope::Read) {
+        return e.into_response();
+    }
+
+    let threshold = query.min_errors.max(1);
+
+    match db::list_unhealthy_sources(&state.pool, threshold).await {
+        Ok(sources) => {
+            let responses: Vec<UnhealthySourceResponse> =
+                sources.into_iter().map(Into::into).collect();
+            (
+                StatusCode::OK,
+                Json(UnhealthySourcesResponse {
+                    total: responses.len(),
+                    sources: responses,
+                    threshold,
+                }),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "Failed to list unhealthy sources");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "Failed to list unhealthy sources".to_string(),
                 }),
             )
                 .into_response()

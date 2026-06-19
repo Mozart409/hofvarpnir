@@ -8,7 +8,8 @@ use ulid::Ulid;
 
 use super::DbError;
 use crate::domain::activity::{
-    ActivityEvent, ActivityEventRow, ActivityEventType, ActivitySeverity,
+    ActivityEvent, ActivityEventRow, ActivityEventType, ActivitySeverity, UnhealthySource,
+    UnhealthySourceRow,
 };
 
 /// Broadcaster for real-time SSE notifications.
@@ -156,6 +157,71 @@ pub async fn list_activity_events(
 
     rows.into_iter()
         .map(ActivityEvent::try_from)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(DbError::from)
+}
+
+/// List sources that are currently failing to index.
+///
+/// Returns sources whose most recent run of consecutive `SourceError` events
+/// (since their last `SourceIndexed` success, or since the start of history if
+/// they never succeeded) is at least `min_consecutive_errors`. Ordered by the
+/// longest failing streak first.
+///
+/// # Errors
+///
+/// Returns an error if the database operation fails.
+#[instrument(skip(pool), fields(otel.kind = "client", db.system = "postgresql"))]
+pub async fn list_unhealthy_sources(
+    pool: &PgPool,
+    min_consecutive_errors: i64,
+) -> Result<Vec<UnhealthySource>, DbError> {
+    let rows = sqlx::query_as::<_, UnhealthySourceRow>(
+        r"
+        WITH last_success AS (
+            SELECT source_id, MAX(created_at) AS last_success_at
+            FROM activity_events
+            WHERE event_type = 'source_indexed'::activity_event_type
+              AND source_id IS NOT NULL
+            GROUP BY source_id
+        ),
+        recent_errors AS (
+            SELECT ae.source_id AS source_id,
+                   COUNT(*) AS consecutive_errors,
+                   MIN(ae.created_at) AS first_error_at,
+                   MAX(ae.created_at) AS last_error_at
+            FROM activity_events ae
+            LEFT JOIN last_success ls ON ls.source_id = ae.source_id
+            WHERE ae.event_type = 'source_error'::activity_event_type
+              AND ae.source_id IS NOT NULL
+              AND (ls.last_success_at IS NULL OR ae.created_at > ls.last_success_at)
+            GROUP BY ae.source_id
+            HAVING COUNT(*) >= $1
+        )
+        SELECT re.source_id AS source_id,
+               s.custom_name AS custom_name,
+               s.url AS url,
+               s.enabled AS enabled,
+               re.consecutive_errors AS consecutive_errors,
+               re.first_error_at AS first_error_at,
+               re.last_error_at AS last_error_at,
+               (SELECT ae2.message
+                  FROM activity_events ae2
+                  WHERE ae2.source_id = re.source_id
+                    AND ae2.event_type = 'source_error'::activity_event_type
+                  ORDER BY ae2.created_at DESC
+                  LIMIT 1) AS last_error_message
+        FROM recent_errors re
+        JOIN sources s ON s.id = re.source_id
+        ORDER BY re.consecutive_errors DESC, re.last_error_at DESC
+        ",
+    )
+    .bind(min_consecutive_errors)
+    .fetch_all(pool)
+    .await?;
+
+    rows.into_iter()
+        .map(UnhealthySource::try_from)
         .collect::<Result<Vec<_>, _>>()
         .map_err(DbError::from)
 }
