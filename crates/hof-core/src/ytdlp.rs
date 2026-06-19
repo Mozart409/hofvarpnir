@@ -78,6 +78,14 @@ pub enum YtdlpError {
     #[error("Video unavailable: {0}")]
     VideoUnavailable(String),
 
+    /// Video is age-restricted and cannot be fetched without authentication.
+    ///
+    /// This is a permanent, per-video condition (unlike `RateLimited`, which is
+    /// transient and global). The indexer must skip the entry and continue,
+    /// never abort the whole scan.
+    #[error("Video age-restricted: {0}")]
+    AgeRestricted(String),
+
     /// Rate limited by the platform.
     #[error("Rate limited (HTTP 429): {0}")]
     RateLimited(String),
@@ -98,6 +106,7 @@ impl YtdlpError {
             | Self::MetadataError(_)
             | Self::PlaylistError(_)
             | Self::VideoUnavailable(_)
+            | Self::AgeRestricted(_)
             | Self::RateLimited(_) => None,
         }
     }
@@ -112,6 +121,7 @@ impl YtdlpError {
             | Self::PlaylistError(_)
             | Self::FormatInvalidPreset { .. }
             | Self::VideoUnavailable(_)
+            | Self::AgeRestricted(_)
             | Self::RateLimited(_) => None,
         }
     }
@@ -122,10 +132,21 @@ impl From<yt_dlp::error::Error> for YtdlpError {
         let msg = err.to_string();
         let msg_lower = msg.to_lowercase();
 
-        // Check for rate limiting patterns (YouTube bot detection, HTTP 429, etc.)
+        // Age-restriction is a permanent, per-video condition. It must be checked
+        // BEFORE the rate-limit patterns: the message ("Sign in to confirm your
+        // age") would otherwise be mistaken for bot-detection and abort the whole
+        // index scan. Classify it as skippable instead.
+        if msg_lower.contains("confirm your age")
+            || msg_lower.contains("inappropriate for some users")
+        {
+            return Self::AgeRestricted(msg);
+        }
+
+        // Check for rate limiting patterns (YouTube bot detection, HTTP 429, etc.).
+        // Match bot-detection specifically ("not a bot") rather than the broad
+        // "sign in to confirm", which also matches age-gating.
         if msg.contains("429")
             || msg_lower.contains("rate limit")
-            || msg_lower.contains("sign in to confirm")
             || msg_lower.contains("confirm you're not a bot")
             || msg_lower.contains("too many requests")
         {
@@ -1485,6 +1506,81 @@ mod tests {
         let template = "../{{ title }}.{{ ext }}";
         let error = validate_output_template(template).expect_err("template should fail");
         assert!(error.contains("path traversal"));
+    }
+
+    /// Build a `yt_dlp::error::Error::CommandFailed` carrying the given stderr,
+    /// mirroring how the patched yt-dlp fork surfaces a non-zero exit.
+    fn command_failed(stderr: &str) -> yt_dlp::error::Error {
+        yt_dlp::error::Error::CommandFailed {
+            command: "/nix/store/xxxx-yt-dlp/bin/yt-dlp".to_string(),
+            exit_code: 1,
+            stderr: stderr.to_string(),
+        }
+    }
+
+    // The real production stderr for the GTA Online playlist's age-restricted
+    // entry `wLxUgGoErSU`.
+    const AGE_RESTRICTED_STDERR: &str = "ERROR: [youtube] wLxUgGoErSU: Sign in to confirm your age. \
+This video may be inappropriate for some users. Use --cookies-from-browser or --cookies for the \
+authentication.";
+
+    // BUG CAPTURE: an age-restricted video is a permanent, per-video condition.
+    // It must NOT be classified as RateLimited, because the indexer treats
+    // RateLimited as "stop the whole scan" (source_indexer.rs `break`), which
+    // silently drops every entry after the age-gated one. It should be skippable.
+    #[test]
+    fn test_age_restriction_is_not_rate_limited() {
+        let err = YtdlpError::from(command_failed(AGE_RESTRICTED_STDERR));
+        assert!(
+            !matches!(err, YtdlpError::RateLimited(_)),
+            "age-restriction must not be RateLimited (it aborts the whole index); got {err:?}"
+        );
+    }
+
+    #[test]
+    fn test_age_restriction_classified_as_age_restricted() {
+        let err = YtdlpError::from(command_failed(AGE_RESTRICTED_STDERR));
+        assert!(
+            matches!(err, YtdlpError::AgeRestricted(_)),
+            "age-restriction should be its own AgeRestricted variant (skip-and-continue); got {err:?}"
+        );
+    }
+
+    // GUARD: genuine bot-detection ("not a bot") must remain RateLimited so the
+    // indexer backs off instead of hammering YouTube.
+    #[test]
+    fn test_bot_detection_is_rate_limited() {
+        let err = YtdlpError::from(command_failed(
+            "ERROR: [youtube] abc: Sign in to confirm you're not a bot. Use --cookies-from-browser.",
+        ));
+        assert!(
+            matches!(err, YtdlpError::RateLimited(_)),
+            "bot-detection should be RateLimited; got {err:?}"
+        );
+    }
+
+    // GUARD: HTTP 429 must remain RateLimited.
+    #[test]
+    fn test_http_429_is_rate_limited() {
+        let err = YtdlpError::from(command_failed(
+            "ERROR: Unable to download: HTTP Error 429: Too Many Requests",
+        ));
+        assert!(
+            matches!(err, YtdlpError::RateLimited(_)),
+            "HTTP 429 should be RateLimited; got {err:?}"
+        );
+    }
+
+    // GUARD: private/removed videos stay VideoUnavailable (skip-and-continue).
+    #[test]
+    fn test_private_video_is_video_unavailable() {
+        let err = YtdlpError::from(command_failed(
+            "ERROR: [youtube] xyz: Private video. Sign in if you've been granted access.",
+        ));
+        assert!(
+            matches!(err, YtdlpError::VideoUnavailable(_)),
+            "private video should be VideoUnavailable; got {err:?}"
+        );
     }
 
     #[test]

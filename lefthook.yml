@@ -1,5 +1,9 @@
 # Lefthook configuration for Rust project
 # https://lefthook.dev/configuration/
+commit-msg:
+  jobs:
+    - name: cog verify
+      run: cog verify --file {1}
 pre-commit:
   parallel: true
   jobs:
