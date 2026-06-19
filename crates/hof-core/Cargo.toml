@@ -11,7 +11,6 @@ tokio.workspace = true
 kameo.workspace = true
 sqlx.workspace = true
 serde.workspace = true
-serde_json.workspace = true
 chrono.workspace = true
 ulid.workspace = true
 thiserror.workspace = true
@@ -27,8 +26,6 @@ opentelemetry_sdk.workspace = true
 opentelemetry-otlp.workspace = true
 tracing-opentelemetry.workspace = true
 tracing-loki.workspace = true
-futures.workspace = true
-tokio-stream.workspace = true
 dotenvy.workspace = true
 yt-dlp.workspace = true
 utoipa.workspace = true
@@ -41,6 +38,7 @@ openidconnect = "4"
 url = "2"
 
 [dev-dependencies]
+serde_json.workspace = true
 tempfile = "3"
 wiremock.workspace = true
 
