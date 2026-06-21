@@ -4,7 +4,7 @@
 //! (default 3) and spawns short-lived `DownloadWorker` actors when permits
 //! are available. It also handles retry logic with exponential backoff.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -69,6 +69,12 @@ pub struct DownloadSupervisor {
     rate_limit_backoff_multiplier: u32,
     /// Active downloads (`video_id` -> worker actor ref).
     active_downloads: HashMap<Ulid, ActorRef<DownloadWorker>>,
+    /// Videos with an in-flight dispatch (reserved before a worker is
+    /// registered). Guards against the same video being dispatched more than
+    /// once concurrently: a video is reserved here synchronously when an
+    /// `EnqueueDownload` is accepted, before the spawned task acquires a
+    /// permit and registers its worker in `active_downloads`.
+    dispatching: HashSet<Ulid>,
     /// Channel for broadcasting progress updates.
     progress_tx: mpsc::Sender<DownloadProgress>,
     /// Download timeout.
@@ -116,6 +122,7 @@ impl Actor for DownloadSupervisor {
             last_download_start: None,
             rate_limit_backoff_multiplier: 1,
             active_downloads: HashMap::new(),
+            dispatching: HashSet::new(),
             progress_tx: args.progress_tx,
             download_timeout: args.config.timeout,
             max_attempts: args.config.max_attempts,
@@ -141,6 +148,7 @@ impl Actor for DownloadSupervisor {
             debug!(video_id = %video_id, "Stopping download worker");
             worker_ref.stop_gracefully().await.ok();
         }
+        self.dispatching.clear();
 
         Ok(())
     }
@@ -165,15 +173,15 @@ impl Message<EnqueueDownload> for DownloadSupervisor {
     ) -> Self::Reply {
         let video_id = msg.video.id;
 
-        // Check if already downloading
-        if self.active_downloads.contains_key(&video_id) {
-            debug!("Video already being downloaded");
-            return Ok(());
-        }
-
         // Check video status
         match msg.video.status {
-            VideoStatus::Completed | VideoStatus::PermanentlyFailed | VideoStatus::Skipped => {
+            VideoStatus::Completed
+            | VideoStatus::PermanentlyFailed
+            | VideoStatus::Skipped
+            // A video already in `downloading` is either actively handled by a
+            // worker or stuck from a crash (reset to `pending` on startup);
+            // never re-dispatch it from a stale snapshot.
+            | VideoStatus::Downloading => {
                 debug!(status = ?msg.video.status, "Video not eligible for download");
                 return Ok(());
             }
@@ -186,9 +194,23 @@ impl Message<EnqueueDownload> for DownloadSupervisor {
                     return Ok(());
                 }
             }
-            VideoStatus::Pending | VideoStatus::Downloading | VideoStatus::Cleaned => {
+            VideoStatus::Pending | VideoStatus::Cleaned => {
                 // Eligible for download
             }
+        }
+
+        // Reserve a single in-flight dispatch for this video. This runs
+        // synchronously (no `.await` between here and the spawn below), so it
+        // closes the race where repeated `EnqueueDownload`s for the same video
+        // each spawned a worker before the first registered in
+        // `active_downloads` — the bug that caused runaway re-downloads.
+        if !Self::reserve_dispatch(
+            self.active_downloads.contains_key(&video_id),
+            &mut self.dispatching,
+            video_id,
+        ) {
+            debug!("Video already downloading or queued for dispatch");
+            return Ok(());
         }
 
         // Spawn the download task
@@ -219,8 +241,10 @@ impl Message<EnqueueDownload> for DownloadSupervisor {
 
             // Acquire semaphore permit
             let Ok(_permit) = semaphore.acquire().await else {
-                // Semaphore closed during shutdown
+                // Semaphore closed during shutdown. Release the dispatch
+                // reservation so the video isn't left wedged as "in flight".
                 debug!(video_id = %video_id, "Semaphore closed, aborting download");
+                let _ = supervisor_ref.tell(DownloadCompleted { video_id }).await;
                 return;
             };
 
@@ -346,6 +370,9 @@ impl Message<DownloadCompleted> for DownloadSupervisor {
     #[instrument(skip_all, fields(video_id = %msg.video_id))]
     async fn handle(&mut self, msg: DownloadCompleted, _ctx: &mut Context<Self, Self::Reply>) {
         self.active_downloads.remove(&msg.video_id);
+        // Release the in-flight dispatch reservation so the video can be
+        // dispatched again on a future tick (if still eligible).
+        self.dispatching.remove(&msg.video_id);
         #[allow(clippy::cast_precision_loss)]
         gauge!(crate::metrics::DOWNLOADS_ACTIVE).set(self.active_downloads.len() as f64);
         debug!(
@@ -533,6 +560,8 @@ impl Message<CancelDownload> for DownloadSupervisor {
             info!(video_id = %msg.video_id, "Cancelling active download");
             worker_ref.stop_gracefully().await.ok();
         }
+        // Clear any in-flight dispatch reservation for this video.
+        self.dispatching.remove(&msg.video_id);
 
         // Mark as failed in the DB
         db::update_video_status(&self.pool, msg.video_id, VideoStatus::Failed)
@@ -576,6 +605,25 @@ impl Message<NotifyRateLimited> for DownloadSupervisor {
 }
 
 impl DownloadSupervisor {
+    /// Reserve a single in-flight dispatch slot for `video_id`.
+    ///
+    /// Returns `true` if a slot was newly reserved (caller should proceed to
+    /// spawn the download), or `false` if the video is already being
+    /// downloaded (`already_active`) or already has a dispatch reserved.
+    ///
+    /// This is the dedup guard that prevents the same video from being
+    /// dispatched more than once concurrently.
+    fn reserve_dispatch(
+        already_active: bool,
+        dispatching: &mut HashSet<Ulid>,
+        video_id: Ulid,
+    ) -> bool {
+        if already_active {
+            return false;
+        }
+        dispatching.insert(video_id)
+    }
+
     /// Calculate the effective rate limit delay considering backoff.
     fn effective_rate_limit_delay(&self) -> Duration {
         Duration::from_secs(
@@ -710,6 +758,51 @@ impl DownloadSupervisor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_reserve_dispatch_dedups_concurrent_enqueues() {
+        let mut dispatching = HashSet::new();
+        let video_id = Ulid::new();
+
+        // First enqueue for an idle video reserves a slot.
+        assert!(DownloadSupervisor::reserve_dispatch(
+            false,
+            &mut dispatching,
+            video_id
+        ));
+        // A repeated enqueue while the dispatch is still in flight (worker not
+        // yet registered in `active_downloads`) is rejected. This is the race
+        // that previously spawned duplicate workers and caused runaway
+        // re-downloads of the same video.
+        assert!(!DownloadSupervisor::reserve_dispatch(
+            false,
+            &mut dispatching,
+            video_id
+        ));
+        // An enqueue for a video already actively downloading is also rejected.
+        assert!(!DownloadSupervisor::reserve_dispatch(
+            true,
+            &mut dispatching,
+            video_id
+        ));
+
+        // After the dispatch completes the reservation is released and the
+        // video can be dispatched again.
+        dispatching.remove(&video_id);
+        assert!(DownloadSupervisor::reserve_dispatch(
+            false,
+            &mut dispatching,
+            video_id
+        ));
+
+        // A different video is independent.
+        let other = Ulid::new();
+        assert!(DownloadSupervisor::reserve_dispatch(
+            false,
+            &mut dispatching,
+            other
+        ));
+    }
 
     #[test]
     fn test_exponential_backoff() {
