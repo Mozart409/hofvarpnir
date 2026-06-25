@@ -25,7 +25,7 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Setup Nix
         uses: DeterminateSystems/nix-installer-action@main
       - name: Setup Cachix
@@ -48,7 +48,7 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Setup Nix
         uses: DeterminateSystems/nix-installer-action@main
       - name: Setup Cachix
@@ -80,7 +80,7 @@ jobs:
         options: >-
           --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Setup Nix
         uses: DeterminateSystems/nix-installer-action@main
       - name: Setup Cachix
@@ -111,7 +111,7 @@ jobs:
       actions: read
       id-token: write
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Download binary
         uses: actions/download-artifact@v8
         with:
