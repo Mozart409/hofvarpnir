@@ -25,7 +25,7 @@ kameo = "0.21"
 metrics = "0.24"
 opentelemetry = { version = "0.31", default-features = false, features = ["trace", "internal-logs"] }
 opentelemetry_sdk = { version = "0.31", default-features = false, features = ["trace", "rt-tokio", "internal-logs"] }
-opentelemetry-otlp = { version = "0.31", default-features = false, features = ["grpc-tonic", "http-proto", "trace", "internal-logs"] }
+opentelemetry-otlp = { version = "0.32", default-features = false, features = ["grpc-tonic", "http-proto", "trace", "internal-logs"] }
 tracing-opentelemetry = { version = "0.32", default-features = false }
 metrics-exporter-prometheus = { version = "0.18", default-features = false }
 maud = { version = "0.27", features = ["axum"] }
