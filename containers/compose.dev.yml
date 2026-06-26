@@ -9,6 +9,10 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: hofvarpnir_dev
+    # The parallel `#[sqlx::test]` suite creates a fresh database + pool per test;
+    # the default max_connections=100 is exhausted under `cargo test` (PoolTimedOut).
+    # -c args still load postgresql.conf (shared_preload_libraries etc.).
+    command: ["postgres", "-c", "max_connections=300"]
     ports:
       - "5432:5432"
     volumes:

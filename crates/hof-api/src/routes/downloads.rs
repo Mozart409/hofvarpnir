@@ -28,7 +28,7 @@ use hof_core::{
     db::{self},
     domain::{
         api_key::ApiKeyScope,
-        video::{Video, VideoStatus},
+        video::{Video, VideoPendingDeletion, VideoStatus},
     },
 };
 
@@ -41,6 +41,7 @@ use crate::{
 pub fn router() -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
         .routes(routes!(list_downloads, bulk_retry_downloads))
+        .routes(routes!(list_pending_deletion))
         .routes(routes!(get_download_progress))
         .routes(routes!(get_download, delete_download))
         .routes(routes!(cancel_download))
@@ -58,6 +59,43 @@ pub struct ListDownloadsQuery {
     pub status: Option<VideoStatus>,
     /// Filter by source ID (optional).
     pub source_id: Option<String>,
+}
+
+/// Query parameters for listing videos pending retention deletion.
+#[derive(Debug, Deserialize)]
+pub struct ListPendingDeletionQuery {
+    /// Maximum number of videos to return (default: 50, clamped to 1..=200).
+    #[serde(default = "default_pending_deletion_limit")]
+    pub limit: i64,
+    /// Only include videos scheduled for deletion within this many days (optional).
+    pub within_days: Option<i32>,
+    /// Filter to videos with at least one source under this profile (optional).
+    pub profile_id: Option<String>,
+}
+
+const fn default_pending_deletion_limit() -> i64 {
+    50
+}
+
+/// Response body for a video scheduled for retention deletion.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct PendingDeletionResponse {
+    /// The video itself.
+    pub video: VideoResponse,
+    /// When the video is scheduled to be deleted by the retention cleanup.
+    pub scheduled_deletion_at: DateTime<Utc>,
+    /// The effective retention in days governing the scheduled deletion.
+    pub effective_retention_days: i32,
+}
+
+impl From<VideoPendingDeletion> for PendingDeletionResponse {
+    fn from(v: VideoPendingDeletion) -> Self {
+        Self {
+            video: v.video.into(),
+            scheduled_deletion_at: v.scheduled_deletion_at,
+            effective_retention_days: v.effective_retention_days,
+        }
+    }
 }
 
 /// Response body for a video/download.
@@ -249,6 +287,82 @@ pub async fn list_downloads(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ErrorResponse {
                     error: "Failed to list downloads".to_string(),
+                }),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// List completed videos scheduled for retention deletion, soonest first.
+///
+/// Previews which videos the retention cleanup will delete and when, based on
+/// each video's effective retention (source ?? profile ?? global `RETENTION_DAYS`).
+/// Optionally filter by a deletion window (`within_days`) or `profile_id`.
+#[utoipa::path(
+    get,
+    path = "/pending-deletion",
+    tag = "downloads",
+    params(
+        ("limit" = Option<i64>, Query, description = "Max videos to return (default 50, max 200)"),
+        ("within_days" = Option<i32>, Query, description = "Only videos deleted within this many days"),
+        ("profile_id" = Option<String>, Query, description = "Filter by profile ID")
+    ),
+    responses(
+        (status = 200, description = "Videos scheduled for deletion, soonest first", body = Vec<PendingDeletionResponse>),
+        (status = 400, description = "Invalid request", body = ErrorResponse),
+        (status = 401, description = "Unauthorized", body = ApiErrorResponse),
+        (status = 403, description = "Forbidden - insufficient scope", body = ApiErrorResponse),
+        (status = 500, description = "Internal server error", body = ErrorResponse)
+    )
+)]
+pub async fn list_pending_deletion(
+    State(state): State<AppState>,
+    auth: Auth,
+    Query(query): Query<ListPendingDeletionQuery>,
+) -> impl IntoResponse {
+    if let Err(e) = auth.require_scope(ApiKeyScope::Read) {
+        return e.into_response();
+    }
+
+    let profile_id = match query.profile_id {
+        Some(ref s) => match Ulid::from_string(s) {
+            Ok(id) => Some(id),
+            Err(_) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: "Invalid profile_id format".to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+        },
+        None => None,
+    };
+
+    let limit = query.limit.clamp(1, 200);
+
+    match db::list_videos_pending_deletion(
+        &state.pool,
+        state.global_retention_days,
+        profile_id,
+        query.within_days,
+        limit,
+    )
+    .await
+    {
+        Ok(videos) => {
+            let responses: Vec<PendingDeletionResponse> =
+                videos.into_iter().map(Into::into).collect();
+            (StatusCode::OK, Json(responses)).into_response()
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "Failed to list videos pending deletion");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "Failed to list videos pending deletion".to_string(),
                 }),
             )
                 .into_response()

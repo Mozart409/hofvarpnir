@@ -1,0 +1,290 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT\n            id, profile_id, url,\n            source_type AS \"source_type: SourceType\",\n            custom_name, enabled, index_frequency_secs,\n            cutoff_date AS \"cutoff_date: NaiveDate\",\n            retention_days,\n            entry_order AS \"entry_order: EntryOrder\",\n            entry_order_detected_at AS \"entry_order_detected_at: DateTime<Utc>\",\n            last_indexed_at AS \"last_indexed_at: DateTime<Utc>\",\n            last_error, index_error_count,\n            created_at AS \"created_at: DateTime<Utc>\",\n            updated_at AS \"updated_at: DateTime<Utc>\",\n            channel_id, channel_title, channel_description, channel_thumbnail_url,\n            jellyfin_metadata_at AS \"jellyfin_metadata_at: DateTime<Utc>\"\n        FROM sources\n        WHERE id = $1\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "sources",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "profile_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "sources",
+            "name": "profile_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "url",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "sources",
+            "name": "url"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "source_type: SourceType",
+        "type_info": {
+          "Custom": {
+            "name": "source_type",
+            "kind": {
+              "Enum": [
+                "channel",
+                "playlist"
+              ]
+            }
+          }
+        },
+        "origin": {
+          "Table": {
+            "table": "sources",
+            "name": "source_type"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "custom_name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "sources",
+            "name": "custom_name"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "enabled",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "sources",
+            "name": "enabled"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "index_frequency_secs",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "sources",
+            "name": "index_frequency_secs"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "cutoff_date: NaiveDate",
+        "type_info": "Date",
+        "origin": {
+          "Table": {
+            "table": "sources",
+            "name": "cutoff_date"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "retention_days",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "sources",
+            "name": "retention_days"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "entry_order: EntryOrder",
+        "type_info": {
+          "Custom": {
+            "name": "entry_order",
+            "kind": {
+              "Enum": [
+                "unknown",
+                "ascending",
+                "descending",
+                "unordered"
+              ]
+            }
+          }
+        },
+        "origin": {
+          "Table": {
+            "table": "sources",
+            "name": "entry_order"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "entry_order_detected_at: DateTime<Utc>",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "sources",
+            "name": "entry_order_detected_at"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "last_indexed_at: DateTime<Utc>",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "sources",
+            "name": "last_indexed_at"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
+        "name": "last_error",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "sources",
+            "name": "last_error"
+          }
+        }
+      },
+      {
+        "ordinal": 13,
+        "name": "index_error_count",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "sources",
+            "name": "index_error_count"
+          }
+        }
+      },
+      {
+        "ordinal": 14,
+        "name": "created_at: DateTime<Utc>",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "sources",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 15,
+        "name": "updated_at: DateTime<Utc>",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "sources",
+            "name": "updated_at"
+          }
+        }
+      },
+      {
+        "ordinal": 16,
+        "name": "channel_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "sources",
+            "name": "channel_id"
+          }
+        }
+      },
+      {
+        "ordinal": 17,
+        "name": "channel_title",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "sources",
+            "name": "channel_title"
+          }
+        }
+      },
+      {
+        "ordinal": 18,
+        "name": "channel_description",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "sources",
+            "name": "channel_description"
+          }
+        }
+      },
+      {
+        "ordinal": 19,
+        "name": "channel_thumbnail_url",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "sources",
+            "name": "channel_thumbnail_url"
+          }
+        }
+      },
+      {
+        "ordinal": 20,
+        "name": "jellyfin_metadata_at: DateTime<Utc>",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "sources",
+            "name": "jellyfin_metadata_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      true,
+      false,
+      true,
+      true,
+      true,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "552cb048fd7ba96f9e92f3637f57662e0dba5ae46d2ff4b2d0d5cdb9d372578f"
+}
