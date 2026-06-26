@@ -92,6 +92,9 @@ pub struct AppState {
     pub startup_issues: Arc<[SystemIssue]>,
     /// Broadcaster for real-time SSE notifications (activity + invalidation).
     pub broadcaster: ActivityBroadcaster,
+    /// Global retention fallback in days (`RETENTION_DAYS`), used to preview
+    /// upcoming retention deletions. `None` means no global retention.
+    pub global_retention_days: Option<i32>,
 }
 
 impl AppState {
@@ -107,6 +110,7 @@ impl AppState {
         progress_tx: broadcast::Sender<DownloadProgress>,
         startup_issues: Vec<SystemIssue>,
         broadcaster: ActivityBroadcaster,
+        global_retention_days: Option<i32>,
     ) -> Self {
         Self {
             pool,
@@ -117,6 +121,7 @@ impl AppState {
             progress_tx,
             startup_issues: startup_issues.into(),
             broadcaster,
+            global_retention_days,
         }
     }
 }
@@ -146,6 +151,7 @@ impl AppState {
         sources::IndexTriggerResponse,
         sources::MetadataTriggerResponse,
         downloads::VideoResponse,
+        downloads::PendingDeletionResponse,
         downloads::RetryResponse,
         downloads::BulkRetryResponse,
         downloads::CancelResponse,

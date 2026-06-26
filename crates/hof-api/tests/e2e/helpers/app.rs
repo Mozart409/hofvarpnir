@@ -105,6 +105,7 @@ impl TestApp {
             broadcast_tx,
             vec![],
             broadcaster,
+            None,
         );
 
         // Build the API router with docs

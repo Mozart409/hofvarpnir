@@ -67,6 +67,10 @@ async fn main() -> Result<()> {
         progress_tx,
         std::mem::take(&mut actor_system.startup_issues),
         actor_system.broadcaster.clone(),
+        config
+            .storage
+            .retention_days
+            .map(|d| i32::try_from(d).unwrap_or(i32::MAX)),
     );
 
     // Initialize OIDC client if configured
