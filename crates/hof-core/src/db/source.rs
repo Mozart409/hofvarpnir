@@ -40,14 +40,6 @@ pub struct UpdateChannelMetadata<'a> {
     pub channel_thumbnail_url: Option<&'a str>,
 }
 
-// SQL fragment for selecting all source columns
-const SOURCE_COLUMNS: &str = r"
-    id, profile_id, url, source_type, custom_name, enabled,
-    index_frequency_secs, cutoff_date, retention_days, entry_order, entry_order_detected_at,
-    last_indexed_at, last_error, index_error_count, created_at, updated_at,
-    channel_id, channel_title, channel_description, channel_thumbnail_url, jellyfin_metadata_at
-";
-
 /// Create a new source.
 ///
 /// # Errors
@@ -56,25 +48,40 @@ const SOURCE_COLUMNS: &str = r"
 #[instrument(skip(pool, data), fields(otel.kind = "client", db.system = "postgresql"))]
 pub async fn create_source(pool: &PgPool, data: CreateSource<'_>) -> Result<Source, DbError> {
     let id = Ulid::new();
-    let query = format!(
-        r"
+    let id_str = id.to_string();
+    let profile_id_str = data.profile_id.to_string();
+    let row = sqlx::query_as!(
+        SourceRow,
+        r#"
         INSERT INTO sources (id, profile_id, url, source_type, custom_name,
                              index_frequency_secs, cutoff_date, retention_days)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-        RETURNING {SOURCE_COLUMNS}
-        "
-    );
-    let row = sqlx::query_as::<_, SourceRow>(&query)
-        .bind(id.to_string())
-        .bind(data.profile_id.to_string())
-        .bind(data.url)
-        .bind(&data.source_type)
-        .bind(data.custom_name)
-        .bind(data.index_frequency_secs)
-        .bind(data.cutoff_date)
-        .bind(data.retention_days)
-        .fetch_one(pool)
-        .await?;
+        VALUES ($1, $2, $3, $4::source_type, $5, $6, $7, $8)
+        RETURNING
+            id, profile_id, url,
+            source_type AS "source_type: SourceType",
+            custom_name, enabled, index_frequency_secs,
+            cutoff_date AS "cutoff_date: NaiveDate",
+            retention_days,
+            entry_order AS "entry_order: EntryOrder",
+            entry_order_detected_at AS "entry_order_detected_at: DateTime<Utc>",
+            last_indexed_at AS "last_indexed_at: DateTime<Utc>",
+            last_error, index_error_count,
+            created_at AS "created_at: DateTime<Utc>",
+            updated_at AS "updated_at: DateTime<Utc>",
+            channel_id, channel_title, channel_description, channel_thumbnail_url,
+            jellyfin_metadata_at AS "jellyfin_metadata_at: DateTime<Utc>"
+        "#,
+        id_str,
+        profile_id_str,
+        data.url,
+        data.source_type as _,
+        data.custom_name,
+        data.index_frequency_secs,
+        data.cutoff_date as _,
+        data.retention_days,
+    )
+    .fetch_one(pool)
+    .await?;
 
     Ok(Source::try_from(row)?)
 }
@@ -86,18 +93,31 @@ pub async fn create_source(pool: &PgPool, data: CreateSource<'_>) -> Result<Sour
 /// Returns `DbError::NotFound` if the source doesn't exist.
 #[instrument(skip(pool), fields(otel.kind = "client", db.system = "postgresql"))]
 pub async fn get_source(pool: &PgPool, id: Ulid) -> Result<Source, DbError> {
-    let query = format!(
-        r"
-        SELECT {SOURCE_COLUMNS}
+    let row = sqlx::query_as!(
+        SourceRow,
+        r#"
+        SELECT
+            id, profile_id, url,
+            source_type AS "source_type: SourceType",
+            custom_name, enabled, index_frequency_secs,
+            cutoff_date AS "cutoff_date: NaiveDate",
+            retention_days,
+            entry_order AS "entry_order: EntryOrder",
+            entry_order_detected_at AS "entry_order_detected_at: DateTime<Utc>",
+            last_indexed_at AS "last_indexed_at: DateTime<Utc>",
+            last_error, index_error_count,
+            created_at AS "created_at: DateTime<Utc>",
+            updated_at AS "updated_at: DateTime<Utc>",
+            channel_id, channel_title, channel_description, channel_thumbnail_url,
+            jellyfin_metadata_at AS "jellyfin_metadata_at: DateTime<Utc>"
         FROM sources
         WHERE id = $1
-        "
-    );
-    let row = sqlx::query_as::<_, SourceRow>(&query)
-        .bind(id.to_string())
-        .fetch_optional(pool)
-        .await?
-        .ok_or(DbError::NotFound)?;
+        "#,
+        id.to_string()
+    )
+    .fetch_optional(pool)
+    .await?
+    .ok_or(DbError::NotFound)?;
 
     Ok(Source::try_from(row)?)
 }
@@ -112,18 +132,31 @@ pub async fn list_sources_for_profile(
     pool: &PgPool,
     profile_id: Ulid,
 ) -> Result<Vec<Source>, DbError> {
-    let query = format!(
-        r"
-        SELECT {SOURCE_COLUMNS}
+    let rows = sqlx::query_as!(
+        SourceRow,
+        r#"
+        SELECT
+            id, profile_id, url,
+            source_type AS "source_type: SourceType",
+            custom_name, enabled, index_frequency_secs,
+            cutoff_date AS "cutoff_date: NaiveDate",
+            retention_days,
+            entry_order AS "entry_order: EntryOrder",
+            entry_order_detected_at AS "entry_order_detected_at: DateTime<Utc>",
+            last_indexed_at AS "last_indexed_at: DateTime<Utc>",
+            last_error, index_error_count,
+            created_at AS "created_at: DateTime<Utc>",
+            updated_at AS "updated_at: DateTime<Utc>",
+            channel_id, channel_title, channel_description, channel_thumbnail_url,
+            jellyfin_metadata_at AS "jellyfin_metadata_at: DateTime<Utc>"
         FROM sources
         WHERE profile_id = $1
         ORDER BY created_at DESC
-        "
-    );
-    let rows = sqlx::query_as::<_, SourceRow>(&query)
-        .bind(profile_id.to_string())
-        .fetch_all(pool)
-        .await?;
+        "#,
+        profile_id.to_string()
+    )
+    .fetch_all(pool)
+    .await?;
 
     rows.into_iter()
         .map(Source::try_from)
@@ -138,16 +171,29 @@ pub async fn list_sources_for_profile(
 /// Returns an error if the database operation fails.
 #[instrument(skip(pool), fields(otel.kind = "client", db.system = "postgresql"))]
 pub async fn list_sources(pool: &PgPool) -> Result<Vec<Source>, DbError> {
-    let query = format!(
-        r"
-        SELECT {SOURCE_COLUMNS}
+    let rows = sqlx::query_as!(
+        SourceRow,
+        r#"
+        SELECT
+            id, profile_id, url,
+            source_type AS "source_type: SourceType",
+            custom_name, enabled, index_frequency_secs,
+            cutoff_date AS "cutoff_date: NaiveDate",
+            retention_days,
+            entry_order AS "entry_order: EntryOrder",
+            entry_order_detected_at AS "entry_order_detected_at: DateTime<Utc>",
+            last_indexed_at AS "last_indexed_at: DateTime<Utc>",
+            last_error, index_error_count,
+            created_at AS "created_at: DateTime<Utc>",
+            updated_at AS "updated_at: DateTime<Utc>",
+            channel_id, channel_title, channel_description, channel_thumbnail_url,
+            jellyfin_metadata_at AS "jellyfin_metadata_at: DateTime<Utc>"
         FROM sources
         ORDER BY created_at DESC
-        "
-    );
-    let rows = sqlx::query_as::<_, SourceRow>(&query)
-        .fetch_all(pool)
-        .await?;
+        "#
+    )
+    .fetch_all(pool)
+    .await?;
 
     rows.into_iter()
         .map(Source::try_from)
@@ -170,21 +216,34 @@ pub async fn list_sources(pool: &PgPool) -> Result<Vec<Source>, DbError> {
 /// Returns an error if the database operation fails.
 #[instrument(skip(pool), fields(otel.kind = "client", db.system = "postgresql"))]
 pub async fn list_sources_due_for_indexing(pool: &PgPool) -> Result<Vec<Source>, DbError> {
-    let query = format!(
-        r"
-        SELECT {SOURCE_COLUMNS}
+    let rows = sqlx::query_as!(
+        SourceRow,
+        r#"
+        SELECT
+            id, profile_id, url,
+            source_type AS "source_type: SourceType",
+            custom_name, enabled, index_frequency_secs,
+            cutoff_date AS "cutoff_date: NaiveDate",
+            retention_days,
+            entry_order AS "entry_order: EntryOrder",
+            entry_order_detected_at AS "entry_order_detected_at: DateTime<Utc>",
+            last_indexed_at AS "last_indexed_at: DateTime<Utc>",
+            last_error, index_error_count,
+            created_at AS "created_at: DateTime<Utc>",
+            updated_at AS "updated_at: DateTime<Utc>",
+            channel_id, channel_title, channel_description, channel_thumbnail_url,
+            jellyfin_metadata_at AS "jellyfin_metadata_at: DateTime<Utc>"
         FROM sources
         WHERE enabled = true
           AND index_error_count < $1
           AND (last_indexed_at IS NULL
                OR last_indexed_at + make_interval(secs => index_frequency_secs) < NOW())
         ORDER BY last_indexed_at NULLS FIRST
-        "
-    );
-    let rows = sqlx::query_as::<_, SourceRow>(&query)
-        .bind(MAX_INDEX_RETRIES)
-        .fetch_all(pool)
-        .await?;
+        "#,
+        MAX_INDEX_RETRIES
+    )
+    .fetch_all(pool)
+    .await?;
 
     rows.into_iter()
         .map(Source::try_from)
@@ -203,32 +262,45 @@ pub async fn update_source(
     id: Ulid,
     data: UpdateSource<'_>,
 ) -> Result<Source, DbError> {
-    let query = format!(
-        r"
+    let row = sqlx::query_as!(
+        SourceRow,
+        r#"
         UPDATE sources
         SET url = COALESCE($2, url),
-            source_type = COALESCE($3, source_type),
+            source_type = COALESCE($3::source_type, source_type),
             custom_name = CASE WHEN $4 THEN $5 ELSE custom_name END,
             index_frequency_secs = COALESCE($6, index_frequency_secs),
             cutoff_date = COALESCE($7, cutoff_date),
             retention_days = CASE WHEN $8 THEN $9 ELSE retention_days END
         WHERE id = $1
-        RETURNING {SOURCE_COLUMNS}
-        "
-    );
-    let row = sqlx::query_as::<_, SourceRow>(&query)
-        .bind(id.to_string())
-        .bind(data.url)
-        .bind(data.source_type.as_ref())
-        .bind(data.custom_name.is_some())
-        .bind(data.custom_name.flatten())
-        .bind(data.index_frequency_secs)
-        .bind(data.cutoff_date)
-        .bind(data.retention_days.is_some())
-        .bind(data.retention_days.flatten())
-        .fetch_optional(pool)
-        .await?
-        .ok_or(DbError::NotFound)?;
+        RETURNING
+            id, profile_id, url,
+            source_type AS "source_type: SourceType",
+            custom_name, enabled, index_frequency_secs,
+            cutoff_date AS "cutoff_date: NaiveDate",
+            retention_days,
+            entry_order AS "entry_order: EntryOrder",
+            entry_order_detected_at AS "entry_order_detected_at: DateTime<Utc>",
+            last_indexed_at AS "last_indexed_at: DateTime<Utc>",
+            last_error, index_error_count,
+            created_at AS "created_at: DateTime<Utc>",
+            updated_at AS "updated_at: DateTime<Utc>",
+            channel_id, channel_title, channel_description, channel_thumbnail_url,
+            jellyfin_metadata_at AS "jellyfin_metadata_at: DateTime<Utc>"
+        "#,
+        id.to_string(),
+        data.url,
+        data.source_type.as_ref() as _,
+        data.custom_name.is_some(),
+        data.custom_name.flatten(),
+        data.index_frequency_secs,
+        data.cutoff_date as _,
+        data.retention_days.is_some(),
+        data.retention_days.flatten(),
+    )
+    .fetch_optional(pool)
+    .await?
+    .ok_or(DbError::NotFound)?;
 
     Ok(Source::try_from(row)?)
 }
@@ -430,17 +502,30 @@ pub async fn update_source_jellyfin_metadata_at(
 /// Returns an error if the database operation fails.
 #[instrument(skip(pool), fields(otel.kind = "client", db.system = "postgresql"))]
 pub async fn list_sources_needing_jellyfin_metadata(pool: &PgPool) -> Result<Vec<Source>, DbError> {
-    let query = format!(
-        r"
-        SELECT {SOURCE_COLUMNS}
+    let rows = sqlx::query_as!(
+        SourceRow,
+        r#"
+        SELECT
+            id, profile_id, url,
+            source_type AS "source_type: SourceType",
+            custom_name, enabled, index_frequency_secs,
+            cutoff_date AS "cutoff_date: NaiveDate",
+            retention_days,
+            entry_order AS "entry_order: EntryOrder",
+            entry_order_detected_at AS "entry_order_detected_at: DateTime<Utc>",
+            last_indexed_at AS "last_indexed_at: DateTime<Utc>",
+            last_error, index_error_count,
+            created_at AS "created_at: DateTime<Utc>",
+            updated_at AS "updated_at: DateTime<Utc>",
+            channel_id, channel_title, channel_description, channel_thumbnail_url,
+            jellyfin_metadata_at AS "jellyfin_metadata_at: DateTime<Utc>"
         FROM sources
         WHERE jellyfin_metadata_at IS NULL
         ORDER BY created_at ASC
-        "
-    );
-    let rows = sqlx::query_as::<_, SourceRow>(&query)
-        .fetch_all(pool)
-        .await?;
+        "#
+    )
+    .fetch_all(pool)
+    .await?;
 
     rows.into_iter()
         .map(Source::try_from)
