@@ -37,12 +37,14 @@
       # Include SQLx migration files so `sqlx::migrate!("./migrations")`
       # embeds the full migration set in container builds.
       # Include hof-web assets (app.css, etc.) for static file serving.
+      # Include .sqlx/ directory so SQLX_OFFLINE=true works (query metadata).
       src = pkgs.lib.cleanSourceWith {
         src = ./.;
         filter = path: type:
           (craneLib.filterCargoSources path type)
           || pkgs.lib.hasInfix "/crates/hof-core/migrations/" (toString path)
-          || pkgs.lib.hasInfix "/crates/hof-web/assets/" (toString path);
+          || pkgs.lib.hasInfix "/crates/hof-web/assets/" (toString path)
+          || pkgs.lib.hasInfix "/.sqlx/" (toString path);
       };
 
       # Common build arguments
