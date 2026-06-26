@@ -1,0 +1,40 @@
+# Vendored copy of tower-sessions-sqlx-store 0.15.0
+# (https://github.com/maxcountryman/tower-sessions-stores, rev 69e025f9),
+# patched to build against sqlx 0.9. Upstream still pins sqlx 0.8, which clashes
+# with the workspace's sqlx 0.9 (two sqlx versions -> incompatible PgPool types).
+#
+# Changes vs upstream:
+#   - sqlx 0.8 -> 0.9
+#   - postgres_store.rs: dynamic (schema/table-name) SQL wrapped in
+#     `sqlx::AssertSqlSafe` to satisfy sqlx 0.9's `SqlSafeStr` bound. The
+#     identifiers are validated by `is_valid_identifier`, so this is sound.
+#   - dev-dependencies, examples, and the sqlite/mysql stores removed
+#     (only the postgres store is used).
+[package]
+name = "tower-sessions-sqlx-store"
+description = "SQLx session stores for `tower-sessions`."
+version = "0.15.0"
+edition = "2021"
+authors = ["Max Countryman <hello@maxcountryman.com>"]
+license = "MIT"
+homepage = "https://github.com/maxcountryman/tower-sessions-stores"
+keywords = ["axum", "sessions", "cookie", "tower", "sqlx"]
+categories = ["asynchronous", "network-programming", "web-programming"]
+repository = "https://github.com/maxcountryman/tower-sessions-stores"
+documentation = "https://docs.rs/tower-sessions-sqlx-store"
+
+# Vendored crate: its doc examples reference dev-deps we dropped, and we don't
+# ship its docs — skip doctests.
+[lib]
+doctest = false
+
+[features]
+postgres = ["sqlx/postgres"]
+
+[dependencies]
+async-trait = "0.1.77"
+rmp-serde = "1.1.2"
+sqlx = { version = "0.9.0", features = ["time", "runtime-tokio"] }
+thiserror = "2.0.18"
+time = "0.3.31"
+tower-sessions-core = { version = "0.15.0", features = ["deletion-task"] }

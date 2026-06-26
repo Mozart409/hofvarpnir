@@ -44,7 +44,8 @@ tower = "0.5"
 tower-http = { version = "0.7", features = ["cors", "trace", "fs", "request-id", "propagate-header"] }
 tower-sessions = "0.15"
 tower-sessions-core = "0.15"
-tower-sessions-sqlx-store = { version = "0.15", features = ["postgres"], git = "https://github.com/maxcountryman/tower-sessions-stores" }
+# Vendored + patched for sqlx 0.9 (upstream still pins sqlx 0.8). See patches/tower-sessions-sqlx-store.
+tower-sessions-sqlx-store = { version = "0.15", features = ["postgres"], path = "patches/tower-sessions-sqlx-store" }
 tracing = "0.1"
 tracing-loki = { version = "0.2", default-features = false, features = ["compat-0-2-1", "rustls"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
