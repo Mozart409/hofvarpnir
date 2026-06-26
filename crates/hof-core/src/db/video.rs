@@ -6,7 +6,9 @@ use tracing::instrument;
 use ulid::Ulid;
 
 use super::DbError;
-use crate::domain::video::{Video, VideoRow, VideoStatus};
+use crate::domain::video::{
+    Video, VideoPendingDeletion, VideoPendingDeletionRow, VideoRow, VideoStatus,
+};
 
 /// Data required to create a new video.
 #[derive(Debug, Clone)]
@@ -376,6 +378,75 @@ pub async fn list_videos_past_retention(
 
     rows.into_iter()
         .map(Video::try_from)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(DbError::from)
+}
+
+/// List completed videos that are scheduled for retention deletion, soonest first.
+///
+/// A video's scheduled deletion is the latest expiry across all referencing
+/// sources, where per-source retention is
+/// `COALESCE(source.retention_days, profile.retention_days, global)`. Videos
+/// with any keep-forever (NULL effective retention) source are excluded.
+///
+/// * `within_days` — when set, only videos whose scheduled deletion falls within
+///   the next N days are returned.
+/// * `profile_id` — when set, only videos that have at least one source under
+///   that profile are returned (the deletion time is still computed across all
+///   sources).
+///
+/// # Errors
+///
+/// Returns an error if the database operation fails.
+#[instrument(skip(pool), fields(otel.kind = "client", db.system = "postgresql"))]
+pub async fn list_videos_pending_deletion(
+    pool: &PgPool,
+    global_retention_days: Option<i32>,
+    profile_id: Option<Ulid>,
+    within_days: Option<i32>,
+    limit: i64,
+) -> Result<Vec<VideoPendingDeletion>, DbError> {
+    let profile_id = profile_id.map(|id| id.to_string());
+    let rows = sqlx::query_as::<_, VideoPendingDeletionRow>(
+        r"
+        SELECT v.id, v.platform, v.platform_video_id, v.title, v.description,
+               v.duration_secs, v.published_at, v.thumbnail_url, v.status, v.attempts,
+               v.next_retry, v.last_error, v.file_path, v.file_size_bytes,
+               v.downloaded_at, v.created_at, v.updated_at,
+               MAX(v.downloaded_at + make_interval(days => COALESCE(s.retention_days, p.retention_days, $1)))
+                   AS scheduled_deletion_at,
+               MAX(COALESCE(s.retention_days, p.retention_days, $1)) AS effective_retention_days
+        FROM videos v
+        JOIN source_videos sv ON sv.video_id = v.id
+        JOIN sources s ON s.id = sv.source_id
+        JOIN profiles p ON p.id = s.profile_id
+        WHERE v.status = 'completed'
+          AND v.downloaded_at IS NOT NULL
+          AND ($2::text IS NULL OR EXISTS (
+                SELECT 1 FROM source_videos sv2
+                JOIN sources s2 ON s2.id = sv2.source_id
+                WHERE sv2.video_id = v.id AND s2.profile_id = $2))
+        GROUP BY v.id, v.platform, v.platform_video_id, v.title, v.description,
+                 v.duration_secs, v.published_at, v.thumbnail_url, v.status, v.attempts,
+                 v.next_retry, v.last_error, v.file_path, v.file_size_bytes,
+                 v.downloaded_at, v.created_at, v.updated_at
+        HAVING bool_and(COALESCE(s.retention_days, p.retention_days, $1) IS NOT NULL)
+           AND ($3::int IS NULL OR
+                MAX(v.downloaded_at + make_interval(days => COALESCE(s.retention_days, p.retention_days, $1)))
+                    <= NOW() + make_interval(days => $3))
+        ORDER BY scheduled_deletion_at ASC
+        LIMIT $4
+        ",
+    )
+    .bind(global_retention_days)
+    .bind(profile_id)
+    .bind(within_days)
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+
+    rows.into_iter()
+        .map(VideoPendingDeletion::try_from)
         .collect::<Result<Vec<_>, _>>()
         .map_err(DbError::from)
 }
