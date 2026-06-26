@@ -52,6 +52,8 @@ db-setup: clear up
     sqlx mig run --database-url ${DATABASE_URL}
 
 # SQLx offline mode - run after schema changes
+# Uses --workspace, so a single merged .sqlx/ is written to the repo root
+# (covers query! macros in every crate, not just hof-core).
 [working-directory('crates/hof-core')]
 prepare: clear mig-run
     cargo sqlx prepare --workspace -- --all-targets --all-features
@@ -86,18 +88,18 @@ css-watch:
 css-build:
     tailwindcss -i input.css -o app.css --minify
 
-# Testing
+# Run all tests (--test-threads=4 avoids a #[sqlx::test] parallelism race on many-core machines)
 test: clear up
-    cargo test --all-features -- --include-ignored
+    cargo test --all-features -- --include-ignored --test-threads=4
 
-# E2E API tests (parallel by default)
+# E2E API tests
 e2e: clear mig-run
-    cargo test --package hof-api --test e2e --all-features
+    cargo test --package hof-api --test e2e --all-features -- --test-threads=4
 
 # CI simulation (requires database)
 ci: clear mig-run
     SQLX_OFFLINE=true cargo build --release
-    cargo test --all-features -- --include-ignored
+    cargo test --all-features -- --include-ignored --test-threads=4
     cargo clippy --all-targets --all-features -- -D warnings
 
 # Check Nix cache availability
