@@ -609,7 +609,9 @@ fn auth_layout(title: &str, content: impl Render) -> Markup {
                 meta charset="utf-8";
                 meta name="viewport" content="width=device-width, initial-scale=1";
                 title { (heading) }
-                link rel="icon" href="https://fav.farm/🔥";
+                link rel="icon" type="image/x-icon" href="/assets/favicon.ico";
+                link rel="icon" type="image/png" sizes="32x32" href="/assets/favicon-32x32.png";
+                link rel="apple-touch-icon" href="/assets/apple-touch-icon.png";
                 link rel="stylesheet" href="/assets/app.css";
                 // Dark mode initialization (runs before body renders to prevent flash)
                 (PreEscaped(r"<script>
@@ -4634,7 +4636,9 @@ fn layout_with_flash(
                 meta charset="utf-8";
                 meta name="viewport" content="width=device-width, initial-scale=1";
                 title { (heading) }
-                link rel="icon" href="https://fav.farm/🔥";
+                link rel="icon" type="image/x-icon" href="/assets/favicon.ico";
+                link rel="icon" type="image/png" sizes="32x32" href="/assets/favicon-32x32.png";
+                link rel="apple-touch-icon" href="/assets/apple-touch-icon.png";
                 link rel="stylesheet" href="/assets/app.css";
                 script src="https://unpkg.com/htmx.org@2.0.4" defer {}
                 script src="https://unpkg.com/htmx-ext-sse@2.2.2/sse.js" defer {}
@@ -4673,9 +4677,12 @@ fn layout_with_flash(
 
                     header class="mb-8 rounded-2xl border border-slate-200 dark:border-slate-700 bg-white/80 dark:bg-slate-800/80 p-5 shadow-sm backdrop-blur" {
                         div class="flex flex-wrap items-center justify-between gap-4" {
-                            div {
-                                p class="text-xs uppercase tracking-[0.2em] text-slate-500 dark:text-slate-400" { "Hofvarpnir" }
-                                h1 class="text-2xl font-semibold text-slate-900 dark:text-slate-100" { (title) }
+                            div class="flex items-center gap-3" {
+                                img src="/assets/logo.png" alt="Hofvarpnir logo" class="h-12 w-12 shrink-0";
+                                div {
+                                    p class="text-xs uppercase tracking-[0.2em] text-slate-500 dark:text-slate-400" { "Hofvarpnir" }
+                                    h1 class="text-2xl font-semibold text-slate-900 dark:text-slate-100" { (title) }
+                                }
                             }
                             nav class="flex flex-wrap items-center gap-2" {
                                 (nav_link("/dashboard", "Dashboard", active == NavItem::Dashboard))

@@ -1,5 +1,9 @@
 # Hofvarpnir
 
+<p align="center">
+  <img src="imgs/logo4.png" alt="Hofvarpnir logo" width="320">
+</p>
+
 > In Norse mythology, **Hofvarpnir** ("hoof-thrower") is the horse of the goddess Gná, who rides through sky and sea to fetch things from distant realms for Frigg.
 
 A self-hosted video archival system that downloads videos from YouTube (and other platforms) via yt-dlp.
