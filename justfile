@@ -113,6 +113,9 @@ build-oci: clear
     nix flake update
     nix build .#container
 
+cachix: clear
+    cachix watch-exec hofvarpnir -- nix build .#container
+
 trivy: clear build-oci
     trivy image --input result --scanners vuln
 
