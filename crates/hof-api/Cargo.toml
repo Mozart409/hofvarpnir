@@ -25,7 +25,7 @@ sqlx.workspace = true
 tower-sessions.workspace = true
 
 [dev-dependencies]
-axum-test = "20.0.0"
+axum-test = "21.0.0"
 serde_qs = "1.1"
 
 [lints]
