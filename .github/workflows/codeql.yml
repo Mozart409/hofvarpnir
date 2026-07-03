@@ -1,5 +1,4 @@
 name: CodeQL
-
 on:
   push:
     branches: [main]
@@ -7,7 +6,6 @@ on:
     branches: [main]
   schedule:
     - cron: '0 6 * * 0'
-
 jobs:
   analyze:
     name: Analyze (rust)
@@ -19,12 +17,10 @@ jobs:
       actions: read
     steps:
       - uses: actions/checkout@v7
-
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
-
       - name: Cache Cargo registry and build artifacts
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -33,19 +29,16 @@ jobs:
           key: ${{ runner.os }}-cargo-codeql-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-codeql-
-
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v4
         with:
           languages: rust
           queries: security-extended
           config-file: .github/codeql-config.yml
-
       - name: Build
         env:
           SQLX_OFFLINE: 'true'
         run: cargo build --all-features
-
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v4
         with:
