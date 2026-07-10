@@ -2,5 +2,18 @@ ignore_merge_commits = true
 from_latest_tag = true
 tag_prefix = "v"
 
+# Keep Cargo.toml/Cargo.lock in sync with the version cog computes, then verify
+# the build. cog stages these changes into the bump commit automatically.
+pre_bump_hooks = [
+    "sed -i '0,/^version = \".*\"/s//version = \"{{version}}\"/' Cargo.toml",
+    "cargo check",
+]
+
+# Publish the bump commit and tag once the bump succeeds locally.
+post_bump_hooks = [
+    "git push origin main",
+    "git push origin v{{version}}",
+]
+
 [commit_types]
 release = { changelog_title = "Releases" }

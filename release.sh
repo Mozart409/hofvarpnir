@@ -1,44 +1,34 @@
 #!/bin/sh
-set -euo pipefail
+set -eu
 
-# Get version from Cargo.toml
-VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
-TAG="v${VERSION}"
+# Automated release via cocogitto.
+#
+# `cog bump --auto` inspects the conventional commits since the latest tag,
+# picks the next semver version, and then (per cog.toml):
+#   - pre_bump_hooks:  bump the version in Cargo.toml + run `cargo check`
+#   - creates the bump commit and the `v<version>` tag
+#   - post_bump_hooks: push the commit and tag to origin
+#
+# Do NOT bump Cargo.toml by hand — cog owns the version now.
 
-echo "Preparing release ${TAG}"
-
-# Check if tag already exists
-if git rev-parse "${TAG}" >/dev/null 2>&1; then
-    echo "Error: Tag ${TAG} already exists"
+# Releases are cut from main.
+BRANCH=$(git rev-parse --abbrev-ref HEAD)
+if [ "$BRANCH" != "main" ]; then
+    echo "Error: releases must be cut from main (currently on ${BRANCH})"
     exit 1
 fi
 
-# Check for uncommitted changes (allow only Cargo.toml and Cargo.lock)
-CHANGED_FILES=$(git diff --name-only HEAD)
-for file in $CHANGED_FILES; do
-    if [ "$file" != "Cargo.toml" ] && [ "$file" != "Cargo.lock" ]; then
-        echo "Error: Unexpected uncommitted changes in ${file}"
-        echo "Only Cargo.toml and Cargo.lock should be modified"
-        exit 1
-    fi
-done
+# cog bump requires a clean tree so it can create the bump commit itself.
+if ! git diff --quiet HEAD || ! git diff --cached --quiet; then
+    echo "Error: working tree is dirty; commit or stash changes first"
+    echo "cog manages the version — do not bump Cargo.toml manually"
+    exit 1
+fi
 
-# Run check
-echo "Running cargo test..."
-cargo check
+echo "Next version:"
+cog bump --auto --dry-run
 
-# Stage and commit
-echo "Committing release..."
-git add Cargo.toml Cargo.lock
-git commit -m "release: ${TAG}"
+echo "Bumping, committing, tagging, and pushing..."
+cog bump --auto
 
-# Push commit
-echo "Pushing to origin..."
-git push origin main
-
-# Create and push tag
-echo "Creating tag ${TAG}..."
-git tag "${TAG}" -m "release: ${TAG}"
-git push origin "${TAG}"
-
-echo "Release ${TAG} complete!"
+echo "Release complete!"
