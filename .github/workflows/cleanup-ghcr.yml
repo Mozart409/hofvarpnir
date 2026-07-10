@@ -4,6 +4,11 @@ on:
   schedule:
     - cron: "0 3 * * *" # daily, 3am UTC
   workflow_dispatch:
+    inputs:
+      dry-run:
+        description: "Log what would be deleted without deleting"
+        type: boolean
+        default: false
 
 jobs:
   cleanup:
@@ -11,10 +16,25 @@ jobs:
     permissions:
       packages: write
     steps:
+      # NOTE: Do NOT use actions/delete-package-versions with
+      # delete-only-untagged-versions here. In a multi-arch image the tag only
+      # points at the manifest *list*; each per-arch child manifest is an
+      # *untagged* package version. That action is not manifest-list-aware and
+      # deletes those children, leaving the tagged list pointing at nothing.
+      # Pulls then fail with "manifest unknown" for the platform digest, while
+      # `docker manifest inspect` (list-only) and already-running hosts look
+      # fine. dataaxiom/ghcr-cleanup-action walks the manifest tree and keeps
+      # children referenced by a tagged image.
       - name: Delete untagged images
-        uses: actions/delete-package-versions@v5
+        uses: dataaxiom/ghcr-cleanup-action@d52806a0dc70b430571a37da1fde39733ffd640f # v1.2.2
         with:
-          package-name: hofvarpnir
-          package-type: container
-          delete-only-untagged-versions: true
-          min-versions-to-keep: 0
+          packages: hofvarpnir
+          delete-untagged: true
+          # Sweep up multi-arch lists whose children were already destroyed by
+          # the old cleanup action (e.g. the current 0.2.x / latest tags), so we
+          # don't leave permanently-broken tags behind.
+          delete-ghost-images: true
+          # After cleanup, warn if any surviving multi-arch image is missing a
+          # platform child.
+          validate: true
+          dry-run: ${{ inputs.dry-run || false }}

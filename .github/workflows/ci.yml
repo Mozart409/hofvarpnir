@@ -25,18 +25,18 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
       - name: Setup Nix
-        uses: DeterminateSystems/nix-installer-action@main
+        uses: DeterminateSystems/nix-installer-action@a7ad9c4f0c65208097f4d34f3cfa1913b80cce5c # main
       - name: Setup Cachix
-        uses: cachix/cachix-action@v17
+        uses: cachix/cachix-action@5f2d7c5294214f71b873db4b969586b980625e71 # v17
         with:
           name: hofvarpnir
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
       - name: Build binary
         run: nix develop .#ci --command cargo build --release --bin hofvarpnir
       - name: Upload binary
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: binary-${{ matrix.target }}
           path: target/release/hofvarpnir
@@ -48,11 +48,11 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
       - name: Setup Nix
-        uses: DeterminateSystems/nix-installer-action@main
+        uses: DeterminateSystems/nix-installer-action@a7ad9c4f0c65208097f4d34f3cfa1913b80cce5c # main
       - name: Setup Cachix
-        uses: cachix/cachix-action@v17
+        uses: cachix/cachix-action@5f2d7c5294214f71b873db4b969586b980625e71 # v17
         with:
           name: hofvarpnir
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
@@ -80,11 +80,11 @@ jobs:
         options: >-
           --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
       - name: Setup Nix
-        uses: DeterminateSystems/nix-installer-action@main
+        uses: DeterminateSystems/nix-installer-action@a7ad9c4f0c65208097f4d34f3cfa1913b80cce5c # main
       - name: Setup Cachix
-        uses: cachix/cachix-action@v17
+        uses: cachix/cachix-action@5f2d7c5294214f71b873db4b969586b980625e71 # v17
         with:
           name: hofvarpnir
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
@@ -111,16 +111,16 @@ jobs:
       actions: read
       id-token: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
       - name: Download binary
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: binary-${{ matrix.target }}
           path: ./bin
       - name: Setup Nix
-        uses: DeterminateSystems/nix-installer-action@main
+        uses: DeterminateSystems/nix-installer-action@a7ad9c4f0c65208097f4d34f3cfa1913b80cce5c # main
       - name: Setup Cachix
-        uses: cachix/cachix-action@v17
+        uses: cachix/cachix-action@5f2d7c5294214f71b873db4b969586b980625e71 # v17
         with:
           name: hofvarpnir
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
@@ -133,7 +133,7 @@ jobs:
           # substitute fails (e.g. a corrupted NAR on cache.nixos.org).
           nix build --impure --fallback .#containerFromBinary
       - name: Upload container image
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: container-${{ matrix.arch }}
           path: result
@@ -149,11 +149,11 @@ jobs:
       actions: read
     steps:
       - name: Download container images
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           pattern: container-*
       - name: Login to GHCR
-        uses: docker/login-action@v4
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -173,5 +173,33 @@ jobs:
 
           # Keep a pure OCI variant available for OCI-native consumers.
           buildah manifest push --all --format oci hofvarpnir "docker://ghcr.io/${REPO_LOWER}:dev-oci"
+      - name: Verify pushed manifests resolve
+        env:
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          REPO_LOWER="ghcr.io/${REPO,,}"
 
-          docker manifest inspect "ghcr.io/${REPO_LOWER}:dev" >/dev/null
+          # Fetch the index AND every per-arch child manifest it references.
+          # `docker manifest inspect` only reads the index, so it passes even
+          # when the platform children are missing. Pulling each child digest is
+          # cheap (manifest JSON, not layers) and reproduces what a real pull
+          # needs.
+          verify() {
+            ref="$1"
+            echo "::group::verify ${ref}"
+            digests="$(docker buildx imagetools inspect --raw "${ref}" | jq -r '.manifests[]?.digest')"
+            if [ -z "${digests}" ]; then
+              echo "::error::${ref} has no child manifests"; exit 1
+            fi
+            for d in ${digests}; do
+              docker buildx imagetools inspect --raw "${REPO_LOWER}@${d}" >/dev/null \
+                || { echo "::error::${ref} -> child ${d} is unresolvable"; exit 1; }
+              echo "ok  ${d}"
+            done
+            echo "::endgroup::"
+          }
+
+          for tag in dev dev-oci; do
+            verify "${REPO_LOWER}:${tag}"
+          done
