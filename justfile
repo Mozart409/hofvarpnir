@@ -3,6 +3,9 @@
 set unstable
 set dotenv-load
 
+# Cachix binary cache name
+cachix_cache := "hofvarpnir"
+
 default:
     @just --list
 
@@ -113,8 +116,26 @@ build-oci: clear
     nix flake update
     nix build .#container
 
+# `cachix push` uploads the out-path's full closure, so this works even when
+# the build is already realized locally (unlike `watch-exec`, which only
+# catches paths built during the wrapped command).
+# Build the x86 container and push it to Cachix.
 cachix: clear
-    cachix watch-exec hofvarpnir -- nix build .#container
+    nix build --no-link --print-out-paths .#container | cachix push {{ cachix_cache }}
+
+# Push any flake attribute's closure to Cachix, e.g. .#devShells.aarch64-linux.ci
+cachix-push attr: clear
+    nix build --no-link --print-out-paths {{ attr }} | cachix push {{ cachix_cache }}
+
+# aarch64 is realized locally via binfmt/qemu, so this needs
+# `extra-platforms = aarch64-linux` in your Nix config (set by NixOS
+# `boot.binfmt.emulatedSystems`; verify: nix config show extra-platforms).
+# Warm Cachix for both arches (the CI devshells cache-check-{x86,arm} verify).
+cache-warm: clear
+    nix build --no-link --print-out-paths \
+      .#devShells.x86_64-linux.ci \
+      .#devShells.aarch64-linux.ci \
+      | cachix push {{ cachix_cache }}
 
 trivy: clear build-oci
     trivy image --input result --scanners vuln

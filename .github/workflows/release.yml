@@ -18,11 +18,11 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
       - name: Setup Nix
-        uses: DeterminateSystems/nix-installer-action@main
+        uses: DeterminateSystems/nix-installer-action@a7ad9c4f0c65208097f4d34f3cfa1913b80cce5c # main
       - name: Setup Cachix
-        uses: cachix/cachix-action@v17
+        uses: cachix/cachix-action@5f2d7c5294214f71b873db4b969586b980625e71 # v17
         with:
           name: hofvarpnir
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
@@ -36,12 +36,12 @@ jobs:
         run: |
           tar -czf hofvarpnir-${{ matrix.target }}-${{ github.ref_name }}.tar.gz -C dist .
       - name: Upload tarball
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: hofvarpnir-${{ matrix.target }}
           path: hofvarpnir-${{ matrix.target }}-${{ github.ref_name }}.tar.gz
       - name: Upload binary for container
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: binary-${{ matrix.target }}
           path: target/release/hofvarpnir
@@ -64,16 +64,16 @@ jobs:
       actions: read
       id-token: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
       - name: Download binary
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: binary-${{ matrix.target }}
           path: ./bin
       - name: Setup Nix
-        uses: DeterminateSystems/nix-installer-action@main
+        uses: DeterminateSystems/nix-installer-action@a7ad9c4f0c65208097f4d34f3cfa1913b80cce5c # main
       - name: Setup Cachix
-        uses: cachix/cachix-action@v17
+        uses: cachix/cachix-action@5f2d7c5294214f71b873db4b969586b980625e71 # v17
         with:
           name: hofvarpnir
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
@@ -91,7 +91,7 @@ jobs:
           # substitute fails (e.g. a corrupted NAR on cache.nixos.org).
           nix build --impure --fallback .#containerFromBinary
       - name: Upload container image
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: container-${{ matrix.arch }}
           path: result
@@ -106,11 +106,11 @@ jobs:
       actions: read
     steps:
       - name: Download container images
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           pattern: container-*
       - name: Login to GHCR
-        uses: docker/login-action@v4
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -136,8 +136,38 @@ jobs:
 
           # Keep a pure OCI variant available for OCI-native consumers.
           buildah manifest push --all --format oci hofvarpnir "docker://${REPO}:${VERSION}-oci"
+      - name: Verify pushed manifests resolve
+        env:
+          REPO_RAW: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          MAJOR_MINOR=$(echo "${VERSION}" | cut -d. -f1,2)
+          REPO="ghcr.io/${REPO_RAW,,}"
 
-          docker manifest inspect "${REPO}:${VERSION}" >/dev/null
+          # Fetch the index AND every per-arch child manifest it references.
+          # `docker manifest inspect` only reads the index, so it passes even
+          # when the platform children are missing (the failure mode that broke
+          # older tags). Pulling each child digest is cheap (manifest JSON, not
+          # layers) and reproduces what `docker/podman pull` actually needs.
+          verify() {
+            ref="$1"
+            echo "::group::verify ${ref}"
+            digests="$(docker buildx imagetools inspect --raw "${ref}" | jq -r '.manifests[]?.digest')"
+            if [ -z "${digests}" ]; then
+              echo "::error::${ref} has no child manifests"; exit 1
+            fi
+            for d in ${digests}; do
+              docker buildx imagetools inspect --raw "${REPO}@${d}" >/dev/null \
+                || { echo "::error::${ref} -> child ${d} is unresolvable"; exit 1; }
+              echo "ok  ${d}"
+            done
+            echo "::endgroup::"
+          }
+
+          for tag in "${VERSION}" "${MAJOR_MINOR}" latest "${VERSION}-oci"; do
+            verify "${REPO}:${tag}"
+          done
   release:
     needs: [build, container-manifest]
     runs-on: ubuntu-latest
@@ -145,9 +175,9 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
       - name: Download artifacts
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           path: artifacts
       - name: Derive image tag
@@ -157,7 +187,7 @@ jobs:
           echo "image_tag=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
       - name: Create GitHub Release
         id: create_release
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3
         with:
           tag_name: ${{ github.ref_name }}
           name: Release ${{ github.ref_name }}
@@ -171,7 +201,7 @@ jobs:
             docker pull ${{ steps.vars.outputs.image_repo }}:${{ steps.vars.outputs.image_tag }}
             ```
       - name: Upload release assets
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3
         with:
           tag_name: ${{ github.ref_name }}
           files: artifacts/**/*.tar.gz
