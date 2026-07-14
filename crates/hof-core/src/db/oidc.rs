@@ -48,7 +48,7 @@ pub async fn create_oidc_identity(
     name: Option<&str>,
     picture: Option<&str>,
 ) -> Result<OidcIdentity, sqlx::Error> {
-    let id = Ulid::new();
+    let id = Ulid::r#gen();
 
     let row: OidcIdentityRow = sqlx::query_as(
         r"

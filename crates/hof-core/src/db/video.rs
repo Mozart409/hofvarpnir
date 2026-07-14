@@ -46,7 +46,7 @@ pub struct UpdateVideo<'a> {
 /// Returns an error if the database operation fails.
 #[instrument(skip(pool, data), fields(otel.kind = "client", db.system = "postgresql"))]
 pub async fn create_video(pool: &PgPool, data: CreateVideo<'_>) -> Result<Video, DbError> {
-    let id = Ulid::new();
+    let id = Ulid::r#gen();
     let row = sqlx::query_as::<_, VideoRow>(
         r"
         INSERT INTO videos (id, platform, platform_video_id, title, description,
@@ -80,7 +80,7 @@ pub async fn create_video(pool: &PgPool, data: CreateVideo<'_>) -> Result<Video,
 /// Returns an error if the database operation fails.
 #[instrument(skip(pool, data), fields(otel.kind = "client", db.system = "postgresql"))]
 pub async fn upsert_video(pool: &PgPool, data: CreateVideo<'_>) -> Result<Video, DbError> {
-    let id = Ulid::new();
+    let id = Ulid::r#gen();
     let row = sqlx::query_as::<_, VideoRow>(
         r"
         INSERT INTO videos (id, platform, platform_video_id, title, description,
