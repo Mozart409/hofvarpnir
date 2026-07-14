@@ -762,7 +762,7 @@ mod tests {
     #[test]
     fn test_reserve_dispatch_dedups_concurrent_enqueues() {
         let mut dispatching = HashSet::new();
-        let video_id = Ulid::new();
+        let video_id = Ulid::r#gen();
 
         // First enqueue for an idle video reserves a slot.
         assert!(DownloadSupervisor::reserve_dispatch(
@@ -796,7 +796,7 @@ mod tests {
         ));
 
         // A different video is independent.
-        let other = Ulid::new();
+        let other = Ulid::r#gen();
         assert!(DownloadSupervisor::reserve_dispatch(
             false,
             &mut dispatching,

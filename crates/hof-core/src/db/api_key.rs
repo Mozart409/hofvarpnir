@@ -28,7 +28,7 @@ pub struct CreateApiKey<'a> {
 /// Returns an error if the database operation fails (e.g., duplicate name for user).
 #[instrument(skip(pool, data), fields(otel.kind = "client", db.system = "postgresql"))]
 pub async fn create_api_key(pool: &PgPool, data: CreateApiKey<'_>) -> Result<ApiKey, DbError> {
-    let id = Ulid::new();
+    let id = Ulid::r#gen();
     let row = sqlx::query_as::<_, ApiKeyRow>(
         r"
         INSERT INTO api_keys (id, user_id, name, prefix, key_hash, scopes, expires_at)
@@ -267,7 +267,7 @@ async fn log_api_key_event(
     event_type: ApiKeyEventType,
     ip_address: Option<&str>,
 ) {
-    let id = Ulid::new();
+    let id = Ulid::r#gen();
     let result = sqlx::query(
         r"
         INSERT INTO api_key_events (id, api_key_id, user_id, event_type, ip_address)
