@@ -17,7 +17,7 @@ branch_whitelist = ["main"]
 pre_bump_hooks = [
     "cargo set-version -p hof-web {{version}}",
     "cargo update --workspace --offline",
-    "cargo check",
+    "SQLX_OFFLINE=true cargo check",
 ]
 
 # Publish the bump commit and tag once the bump succeeds locally.
