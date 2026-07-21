@@ -8,10 +8,14 @@ branch_whitelist = ["main"]
 
 # Keep Cargo.toml/Cargo.lock in sync with the version cog computes, then verify
 # the build. cog stages these changes into the bump commit automatically.
-# `cargo set-version` (cargo-edit) rewrites [workspace.package].version; the
-# lockfile refresh + check keep Cargo.lock consistent and fail fast on breakage.
+# Scope `cargo set-version` to a single member (-p hof-web): every crate inherits
+# `version.workspace = true`, so bumping one member cascades to
+# [workspace.package].version and all crates — WITHOUT recursing into the
+# path-linked patches/* crates (a bare/`--workspace` invocation tries to bump
+# those too and fails, e.g. "Cannot downgrade from 0.15.0"). The lockfile
+# refresh + check keep Cargo.lock consistent and fail fast on breakage.
 pre_bump_hooks = [
-    "cargo set-version {{version}}",
+    "cargo set-version -p hof-web {{version}}",
     "cargo update --workspace --offline",
     "cargo check",
 ]
