@@ -137,6 +137,7 @@
         bun
         cargo-audit
         cargo-deny
+        cargo-edit
         cargo-outdated
         cargo-shear
         cargo-watch
@@ -391,6 +392,7 @@
       devShells.ci = pkgs.mkShell {
         buildInputs = with pkgs; [
           rust
+          cargo-edit
           pkg-config
           openssl
         ];
