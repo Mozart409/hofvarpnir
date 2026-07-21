@@ -140,5 +140,15 @@ cache-warm: clear
 trivy: clear build-oci
     trivy image --input result --scanners vuln
 
-push-oci: build-oci
-    podman load < result && podman push hofvarpnir:latest homelab-harbor.dropbear-butterfly.ts.net/oyabu/hofvarpnir:dev
+# No version/tag safety checks — use ./push_harbor.sh for versioned releases.
+# Compile the release binary, wrap it in the x86 OCI image via
+# `.#containerFromBinary`, and push to Harbor as :dev (fast dev push).
+push-oci: clear
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo build --release --bin hofvarpnir
+    export HOFVARPNIR_BINARY="$(pwd)/target/release/hofvarpnir"
+    nix build --impure --fallback .#containerFromBinary --out-link result
+    loaded="$(podman load -i result 2>&1 | sed -n 's/^Loaded image: //p' | tail -n1)"
+    podman tag "$loaded" homelab-harbor.dropbear-butterfly.ts.net/oyabu/hofvarpnir:dev
+    podman push homelab-harbor.dropbear-butterfly.ts.net/oyabu/hofvarpnir:dev
