@@ -2,10 +2,17 @@ ignore_merge_commits = true
 from_latest_tag = true
 tag_prefix = "v"
 
+# Releases are only cut from main. cog refuses to bump on any other branch,
+# replacing the branch guard that release.sh used to enforce.
+branch_whitelist = ["main"]
+
 # Keep Cargo.toml/Cargo.lock in sync with the version cog computes, then verify
 # the build. cog stages these changes into the bump commit automatically.
+# `cargo set-version` (cargo-edit) rewrites [workspace.package].version; the
+# lockfile refresh + check keep Cargo.lock consistent and fail fast on breakage.
 pre_bump_hooks = [
-    "sed -i '0,/^version = \".*\"/s//version = \"{{version}}\"/' Cargo.toml",
+    "cargo set-version {{version}}",
+    "cargo update --workspace --offline",
     "cargo check",
 ]
 
