@@ -2,6 +2,19 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.2.5 - 2026-07-21
+#### Bug Fixes
+- (**release**) run pre-bump cargo check with SQLX_OFFLINE - (a2d42da) - Amadeus Mader
+- (**release**) scope cargo set-version to hof-web to skip patch crates - (e7ea8d5) - Amadeus Mader
+#### Miscellaneous Chores
+- (**deps**) upgrade ulid to v2 - (e079da0) - Amadeus Mader
+- (**deps**) upgrade to rust 1.96.1 - (d63b4b0) - Amadeus Mader
+- (**harbor**) push to harbor - (e2898ff) - Amadeus Mader
+- (**oci**) add versioned Harbor release script and speed up push-oci - (a8afe2e) - Amadeus Mader
+- (**release**) drop release.sh, move guards into cog.toml - (11c94c0) - Amadeus Mader
+
+- - -
+
 ## v0.2.4 - 2026-07-10
 #### Bug Fixes
 - (**ci**) change cleanup workflow and add verification to build step - (52bba33) - Amadeus Mader
