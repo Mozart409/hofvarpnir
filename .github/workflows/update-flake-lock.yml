@@ -12,7 +12,7 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
       - uses: DeterminateSystems/nix-installer-action@a7ad9c4f0c65208097f4d34f3cfa1913b80cce5c # main
-      - uses: DeterminateSystems/update-flake-lock@fd9359ac79d0e912f1b4b947a48470b3e2799b56 # main
+      - uses: DeterminateSystems/update-flake-lock@ec13d37c32ca75bc750ecc133e944e5a18164688 # main
         with:
           pr-title: "chore(deps): update flake.lock"
           commit-msg: "chore(deps): update flake.lock"
