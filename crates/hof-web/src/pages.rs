@@ -204,7 +204,7 @@ pub struct ApiKeyForm {
     scope_read: Option<String>,
     scope_write: Option<String>,
     scope_delete: Option<String>,
-    expires_in_days: Option<String>,
+    expires_in: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1830,11 +1830,14 @@ fn api_keys_content(api_keys: &[ApiKey], new_token: Option<&str>) -> Markup {
                 }
 
                 div {
-                    label class="block text-sm font-medium text-slate-700 dark:text-slate-300" for="expires_in_days" { "Expiration" }
-                    select class="mt-1 w-full rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 px-3 py-2 text-sm text-slate-900 dark:text-slate-100 shadow-sm" name="expires_in_days" id="expires_in_days" {
-                        option value="90" { "90 days" }
-                        option value="180" { "180 days" }
-                        option value="365" { "1 year" }
+                    label class="block text-sm font-medium text-slate-700 dark:text-slate-300" for="expires_in" { "Expiration" }
+                    select class="mt-1 w-full rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 px-3 py-2 text-sm text-slate-900 dark:text-slate-100 shadow-sm" name="expires_in" id="expires_in" {
+                        option value="1h" { "1 hour" }
+                        option value="1d" { "1 day" }
+                        option value="7d" { "7 days" }
+                        option value="30d" selected { "30 days" }
+                        option value="90d" { "90 days" }
+                        option value="365d" { "1 year" }
                         option value="" { "Never" }
                     }
                 }
@@ -1967,6 +1970,72 @@ fn scope_badge(scope: ApiKeyScope) -> Markup {
     }
 }
 
+/// Parse a duration token from the API key expiration select field.
+///
+/// - `""` means "never expires" (`Ok(None)`).
+/// - A token ending in `h` is parsed as hours; a token ending in `d` is parsed as days.
+/// - Any other suffix, an empty/non-positive numeric prefix, or a non-numeric prefix is
+///   rejected with `Err(())`.
+fn parse_expires_in(token: &str) -> Result<Option<chrono::Duration>, ()> {
+    if token.is_empty() {
+        return Ok(None);
+    }
+
+    let (digits, build_duration): (&str, fn(i64) -> chrono::Duration) =
+        if let Some(digits) = token.strip_suffix('h') {
+            (digits, chrono::Duration::hours)
+        } else if let Some(digits) = token.strip_suffix('d') {
+            (digits, chrono::Duration::days)
+        } else {
+            return Err(());
+        };
+
+    if digits.is_empty() {
+        return Err(());
+    }
+
+    let value: i64 = digits.parse().map_err(|_| ())?;
+    if value <= 0 {
+        return Err(());
+    }
+
+    Ok(Some(build_duration(value)))
+}
+
+#[cfg(test)]
+mod expires_in_tests {
+    use super::parse_expires_in;
+
+    #[test]
+    fn never_token_is_none() {
+        assert_eq!(parse_expires_in(""), Ok(None));
+    }
+
+    #[test]
+    fn hour_token() {
+        assert_eq!(parse_expires_in("1h"), Ok(Some(chrono::Duration::hours(1))));
+    }
+
+    #[test]
+    fn day_tokens() {
+        assert_eq!(parse_expires_in("1d"), Ok(Some(chrono::Duration::days(1))));
+        assert_eq!(parse_expires_in("7d"), Ok(Some(chrono::Duration::days(7))));
+        assert_eq!(
+            parse_expires_in("30d"),
+            Ok(Some(chrono::Duration::days(30)))
+        );
+    }
+
+    #[test]
+    fn invalid_tokens_are_rejected() {
+        assert_eq!(parse_expires_in("abc"), Err(()));
+        assert_eq!(parse_expires_in("0d"), Err(()));
+        assert_eq!(parse_expires_in("5x"), Err(()));
+        assert_eq!(parse_expires_in("d"), Err(()));
+        assert_eq!(parse_expires_in("-1h"), Err(()));
+    }
+}
+
 async fn create_api_key(
     auth: AuthUser,
     State(state): State<AppState>,
@@ -1997,16 +2066,11 @@ async fn create_api_key(
     }
 
     // Parse expiration
-    let expires_at = match form.expires_in_days.as_deref() {
-        Some("") | None => None,
-        Some(days_str) => {
-            let Ok(days) = days_str.parse::<i64>() else {
-                set_flash(&session, "error", "Invalid expiration value").await;
-                return Redirect::to("/settings/api-keys").into_response();
-            };
-            Some(Utc::now() + chrono::Duration::days(days))
-        }
+    let Ok(duration) = parse_expires_in(form.expires_in.as_deref().unwrap_or("")) else {
+        set_flash(&session, "error", "Invalid expiration value").await;
+        return Redirect::to("/settings/api-keys").into_response();
     };
+    let expires_at = duration.map(|d| Utc::now() + d);
 
     // Generate the key
     let generated = generate_api_key();
