@@ -3632,8 +3632,9 @@ async fn schedule_page(
                 .last_indexed_at
                 .map(|last| last + chrono::Duration::seconds(source.index_frequency_secs));
 
-            let is_overdue =
-                next_index_at.is_some_and(|next| next < now) && source.last_error.is_some();
+            let is_overdue = source.enabled
+                && next_index_at.is_some_and(|next| next < now)
+                && source.last_error.is_some();
 
             ScheduleEntry {
                 source,
@@ -3644,10 +3645,13 @@ async fn schedule_page(
         })
         .collect();
 
-    // Sort: overdue first, then by next index time (soonest first)
+    // Sort: enabled sources first (disabled sink to the bottom), then overdue first,
+    // then by next index time (soonest first)
     entries.sort_by(|a, b| {
-        b.is_overdue
-            .cmp(&a.is_overdue)
+        b.source
+            .enabled
+            .cmp(&a.source.enabled)
+            .then_with(|| b.is_overdue.cmp(&a.is_overdue))
             .then_with(|| a.next_index_at.cmp(&b.next_index_at))
     });
 
@@ -3815,7 +3819,9 @@ fn recent_runs_section(
 fn schedule_entry_row(entry: &ScheduleEntry, now: chrono::DateTime<Utc>) -> Markup {
     let frequency = format_duration_human(entry.source.index_frequency_secs);
 
-    let (status_text, status_classes) = if entry.is_overdue {
+    let (status_text, status_classes) = if !entry.source.enabled {
+        ("disabled".to_string(), "text-slate-500 dark:text-slate-400")
+    } else if entry.is_overdue {
         let overdue_duration = entry.next_index_at.map_or_else(
             || "unknown".to_string(),
             |next| format_time_delta(now - next),
@@ -3843,7 +3849,9 @@ fn schedule_entry_row(entry: &ScheduleEntry, now: chrono::DateTime<Utc>) -> Mark
         )
     };
 
-    let border = if entry.is_overdue {
+    let border = if !entry.source.enabled {
+        "border-l-4 border-l-slate-300 dark:border-l-slate-600"
+    } else if entry.is_overdue {
         "border-l-4 border-l-rose-400"
     } else if entry.source.last_error.is_some() {
         "border-l-4 border-l-amber-400"
@@ -3859,6 +3867,9 @@ fn schedule_entry_row(entry: &ScheduleEntry, now: chrono::DateTime<Utc>) -> Mark
                     span class="rounded-full bg-slate-100 dark:bg-slate-700 px-2 py-0.5 text-xs text-slate-500 dark:text-slate-400" {
                         (entry.profile_name)
                     }
+                    @if !entry.source.enabled {
+                        (status_chip("Disabled", "slate"))
+                    }
                 }
                 @if let Some(ref error) = entry.source.last_error {
                     p class="mt-1 truncate text-xs text-rose-600 dark:text-rose-400" title=(error) {
@@ -3871,9 +3882,11 @@ fn schedule_entry_row(entry: &ScheduleEntry, now: chrono::DateTime<Utc>) -> Mark
                     p class=(format!("text-sm {}", status_classes)) { (status_text) }
                     p class="text-xs text-slate-400 dark:text-slate-500" { "every " (frequency) }
                 }
-                form method="post" action=(format!("/sources/{}/index", entry.source.id)) {
-                    button class="rounded-lg border border-sky-200 dark:border-sky-800 bg-sky-50 dark:bg-sky-900/50 px-3 py-1.5 text-xs font-medium text-sky-700 dark:text-sky-300 hover:bg-sky-100 dark:hover:bg-sky-900" type="submit" {
-                        "Index Now"
+                @if entry.source.enabled {
+                    form method="post" action=(format!("/sources/{}/index", entry.source.id)) {
+                        button class="rounded-lg border border-sky-200 dark:border-sky-800 bg-sky-50 dark:bg-sky-900/50 px-3 py-1.5 text-xs font-medium text-sky-700 dark:text-sky-300 hover:bg-sky-100 dark:hover:bg-sky-900" type="submit" {
+                            "Index Now"
+                        }
                     }
                 }
             }
