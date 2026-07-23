@@ -21,7 +21,7 @@ jobs:
           persist-credentials: false
           ref: "${{ (inputs.tag != null) && format('refs/tags/{0}', inputs.tag) || '' }}"
       - uses: "DeterminateSystems/determinate-nix-action@c70cb8ae92d68c66953db28a26a63db1665bc837" # v3
-      - uses: "DeterminateSystems/flakehub-push@0e801cf490b3b3dcb099131a69146bc59d610d0f" # main
+      - uses: "DeterminateSystems/flakehub-push@060a48ced97e8a164f3b733455697e9f9310d39b" # main
         with:
           visibility: "public"
           name: "Mozart409/hofvarpnir"
