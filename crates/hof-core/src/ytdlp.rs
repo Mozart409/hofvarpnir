@@ -6,6 +6,7 @@
 //! - Video downloading with progress callbacks
 //! - Quality selection based on profile settings
 
+use std::borrow::Cow;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -465,13 +466,18 @@ impl YtdlpClient {
 
         let platform = Self::detect_platform(url);
 
+        let index_url = normalize_channel_index_url(url);
+        if index_url.as_ref() != url {
+            debug!(original = %url, normalized = %index_url, "Normalized channel URL to videos tab");
+        }
+
         let mut extractor = self.downloader.generic_extractor().clone();
-        if platform == "youtube" && url.contains("list=") {
+        if platform == "youtube" && index_url.contains("list=") {
             extractor.with_arg("--playlist-reverse".to_string());
         }
 
         let playlist = extractor
-            .fetch_playlist(url)
+            .fetch_playlist(index_url.as_ref())
             .await
             .map_err(|e| YtdlpError::PlaylistError(e.to_string()))?;
 
@@ -663,6 +669,57 @@ impl YtdlpClient {
     pub fn shutdown(&self) {
         self.downloader.shutdown();
     }
+}
+
+/// Normalize a `YouTube` *channel* URL to its uploads (`/videos`) tab.
+///
+/// A bare channel URL (`youtube.com/@handle`, `/channel/UC…`, `/c/name`,
+/// `/user/name`) fetched with yt-dlp's flat-playlist mode returns the channel's
+/// tab list (Videos/Live/Shorts) as nested playlists rather than actual videos,
+/// which breaks indexing. Targeting the `/videos` tab returns the real uploads.
+///
+/// Only `YouTube` channel URLs that do not already target a tab are rewritten;
+/// everything else (already-tabbed channels, playlists, watch URLs, non-YouTube)
+/// is returned unchanged.
+fn normalize_channel_index_url(url: &str) -> Cow<'_, str> {
+    if YtdlpClient::detect_platform(url) != "youtube" {
+        return Cow::Borrowed(url);
+    }
+
+    let url_lower = url.to_lowercase();
+    if url_lower.contains("list=")
+        || url_lower.contains("/watch")
+        || url_lower.contains("youtu.be/")
+    {
+        return Cow::Borrowed(url);
+    }
+
+    // Split into `base` (before the first `?`/`#`) and `suffix` (the rest,
+    // preserved verbatim) so path inspection ignores query/fragment noise.
+    let (base, suffix) = url.split_at(url.find(['?', '#']).unwrap_or(url.len()));
+    let base_lower = base.to_lowercase();
+
+    let segments: Vec<&str> = base_lower.split('/').filter(|s| !s.is_empty()).collect();
+
+    let is_channel_form = segments
+        .iter()
+        .any(|seg| seg.starts_with('@') || matches!(*seg, "channel" | "c" | "user"));
+    if !is_channel_form {
+        return Cow::Borrowed(url);
+    }
+
+    let already_tabbed = segments.iter().any(|seg| {
+        matches!(
+            *seg,
+            "videos" | "streams" | "shorts" | "playlists" | "featured" | "community" | "about"
+        )
+    });
+    if already_tabbed {
+        return Cow::Borrowed(url);
+    }
+
+    let trimmed_base = base.trim_end_matches('/');
+    Cow::Owned(format!("{trimmed_base}/videos{suffix}"))
 }
 
 fn youtube_channel_url(
@@ -1235,6 +1292,90 @@ mod tests {
         assert_eq!(
             channel_url,
             Some("https://www.youtube.com/channel/UCABC123".to_string())
+        );
+    }
+
+    #[test]
+    fn test_normalize_channel_index_url_bare_handle() {
+        assert_eq!(
+            normalize_channel_index_url("https://www.youtube.com/@theserialport").as_ref(),
+            "https://www.youtube.com/@theserialport/videos"
+        );
+    }
+
+    #[test]
+    fn test_normalize_channel_index_url_trailing_slash() {
+        assert_eq!(
+            normalize_channel_index_url("https://www.youtube.com/@handle/").as_ref(),
+            "https://www.youtube.com/@handle/videos"
+        );
+    }
+
+    #[test]
+    fn test_normalize_channel_index_url_already_videos_tab_unchanged() {
+        let url = "https://www.youtube.com/@handle/videos";
+        assert_eq!(normalize_channel_index_url(url).as_ref(), url);
+    }
+
+    #[test]
+    fn test_normalize_channel_index_url_already_streams_tab_unchanged() {
+        let url = "https://www.youtube.com/@handle/streams";
+        assert_eq!(normalize_channel_index_url(url).as_ref(), url);
+    }
+
+    #[test]
+    fn test_normalize_channel_index_url_channel_id_form() {
+        assert_eq!(
+            normalize_channel_index_url("https://www.youtube.com/channel/UCabc").as_ref(),
+            "https://www.youtube.com/channel/UCabc/videos"
+        );
+    }
+
+    #[test]
+    fn test_normalize_channel_index_url_c_form() {
+        assert_eq!(
+            normalize_channel_index_url("https://www.youtube.com/c/SomeName").as_ref(),
+            "https://www.youtube.com/c/SomeName/videos"
+        );
+    }
+
+    #[test]
+    fn test_normalize_channel_index_url_user_form() {
+        assert_eq!(
+            normalize_channel_index_url("https://www.youtube.com/user/SomeName").as_ref(),
+            "https://www.youtube.com/user/SomeName/videos"
+        );
+    }
+
+    #[test]
+    fn test_normalize_channel_index_url_playlist_unchanged() {
+        let url = "https://www.youtube.com/playlist?list=PLxyz";
+        assert_eq!(normalize_channel_index_url(url).as_ref(), url);
+    }
+
+    #[test]
+    fn test_normalize_channel_index_url_watch_unchanged() {
+        let url = "https://www.youtube.com/watch?v=abc";
+        assert_eq!(normalize_channel_index_url(url).as_ref(), url);
+    }
+
+    #[test]
+    fn test_normalize_channel_index_url_youtu_be_unchanged() {
+        let url = "https://youtu.be/abc";
+        assert_eq!(normalize_channel_index_url(url).as_ref(), url);
+    }
+
+    #[test]
+    fn test_normalize_channel_index_url_non_youtube_unchanged() {
+        let url = "https://vimeo.com/user/foo";
+        assert_eq!(normalize_channel_index_url(url).as_ref(), url);
+    }
+
+    #[test]
+    fn test_normalize_channel_index_url_preserves_query() {
+        assert_eq!(
+            normalize_channel_index_url("https://www.youtube.com/@handle?foo=bar").as_ref(),
+            "https://www.youtube.com/@handle/videos?foo=bar"
         );
     }
 
