@@ -171,138 +171,8 @@ impl Message<EnqueueDownload> for DownloadSupervisor {
         msg: EnqueueDownload,
         ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
-        let video_id = msg.video.id;
-
-        // Check video status
-        match msg.video.status {
-            VideoStatus::Completed
-            | VideoStatus::PermanentlyFailed
-            | VideoStatus::Skipped
-            // A video already in `downloading` is either actively handled by a
-            // worker or stuck from a crash (reset to `pending` on startup);
-            // never re-dispatch it from a stale snapshot.
-            | VideoStatus::Downloading => {
-                debug!(status = ?msg.video.status, "Video not eligible for download");
-                return Ok(());
-            }
-            VideoStatus::Failed => {
-                // Check if it's time to retry
-                if let Some(next_retry) = msg.video.next_retry
-                    && next_retry > Utc::now()
-                {
-                    debug!(next_retry = %next_retry, "Video not ready for retry yet");
-                    return Ok(());
-                }
-            }
-            VideoStatus::Pending | VideoStatus::Cleaned => {
-                // Eligible for download
-            }
-        }
-
-        // Reserve a single in-flight dispatch for this video. This runs
-        // synchronously (no `.await` between here and the spawn below), so it
-        // closes the race where repeated `EnqueueDownload`s for the same video
-        // each spawned a worker before the first registered in
-        // `active_downloads` — the bug that caused runaway re-downloads.
-        if !Self::reserve_dispatch(
-            self.active_downloads.contains_key(&video_id),
-            &mut self.dispatching,
-            video_id,
-        ) {
-            debug!("Video already downloading or queued for dispatch");
-            return Ok(());
-        }
-
-        // Spawn the download task
         let supervisor_ref = ctx.actor_ref().clone();
-        let pool = self.pool.clone();
-        let ytdlp = self.ytdlp.clone();
-        let semaphore = self.semaphore.clone();
-        let progress_tx = self.progress_tx.clone();
-        let download_timeout = self.download_timeout;
-        let rate_limit_delay = self.effective_rate_limit_delay();
-        let last_download_start = self.last_download_start;
-
-        let video = msg.video;
-        let profile = msg.profile;
-        let source = msg.source;
-
-        // Spawn a task to handle the download with rate limiting and semaphore
-        tokio::spawn(async move {
-            // Wait for rate limit delay since last download
-            if let Some(last_start) = last_download_start {
-                let elapsed = last_start.elapsed();
-                if elapsed < rate_limit_delay {
-                    let wait_time = rate_limit_delay.saturating_sub(elapsed);
-                    debug!(wait_ms = wait_time.as_millis(), "Rate limit delay");
-                    tokio::time::sleep(wait_time).await;
-                }
-            }
-
-            // Acquire semaphore permit
-            let Ok(_permit) = semaphore.acquire().await else {
-                // Semaphore closed during shutdown. Release the dispatch
-                // reservation so the video isn't left wedged as "in flight".
-                debug!(video_id = %video_id, "Semaphore closed, aborting download");
-                let _ = supervisor_ref.tell(DownloadCompleted { video_id }).await;
-                return;
-            };
-
-            debug!(video_id = %video_id, "Acquired download permit");
-
-            // Notify supervisor we're starting
-            let _ = supervisor_ref.tell(DownloadStarting { video_id }).await;
-
-            // Create download config from profile
-            let config = DownloadConfig {
-                timeout: download_timeout,
-                quality: profile.quality.clone(),
-                output_preset: profile.output_preset.clone(),
-                output_dir: PathBuf::from(&profile.output_dir),
-                naming_template: profile.naming_template.clone(),
-                source_id: source.id,
-                source_name: source
-                    .custom_name
-                    .clone()
-                    .unwrap_or_else(|| source.url.clone()),
-            };
-
-            // Spawn the worker actor
-            let worker_args = DownloadWorkerArgs {
-                pool: pool.clone(),
-                video: video.clone(),
-                config,
-                ytdlp,
-                progress_tx,
-            };
-
-            let worker_ref = DownloadWorker::spawn(worker_args);
-
-            // Register the worker
-            let _ = supervisor_ref
-                .tell(RegisterWorker {
-                    video_id,
-                    worker_ref: worker_ref.clone(),
-                })
-                .await;
-
-            // Ask the worker to start the download and wait for the outcome
-            let outcome = worker_ref.ask(StartDownload).await;
-
-            // Notify supervisor that download completed
-            // The worker will have already updated the database
-            let _ = supervisor_ref.tell(DownloadCompleted { video_id }).await;
-
-            // Report the outcome so activity gets logged
-            if let Ok(outcome) = outcome {
-                let _ = supervisor_ref.tell(ReportOutcome { outcome }).await;
-            }
-        });
-
-        // Update last download start time
-        self.last_download_start = Some(Instant::now());
-
-        Ok(())
+        self.dispatch_download(msg, supervisor_ref).await
     }
 }
 
@@ -479,6 +349,7 @@ impl Message<ProcessPendingDownloads> for DownloadSupervisor {
         // For each video, we need its profile to get download settings
         // This is a simplified version - in a full implementation we'd
         // look up the profile through the source linkage
+        let supervisor_ref = ctx.actor_ref().clone();
         for video in videos {
             // Get the source(s) for this video to find the profile
             let source_ids = db::get_sources_for_video(&self.pool, video.id)
@@ -499,15 +370,21 @@ impl Message<ProcessPendingDownloads> for DownloadSupervisor {
                 .await
                 .map_err(|e| e.to_string())?;
 
-            // Enqueue the download
-            ctx.actor_ref()
-                .tell(EnqueueDownload {
-                    video,
-                    profile,
-                    source,
-                })
-                .try_send()
-                .map_err(|e| e.to_string())?;
+            // Dispatch inline (not via the mailbox) so the whole backlog is
+            // processed even when it exceeds the bounded mailbox capacity.
+            if let Err(e) = self
+                .dispatch_download(
+                    EnqueueDownload {
+                        video,
+                        profile,
+                        source,
+                    },
+                    supervisor_ref.clone(),
+                )
+                .await
+            {
+                warn!(error = %e, "Failed to dispatch pending download");
+            }
         }
 
         Ok(count)
@@ -605,6 +482,157 @@ impl Message<NotifyRateLimited> for DownloadSupervisor {
 }
 
 impl DownloadSupervisor {
+    /// Dispatch a single video for download.
+    ///
+    /// Shared by the `EnqueueDownload` message handler and the
+    /// `ProcessPendingDownloads` sweep. Called directly (not via the actor
+    /// mailbox) so a large pending backlog is never dropped by bounded-mailbox
+    /// backpressure. Runs the eligibility check, reserves a dispatch slot, and
+    /// spawns the rate-limited download task.
+    ///
+    /// Kept `async` (though the current body has no top-level `.await`
+    /// outside the spawned task) to match the call sites, which `.await`
+    /// this as a natural extension of the `Message<EnqueueDownload>` handler
+    /// it was extracted from.
+    #[allow(clippy::unused_async)]
+    async fn dispatch_download(
+        &mut self,
+        msg: EnqueueDownload,
+        supervisor_ref: ActorRef<Self>,
+    ) -> Result<(), String> {
+        let video_id = msg.video.id;
+
+        // Check video status
+        match msg.video.status {
+            VideoStatus::Completed
+            | VideoStatus::PermanentlyFailed
+            | VideoStatus::Skipped
+            // A video already in `downloading` is either actively handled by a
+            // worker or stuck from a crash (reset to `pending` on startup);
+            // never re-dispatch it from a stale snapshot.
+            | VideoStatus::Downloading => {
+                debug!(status = ?msg.video.status, "Video not eligible for download");
+                return Ok(());
+            }
+            VideoStatus::Failed => {
+                // Check if it's time to retry
+                if let Some(next_retry) = msg.video.next_retry
+                    && next_retry > Utc::now()
+                {
+                    debug!(next_retry = %next_retry, "Video not ready for retry yet");
+                    return Ok(());
+                }
+            }
+            VideoStatus::Pending | VideoStatus::Cleaned => {
+                // Eligible for download
+            }
+        }
+
+        // Reserve a single in-flight dispatch for this video. This runs
+        // synchronously (no `.await` between here and the spawn below), so it
+        // closes the race where repeated `EnqueueDownload`s for the same video
+        // each spawned a worker before the first registered in
+        // `active_downloads` — the bug that caused runaway re-downloads.
+        if !Self::reserve_dispatch(
+            self.active_downloads.contains_key(&video_id),
+            &mut self.dispatching,
+            video_id,
+        ) {
+            debug!("Video already downloading or queued for dispatch");
+            return Ok(());
+        }
+
+        // Spawn the download task
+        let pool = self.pool.clone();
+        let ytdlp = self.ytdlp.clone();
+        let semaphore = self.semaphore.clone();
+        let progress_tx = self.progress_tx.clone();
+        let download_timeout = self.download_timeout;
+        let rate_limit_delay = self.effective_rate_limit_delay();
+        let last_download_start = self.last_download_start;
+
+        let video = msg.video;
+        let profile = msg.profile;
+        let source = msg.source;
+
+        // Spawn a task to handle the download with rate limiting and semaphore
+        tokio::spawn(async move {
+            // Wait for rate limit delay since last download
+            if let Some(last_start) = last_download_start {
+                let elapsed = last_start.elapsed();
+                if elapsed < rate_limit_delay {
+                    let wait_time = rate_limit_delay.saturating_sub(elapsed);
+                    debug!(wait_ms = wait_time.as_millis(), "Rate limit delay");
+                    tokio::time::sleep(wait_time).await;
+                }
+            }
+
+            // Acquire semaphore permit
+            let Ok(_permit) = semaphore.acquire().await else {
+                // Semaphore closed during shutdown. Release the dispatch
+                // reservation so the video isn't left wedged as "in flight".
+                debug!(video_id = %video_id, "Semaphore closed, aborting download");
+                let _ = supervisor_ref.tell(DownloadCompleted { video_id }).await;
+                return;
+            };
+
+            debug!(video_id = %video_id, "Acquired download permit");
+
+            // Notify supervisor we're starting
+            let _ = supervisor_ref.tell(DownloadStarting { video_id }).await;
+
+            // Create download config from profile
+            let config = DownloadConfig {
+                timeout: download_timeout,
+                quality: profile.quality.clone(),
+                output_preset: profile.output_preset.clone(),
+                output_dir: PathBuf::from(&profile.output_dir),
+                naming_template: profile.naming_template.clone(),
+                source_id: source.id,
+                source_name: source
+                    .custom_name
+                    .clone()
+                    .unwrap_or_else(|| source.url.clone()),
+            };
+
+            // Spawn the worker actor
+            let worker_args = DownloadWorkerArgs {
+                pool: pool.clone(),
+                video: video.clone(),
+                config,
+                ytdlp,
+                progress_tx,
+            };
+
+            let worker_ref = DownloadWorker::spawn(worker_args);
+
+            // Register the worker
+            let _ = supervisor_ref
+                .tell(RegisterWorker {
+                    video_id,
+                    worker_ref: worker_ref.clone(),
+                })
+                .await;
+
+            // Ask the worker to start the download and wait for the outcome
+            let outcome = worker_ref.ask(StartDownload).await;
+
+            // Notify supervisor that download completed
+            // The worker will have already updated the database
+            let _ = supervisor_ref.tell(DownloadCompleted { video_id }).await;
+
+            // Report the outcome so activity gets logged
+            if let Ok(outcome) = outcome {
+                let _ = supervisor_ref.tell(ReportOutcome { outcome }).await;
+            }
+        });
+
+        // Update last download start time
+        self.last_download_start = Some(Instant::now());
+
+        Ok(())
+    }
+
     /// Reserve a single in-flight dispatch slot for `video_id`.
     ///
     /// Returns `true` if a slot was newly reserved (caller should proceed to
