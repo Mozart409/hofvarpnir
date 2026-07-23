@@ -981,6 +981,7 @@ async fn activity_events_sse(
                     return None;
                 }
             };
+            let source_names = load_activity_source_names(&pool).await;
             let total = count_result.unwrap_or(0);
             let total_pages = if total == 0 {
                 1
@@ -989,9 +990,15 @@ async fn activity_events_sse(
             };
             let current_severity = normalized_activity_severity(query.severity.as_deref());
 
-            let fragment =
-                activity_content_markup(&events, page_num, total_pages, current_severity, per_page)
-                    .into_string();
+            let fragment = activity_content_markup(
+                &events,
+                &source_names,
+                page_num,
+                total_pages,
+                current_severity,
+                per_page,
+            )
+            .into_string();
 
             Some(Ok(Event::default().event("activity-update").data(fragment)))
         }
@@ -2963,6 +2970,8 @@ async fn activity_page(
         }
     };
 
+    let source_names = load_activity_source_names(&state.pool).await;
+
     let total = count_result.unwrap_or(0);
     let total_pages = (total + per_page - 1) / per_page;
 
@@ -2987,6 +2996,7 @@ async fn activity_page(
                     {
                         (activity_content_markup(
                             &events,
+                            &source_names,
                             page_num,
                             total_pages,
                             current_severity,
@@ -3031,6 +3041,8 @@ async fn activity_list_partial(
         }
     };
 
+    let source_names = load_activity_source_names(&state.pool).await;
+
     let total = count_result.unwrap_or(0);
     let total_pages = if total == 0 {
         1
@@ -3039,8 +3051,33 @@ async fn activity_list_partial(
     };
     let current_severity = normalized_activity_severity(query.severity.as_deref());
 
-    activity_content_markup(&events, page_num, total_pages, current_severity, per_page)
-        .into_response()
+    activity_content_markup(
+        &events,
+        &source_names,
+        page_num,
+        total_pages,
+        current_severity,
+        per_page,
+    )
+    .into_response()
+}
+
+/// Load a `source_id -> display_name` lookup map for enriching activity rows.
+///
+/// Reuses `db::list_sources` rather than adding a new query, so this stays
+/// offline-cache-free. Returns an empty map on error so a DB hiccup only
+/// degrades the display (no source name pill) instead of failing the page.
+async fn load_activity_source_names(pool: &sqlx::PgPool) -> HashMap<Ulid, String> {
+    match db::list_sources(pool).await {
+        Ok(sources) => sources
+            .iter()
+            .map(|s| (s.id, s.display_name().to_string()))
+            .collect(),
+        Err(error) => {
+            tracing::warn!(%error, "failed to load source names for activity log");
+            HashMap::new()
+        }
+    }
 }
 
 fn download_status_filter_link(
@@ -3410,6 +3447,7 @@ fn downloads_list_markup(
 
 fn activity_content_markup(
     events: &[hof_core::domain::activity::ActivityEvent],
+    source_names: &HashMap<Ulid, String>,
     page_num: i64,
     total_pages: i64,
     current_severity: &str,
@@ -3445,7 +3483,7 @@ fn activity_content_markup(
         } @else {
             div class="mt-4 space-y-2" {
                 @for event in events {
-                    (activity_event_row(event))
+                    (activity_event_row(event, source_names))
                 }
             }
 
@@ -3482,7 +3520,10 @@ fn activity_content_markup(
     }
 }
 
-fn activity_event_row(event: &hof_core::domain::activity::ActivityEvent) -> Markup {
+fn activity_event_row(
+    event: &hof_core::domain::activity::ActivityEvent,
+    source_names: &HashMap<Ulid, String>,
+) -> Markup {
     let (icon, border_color) = match event.severity {
         ActivitySeverity::Info => ("i", "border-l-sky-400"),
         ActivitySeverity::Success => ("✓", "border-l-emerald-400"),
@@ -3528,6 +3569,7 @@ fn activity_event_row(event: &hof_core::domain::activity::ActivityEvent) -> Mark
 
     let time_ago = format_time_ago(event.created_at);
     let source_indexing = event.source_indexing_summary();
+    let source_name = event.source_id.and_then(|id| source_names.get(&id));
 
     html! {
         div class=(format!("flex items-start gap-3 rounded-lg border border-slate-200 dark:border-slate-700 border-l-4 {} bg-white dark:bg-slate-800 p-3", border_color)) {
@@ -3540,6 +3582,11 @@ fn activity_event_row(event: &hof_core::domain::activity::ActivityEvent) -> Mark
                         (severity_badge.0)
                     }
                     span class="text-xs font-medium text-slate-500 dark:text-slate-400" { (event_label) }
+                    @if let Some(name) = source_name {
+                        span class="inline-flex rounded-full bg-slate-100 dark:bg-slate-700 px-2 py-0.5 text-xs font-medium text-slate-600 dark:text-slate-300" {
+                            (name)
+                        }
+                    }
                     span class="text-xs text-slate-400 dark:text-slate-500" title=(event.created_at.to_rfc3339()) { (time_ago) }
                 }
                 p class="mt-1 text-sm text-slate-700 dark:text-slate-300" { (event.message) }
