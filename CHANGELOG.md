@@ -2,6 +2,13 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.3.1 - 2026-07-23
+#### Bug Fixes
+- (**downloads**) dispatch pending downloads inline to avoid mailbox drops - (94bbfbf) - Amadeus Mader
+- (**indexer**) target /videos tab for bare YouTube channel URLs - (0758401) - Amadeus Mader
+
+- - -
+
 ## v0.3.0 - 2026-07-23
 #### Features
 - (**activity**) show source name in log entries - (507bb90) - Amadeus Mader
