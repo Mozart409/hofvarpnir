@@ -2,6 +2,23 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.3.0 - 2026-07-23
+#### Features
+- (**activity**) show source name in log entries - (507bb90) - Amadeus Mader
+- (**api-keys**) add 1h/1d/7d expiration presets - (15d94b5) - Amadeus Mader
+- (**schedule**) sink disabled sources with disabled pill - (499956d) - Amadeus Mader
+#### Bug Fixes
+- (**downloads**) dispatch pending downloads inline to avoid mailbox drops - (1de8672) - Amadeus Mader
+- (**indexer**) target /videos tab for bare YouTube channel URLs - (b45f7c1) - Amadeus Mader
+#### Documentation
+- (**agent**) update docs for commit conventions - (be01a0b) - Amadeus Mader
+#### Miscellaneous Chores
+- (**css**) update tailwindcss - (1d5466c) - Amadeus Mader
+- (**deps**) upgrade flake - (ed7a599) - Amadeus Mader
+- (**deps**) bump serde_with in /patches/yt-dlp-patched - (9085672) - dependabot[bot]
+
+- - -
+
 ## v0.2.5 - 2026-07-21
 #### Bug Fixes
 - (**release**) run pre-bump cargo check with SQLX_OFFLINE - (a2d42da) - Amadeus Mader
