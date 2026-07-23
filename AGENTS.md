@@ -436,6 +436,30 @@ Optional (OIDC Authentication):
 - `OIDC_LOGOUT_REDIRECT` - Enable RP-initiated logout (default: `false`)
 - `OIDC_DISCOVERY_TIMEOUT` - OIDC discovery HTTP timeout in seconds (default: `30`)
 
+## Commit Conventions
+
+This repo uses [Conventional Commits](https://www.conventionalcommits.org/) (enforced via
+`cog.toml` / cocogitto). Follow the existing history when writing messages.
+
+- **Format:** `type(scope): subject`
+  - Subject is **lowercase**, concise, imperative mood, **no trailing period**.
+  - Keep to a single line — bodies are the exception, not the rule.
+- **Types used:** `feat`, `fix`, `chore` (also `release` for version-bump commits).
+- **Scope** is short and contextual to what changed. Observed scopes include:
+  `deps`, `version`, `release`, `ci`, `tools`, `flake`, `container`, `oci`, `harbor`,
+  `just`, `logo`. For feature work, scope by area (e.g. `api-keys`, `activity`, `schedule`,
+  `web`, `core`).
+- **Version bumps:** `chore(version): vX.Y.Z`.
+
+Examples from history:
+
+```
+feat(logo): add new logo to project
+fix(release): run pre-bump cargo check with SQLX_OFFLINE
+chore(deps): upgrade flake
+chore(version): v0.2.5
+```
+
 ## Language Standards
 
 - **Edition**: 2024
