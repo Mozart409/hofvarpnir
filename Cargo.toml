@@ -49,7 +49,7 @@ tower-sessions-sqlx-store = { version = "0.15", features = ["postgres"], path = 
 tracing = "0.1"
 tracing-loki = { version = "0.2", default-features = false, features = ["compat-0-2-1", "rustls"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
-ulid = { version = "2", features = ["serde"] }
+ulid = { version = "3", features = ["serde"] }
 utoipa = { version = "5", features = ["axum_extras", "chrono", "ulid"] }
 utoipa-axum = "0.2"
 utoipa-scalar = { version = "0.3", features = ["axum"] }
