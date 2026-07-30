@@ -396,3 +396,159 @@ async fn pending_deletion_invalid_profile_id_returns_400(pool: PgPool) {
 
     response.assert_status(StatusCode::BAD_REQUEST);
 }
+
+// ============================================================================
+// Source/profile context enrichment
+// ============================================================================
+
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn list_downloads_includes_source_and_profile_context(pool: PgPool) {
+    let app = TestApp::new(pool.clone()).await;
+    let user = UserBuilder::new().build(&pool).await;
+    let key = ApiKeyBuilder::new(user.id).read_only().build(&pool).await;
+
+    let profile = ProfileBuilder::new(user.id).build(&pool).await;
+    let source = SourceBuilder::new(profile.id)
+        .url("https://youtube.com/@my_channel")
+        .custom_name("My Custom Name")
+        .build(&pool)
+        .await;
+    let video_id = seed_completed_video(&pool, source.id, "vid_ctx", 1).await;
+
+    let response = app
+        .server
+        .get("/api/v1/downloads")
+        .add_header("Authorization", key.bearer())
+        .await;
+
+    response.assert_status_ok();
+    let body: serde_json::Value = response.json();
+    let items = body.as_array().expect("array body");
+    let item = items
+        .iter()
+        .find(|v| v["id"] == video_id.to_string())
+        .expect("seeded video present in list");
+
+    // Additive fields: source/profile context.
+    assert_eq!(item["source_id"], source.id.to_string());
+    assert_eq!(item["source_url"], "https://youtube.com/@my_channel");
+    assert_eq!(item["source_custom_name"], "My Custom Name");
+    assert_eq!(item["source_display_name"], "My Custom Name");
+    assert_eq!(item["profile_id"], profile.id.to_string());
+    assert_eq!(item["profile_name"], profile.name);
+    assert!(item["profile_quality"].is_string());
+    assert!(item["profile_output_preset"].is_string());
+
+    // Pre-existing fields are still present and unchanged in shape.
+    assert_eq!(item["title"], "Test Video");
+    assert_eq!(item["status"], "completed");
+}
+
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn get_download_matches_list_item_shape_for_linked_source(pool: PgPool) {
+    let app = TestApp::new(pool.clone()).await;
+    let user = UserBuilder::new().build(&pool).await;
+    let key = ApiKeyBuilder::new(user.id).read_only().build(&pool).await;
+
+    let profile = ProfileBuilder::new(user.id).build(&pool).await;
+    let source = SourceBuilder::new(profile.id)
+        .url("https://youtube.com/@another_channel")
+        .custom_name("Another Custom Name")
+        .build(&pool)
+        .await;
+    let video_id = seed_completed_video(&pool, source.id, "vid_detail_ctx", 1).await;
+
+    let response = app
+        .server
+        .get(&format!("/api/v1/downloads/{video_id}"))
+        .add_header("Authorization", key.bearer())
+        .await;
+
+    response.assert_status_ok();
+    let body: serde_json::Value = response.json();
+
+    assert_eq!(body["id"], video_id.to_string());
+    assert_eq!(body["source_id"], source.id.to_string());
+    assert_eq!(body["source_url"], "https://youtube.com/@another_channel");
+    assert_eq!(body["source_custom_name"], "Another Custom Name");
+    assert_eq!(body["source_display_name"], "Another Custom Name");
+    assert_eq!(body["profile_id"], profile.id.to_string());
+    assert_eq!(body["profile_name"], profile.name);
+}
+
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn download_source_display_name_falls_back_to_url_without_custom_name(pool: PgPool) {
+    let app = TestApp::new(pool.clone()).await;
+    let user = UserBuilder::new().build(&pool).await;
+    let key = ApiKeyBuilder::new(user.id).read_only().build(&pool).await;
+
+    let profile = ProfileBuilder::new(user.id).build(&pool).await;
+    // No `.custom_name(...)` set, and the builder doesn't set a channel_title,
+    // so display_name should fall back to the source URL -- matching
+    // `Source::display_name()`'s precedence used by the web UI.
+    let source = SourceBuilder::new(profile.id)
+        .url("https://youtube.com/@fallback_channel")
+        .build(&pool)
+        .await;
+    let video_id = seed_completed_video(&pool, source.id, "vid_fallback", 1).await;
+
+    let response = app
+        .server
+        .get(&format!("/api/v1/downloads/{video_id}"))
+        .add_header("Authorization", key.bearer())
+        .await;
+
+    response.assert_status_ok();
+    let body: serde_json::Value = response.json();
+
+    assert!(body["source_custom_name"].is_null());
+    assert_eq!(
+        body["source_display_name"],
+        "https://youtube.com/@fallback_channel"
+    );
+}
+
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn get_download_with_no_linked_source_has_null_context(pool: PgPool) {
+    let app = TestApp::new(pool.clone()).await;
+    let user = UserBuilder::new().build(&pool).await;
+    let key = ApiKeyBuilder::new(user.id).read_only().build(&pool).await;
+
+    // A video that has never been linked to any source (e.g. indexed but not
+    // yet attached, or its source was since deleted).
+    let video = db::create_video(
+        &pool,
+        db::CreateVideo {
+            platform: "youtube",
+            platform_video_id: "vid_orphan",
+            title: "Orphan Video",
+            description: None,
+            duration_secs: None,
+            published_at: None,
+            thumbnail_url: None,
+        },
+    )
+    .await
+    .expect("create video");
+
+    let response = app
+        .server
+        .get(&format!("/api/v1/downloads/{}", video.id))
+        .add_header("Authorization", key.bearer())
+        .await;
+
+    response.assert_status_ok();
+    let body: serde_json::Value = response.json();
+
+    // Optional context fields are absent, not fabricated.
+    assert!(body["source_id"].is_null());
+    assert!(body["source_url"].is_null());
+    assert!(body["source_custom_name"].is_null());
+    assert!(body["source_display_name"].is_null());
+    assert!(body["profile_id"].is_null());
+    assert!(body["profile_name"].is_null());
+
+    // Pre-existing fields are unaffected.
+    assert_eq!(body["id"], video.id.to_string());
+    assert_eq!(body["title"], "Orphan Video");
+}

@@ -28,7 +28,9 @@ use hof_core::{
     db::{self},
     domain::{
         api_key::ApiKeyScope,
-        video::{Video, VideoPendingDeletion, VideoStatus},
+        profile::{OutputPreset, Quality},
+        source::SourceType,
+        video::{Video, VideoContext, VideoPendingDeletion, VideoStatus},
     },
 };
 
@@ -119,6 +121,32 @@ pub struct VideoResponse {
     pub downloaded_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+
+    // --- Source/profile context (additive; `None` when the video has no
+    // linked source, e.g. the source was deleted). ---
+    /// ID of the source this video was downloaded from.
+    pub source_id: Option<String>,
+    /// The source's channel/playlist URL.
+    pub source_url: Option<String>,
+    /// Whether the source is a channel or a playlist.
+    pub source_type: Option<SourceType>,
+    /// User-provided custom name for the source, if set.
+    pub source_custom_name: Option<String>,
+    /// The effective display name for the source: `custom_name`, falling
+    /// back to `channel_title`, then the source URL. Matches the name shown
+    /// in the web UI.
+    pub source_display_name: Option<String>,
+    /// Platform-specific channel ID (e.g. `YouTube` channel ID).
+    pub source_channel_id: Option<String>,
+    /// Channel title as reported by the platform.
+    pub source_channel_title: Option<String>,
+    /// URL to the channel's thumbnail/avatar image.
+    pub source_channel_thumbnail_url: Option<String>,
+    /// ID of the download profile governing this source.
+    pub profile_id: Option<String>,
+    pub profile_name: Option<String>,
+    pub profile_quality: Option<Quality>,
+    pub profile_output_preset: Option<OutputPreset>,
 }
 
 impl From<Video> for VideoResponse {
@@ -144,6 +172,73 @@ impl From<Video> for VideoResponse {
             downloaded_at: v.downloaded_at,
             created_at: v.created_at,
             updated_at: v.updated_at,
+            source_id: None,
+            source_url: None,
+            source_type: None,
+            source_custom_name: None,
+            source_display_name: None,
+            source_channel_id: None,
+            source_channel_title: None,
+            source_channel_thumbnail_url: None,
+            profile_id: None,
+            profile_name: None,
+            profile_quality: None,
+            profile_output_preset: None,
+        }
+    }
+}
+
+impl From<VideoContext> for VideoResponse {
+    fn from(ctx: VideoContext) -> Self {
+        let source_display_name = ctx.source_display_name().map(ToString::to_string);
+        let VideoContext {
+            video: v,
+            source_id,
+            source_url,
+            source_type,
+            source_custom_name,
+            source_channel_id,
+            source_channel_title,
+            source_channel_thumbnail_url,
+            profile_id,
+            profile_name,
+            profile_quality,
+            profile_output_preset,
+        } = ctx;
+
+        let last_error_code = v.last_error.as_deref().and_then(extract_error_code);
+
+        Self {
+            id: v.id.to_string(),
+            platform: v.platform,
+            platform_video_id: v.platform_video_id,
+            title: v.title,
+            description: v.description,
+            duration_secs: v.duration_secs,
+            published_at: v.published_at,
+            thumbnail_url: v.thumbnail_url,
+            status: v.status,
+            attempts: v.attempts,
+            next_retry: v.next_retry,
+            last_error: v.last_error,
+            last_error_code,
+            file_path: v.file_path,
+            file_size_bytes: v.file_size_bytes,
+            downloaded_at: v.downloaded_at,
+            created_at: v.created_at,
+            updated_at: v.updated_at,
+            source_id: source_id.map(|id| id.to_string()),
+            source_url,
+            source_type,
+            source_custom_name,
+            source_display_name,
+            source_channel_id,
+            source_channel_title,
+            source_channel_thumbnail_url,
+            profile_id: profile_id.map(|id| id.to_string()),
+            profile_name,
+            profile_quality,
+            profile_output_preset,
         }
     }
 }
@@ -252,12 +347,12 @@ pub async fn list_downloads(
                 .into_response();
         };
 
-        match db::list_videos_for_source(&state.pool, source_id).await {
+        match db::list_videos_for_source_with_context(&state.pool, source_id).await {
             Ok(videos) => {
                 // Apply status filter if provided
                 let filtered: Vec<VideoResponse> = videos
                     .into_iter()
-                    .filter(|v| query.status.as_ref().is_none_or(|s| *s == v.status))
+                    .filter(|ctx| query.status.as_ref().is_none_or(|s| *s == ctx.video.status))
                     .map(Into::into)
                     .collect();
                 return (StatusCode::OK, Json(filtered)).into_response();
@@ -275,8 +370,10 @@ pub async fn list_downloads(
         }
     }
 
-    // Otherwise, list all videos with optional status filter
-    match db::list_videos(&state.pool, query.status).await {
+    // Otherwise, list all videos with optional status filter.
+    // `list_videos_with_context` is a single query (LEFT JOIN LATERAL for the
+    // first-linked source + its profile) -- no per-row N+1 lookups.
+    match db::list_videos_with_context(&state.pool, query.status).await {
         Ok(videos) => {
             let responses: Vec<VideoResponse> = videos.into_iter().map(Into::into).collect();
             (StatusCode::OK, Json(responses)).into_response()
@@ -685,7 +782,7 @@ pub async fn get_download(
             .into_response();
     };
 
-    match db::get_video(&state.pool, video_id).await {
+    match db::get_video_with_context(&state.pool, video_id).await {
         Ok(video) => {
             let response: VideoResponse = video.into();
             (StatusCode::OK, Json(response)).into_response()
