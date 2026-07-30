@@ -2,6 +2,14 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.5.0 - 2026-07-30
+#### Continuous Integration
+- (**flakehub**) remove flakehub stuff - (43ae4d0) - Amadeus Mader
+#### Miscellaneous Chores
+- (**deps**) bump quinn-proto in /patches/yt-dlp-patched - (fc38154) - dependabot[bot]
+
+- - -
+
 ## v0.4.0 - 2026-07-30
 #### Features
 - (**api**) add source and profile context to downloads response - (4f2b656) - Amadeus Mader
