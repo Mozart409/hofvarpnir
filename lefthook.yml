@@ -54,6 +54,13 @@ pre-push:
     - name: clippy-all
       glob: "*.rs"
       run: cargo clippy --all-targets --all-features -- -D warnings
+    # The vendored crates declare their own [workspace], so the root
+    # workspace only builds their lib target as a [patch.crates-io]
+    # dependency -- their tests/examples are compiled by nothing above.
+    - name: patches-check
+      glob: "patches/**/*.rs"
+      root: "patches/yt-dlp-patched/"
+      run: cargo check --all-targets --all-features
     - name: sqruff
       glob: "**/*.sql"
       run: sqruff lint
