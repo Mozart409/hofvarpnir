@@ -14,7 +14,7 @@ impl UserBuilder {
     /// Create a new user builder with random defaults.
     #[must_use]
     pub fn new() -> Self {
-        let id = Ulid::r#gen();
+        let id = Ulid::generate();
         Self {
             name: format!("Test User {id}"),
             email: format!("test_{id}@example.com"),

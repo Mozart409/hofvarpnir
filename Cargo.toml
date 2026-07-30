@@ -49,7 +49,7 @@ tower-sessions-sqlx-store = { version = "0.15", features = ["postgres"], path = 
 tracing = "0.1"
 tracing-loki = { version = "0.2", default-features = false, features = ["compat-0-2-1", "rustls"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
-ulid = { version = "2", features = ["serde"] }
+ulid = { version = "3", features = ["serde"] }
 utoipa = { version = "5", features = ["axum_extras", "chrono", "ulid"] }
 utoipa-axum = "0.2"
 utoipa-scalar = { version = "0.3", features = ["axum"] }
@@ -75,7 +75,9 @@ option_if_let_else = "allow"
 significant_drop_tightening = "allow"
 redundant_pub_crate = "allow"
 
-# Patch yt-dlp crate to make PlaylistEntry.url optional (fixes JSON parse errors
-# for unavailable/private videos in playlists)
+# Vendored yt-dlp: makes Playlist.title, PlaylistEntry.title and PlaylistEntry.url
+# optional, so a single private/deleted video does not fail the whole playlist
+# parse. See patches/yt-dlp-patched/PATCHES.md for the full delta and the
+# re-sync procedure.
 [patch.crates-io]
 yt-dlp = { path = "patches/yt-dlp-patched" }

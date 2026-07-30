@@ -32,7 +32,7 @@ use hof_core::{
         profile::{OutputPreset, Profile, Quality},
         source::{EntryOrder, Source, SourceType},
         system::IssueSeverity,
-        video::{DownloadProgress, Video, VideoStatus},
+        video::{Video, VideoStatus},
     },
     ytdlp::validate_output_template,
 };
@@ -40,7 +40,6 @@ use maud::{DOCTYPE, Markup, PreEscaped, Render, html};
 use rust_embed::Embed;
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
-use tokio_stream::wrappers::BroadcastStream;
 use tower_sessions::Session;
 use ulid::Ulid;
 
@@ -290,7 +289,6 @@ pub fn router(state: AppState, oidc_enabled: bool) -> Router {
         .route("/downloads/{id}/cancel", post(cancel_download))
         .route("/downloads/{id}/delete", post(delete_download))
         .route("/web/downloads/list", get(downloads_list_partial))
-        .route("/web/downloads/progress", get(download_progress_sse))
         .route("/web/downloads/events", get(downloads_events_sse))
         .route("/web/system-banner", get(system_banner))
         .route("/web/dashboard/events", get(dashboard_events_sse))
@@ -649,17 +647,19 @@ fn auth_layout(title: &str, content: impl Render) -> Markup {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 async fn dashboard_page(
     _auth: AuthUser,
     State(state): State<AppState>,
     session: Session,
 ) -> impl IntoResponse {
     let flash = take_flash(&session).await;
-    let (profiles_result, sources_result, videos_result, source_names_result) = tokio::join!(
+    let (profiles_result, sources_result, videos_result, source_names_result, storage_usage_result) = tokio::join!(
         db::list_profiles(&state.pool),
         db::list_sources(&state.pool),
         db::list_videos(&state.pool, None),
-        db::get_source_names_for_videos(&state.pool)
+        db::get_source_names_for_videos(&state.pool),
+        db::get_storage_usage_by_profile(&state.pool)
     );
 
     let profiles = match profiles_result {
@@ -699,6 +699,17 @@ async fn dashboard_page(
         Ok(data) => data,
         Err(error) => {
             tracing::error!(%error, "failed to load source names for dashboard");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                error_page("Failed to load dashboard"),
+            );
+        }
+    };
+
+    let storage_usage = match storage_usage_result {
+        Ok(data) => data,
+        Err(error) => {
+            tracing::error!(%error, "failed to load storage usage for dashboard");
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 error_page("Failed to load dashboard"),
@@ -749,6 +760,7 @@ async fn dashboard_page(
                         failed,
                         &recent,
                         &source_names,
+                        &storage_usage,
                     ))
                 }
             }
@@ -768,6 +780,7 @@ fn dashboard_metrics_markup(
     failed: usize,
     recent: &[&Video],
     source_names: &HashMap<Ulid, String>,
+    storage_usage: &[db::ProfileStorageUsage],
 ) -> Markup {
     html! {
         div class="grid gap-4 md:grid-cols-2 xl:grid-cols-4" {
@@ -780,6 +793,7 @@ fn dashboard_metrics_markup(
             (metric_card("Completed", completed, "Successfully archived videos"))
             (metric_card("Failed", failed, "Need retry or manual check"))
         }
+        (storage_usage_card_markup(storage_usage))
         section class="mt-8 rounded-2xl border border-slate-200 dark:border-slate-700 bg-white/80 dark:bg-slate-800/80 p-6 shadow-sm" {
             h2 class="text-lg font-semibold text-slate-900 dark:text-slate-100" { "Recent Downloads" }
             @if recent.is_empty() {
@@ -813,17 +827,24 @@ async fn dashboard_events_sse(
     let stream = debounced_broadcast(rx).filter_map(move |()| {
         let pool = state.pool.clone();
         async move {
-            let (profiles_result, sources_result, videos_result, source_names_result) =
-                tokio::join!(
-                    db::list_profiles(&pool),
-                    db::list_sources(&pool),
-                    db::list_videos(&pool, None),
-                    db::get_source_names_for_videos(&pool)
-                );
+            let (
+                profiles_result,
+                sources_result,
+                videos_result,
+                source_names_result,
+                storage_usage_result,
+            ) = tokio::join!(
+                db::list_profiles(&pool),
+                db::list_sources(&pool),
+                db::list_videos(&pool, None),
+                db::get_source_names_for_videos(&pool),
+                db::get_storage_usage_by_profile(&pool)
+            );
             let profiles = profiles_result.ok()?;
             let sources = sources_result.ok()?;
             let videos = videos_result.ok()?;
             let source_names = source_names_result.ok()?;
+            let storage_usage = storage_usage_result.ok()?;
 
             let pending = videos
                 .iter()
@@ -857,6 +878,7 @@ async fn dashboard_events_sse(
                 failed,
                 &recent,
                 &source_names,
+                &storage_usage,
             )
             .into_string();
 
@@ -982,6 +1004,9 @@ async fn activity_events_sse(
                 }
             };
             let source_names = load_activity_source_names(&pool).await;
+            let video_source_names = db::get_source_names_for_videos(&pool)
+                .await
+                .unwrap_or_default();
             let total = count_result.unwrap_or(0);
             let total_pages = if total == 0 {
                 1
@@ -993,6 +1018,7 @@ async fn activity_events_sse(
             let fragment = activity_content_markup(
                 &events,
                 &source_names,
+                &video_source_names,
                 page_num,
                 total_pages,
                 current_severity,
@@ -2477,27 +2503,8 @@ async fn downloads_page(
         NavItem::Downloads,
         flash,
         html! {
-            section class="rounded-2xl border border-slate-200 dark:border-slate-700 bg-white/80 dark:bg-slate-800/80 p-6 shadow-sm" {
-                div class="flex items-center justify-between" {
-                    h2 class="text-lg font-semibold text-slate-900 dark:text-slate-100" { "Live Progress" }
-                    p class="text-xs text-slate-500 dark:text-slate-400" { "Streaming from /web/downloads/progress" }
-                }
-                div
-                    class="mt-4 space-y-2"
-                    id="download-progress-feed"
-                    hx-ext="sse"
-                    sse-connect="/web/downloads/progress"
-                    sse-swap="message"
-                    hx-swap="afterbegin"
-                {
-                    p class="rounded-lg border border-dashed border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-800 px-3 py-2 text-sm text-slate-500 dark:text-slate-400" {
-                        "Waiting for progress events..."
-                    }
-                }
-            }
-
             // Filter & search bar
-            section class="mt-8 rounded-2xl border border-slate-200 dark:border-slate-700 bg-white/80 dark:bg-slate-800/80 p-6 shadow-sm" {
+            section class="rounded-2xl border border-slate-200 dark:border-slate-700 bg-white/80 dark:bg-slate-800/80 p-6 shadow-sm" {
                 div class="flex flex-wrap items-center gap-4" {
                     nav class="flex flex-wrap gap-1" {
                         (download_status_filter_link("all", "All", current_status, search_query, per_page))
@@ -2914,31 +2921,6 @@ async fn delete_download(
     Redirect::to("/downloads").into_response()
 }
 
-async fn download_progress_sse(
-    State(state): State<AppState>,
-) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
-    let receiver = state.progress_tx.subscribe();
-
-    let stream = BroadcastStream::new(receiver).filter_map(|result| async move {
-        match result {
-            Ok(progress) => {
-                let fragment = progress_fragment(&progress).into_string();
-                Some(Ok(Event::default().event("message").data(fragment)))
-            }
-            Err(error) => {
-                tracing::debug!(%error, "dropped lagged SSE progress event");
-                None
-            }
-        }
-    });
-
-    Sse::new(stream).keep_alive(
-        KeepAlive::new()
-            .interval(Duration::from_secs(15))
-            .text("keep-alive"),
-    )
-}
-
 /// Returns an HTML fragment for the system issues banner.
 /// If there are no issues, returns an empty response.
 async fn system_banner(State(state): State<AppState>) -> impl IntoResponse {
@@ -3035,6 +3017,9 @@ async fn activity_page(
     };
 
     let source_names = load_activity_source_names(&state.pool).await;
+    let video_source_names = db::get_source_names_for_videos(&state.pool)
+        .await
+        .unwrap_or_default();
 
     let total = count_result.unwrap_or(0);
     let total_pages = (total + per_page - 1) / per_page;
@@ -3061,6 +3046,7 @@ async fn activity_page(
                         (activity_content_markup(
                             &events,
                             &source_names,
+                            &video_source_names,
                             page_num,
                             total_pages,
                             current_severity,
@@ -3106,6 +3092,9 @@ async fn activity_list_partial(
     };
 
     let source_names = load_activity_source_names(&state.pool).await;
+    let video_source_names = db::get_source_names_for_videos(&state.pool)
+        .await
+        .unwrap_or_default();
 
     let total = count_result.unwrap_or(0);
     let total_pages = if total == 0 {
@@ -3118,6 +3107,7 @@ async fn activity_list_partial(
     activity_content_markup(
         &events,
         &source_names,
+        &video_source_names,
         page_num,
         total_pages,
         current_severity,
@@ -3512,6 +3502,7 @@ fn downloads_list_markup(
 fn activity_content_markup(
     events: &[hof_core::domain::activity::ActivityEvent],
     source_names: &HashMap<Ulid, String>,
+    video_source_names: &HashMap<Ulid, String>,
     page_num: i64,
     total_pages: i64,
     current_severity: &str,
@@ -3547,7 +3538,7 @@ fn activity_content_markup(
         } @else {
             div class="mt-4 space-y-2" {
                 @for event in events {
-                    (activity_event_row(event, source_names))
+                    (activity_event_row(event, source_names, video_source_names))
                 }
             }
 
@@ -3584,9 +3575,19 @@ fn activity_content_markup(
     }
 }
 
+/// Render a single activity log entry.
+///
+/// `source_names` maps `source_id -> display_name` (from `list_sources`), used
+/// directly for source-level events (e.g. `SourceIndexed`). Download events
+/// don't carry a `source_id` on the row, so `video_source_names` (a
+/// `video_id -> display_name` map derived by joining through `source_videos`,
+/// see `db::get_source_names_for_videos`) is used as a fallback so the source
+/// pill still resolves via the event's `video_id`. If neither resolves (e.g.
+/// the source was since deleted), the pill is simply omitted.
 fn activity_event_row(
     event: &hof_core::domain::activity::ActivityEvent,
     source_names: &HashMap<Ulid, String>,
+    video_source_names: &HashMap<Ulid, String>,
 ) -> Markup {
     let (icon, border_color) = match event.severity {
         ActivitySeverity::Info => ("i", "border-l-sky-400"),
@@ -3633,7 +3634,10 @@ fn activity_event_row(
 
     let time_ago = format_time_ago(event.created_at);
     let source_indexing = event.source_indexing_summary();
-    let source_name = event.source_id.and_then(|id| source_names.get(&id));
+    let source_name = event
+        .source_id
+        .and_then(|id| source_names.get(&id))
+        .or_else(|| event.video_id.and_then(|id| video_source_names.get(&id)));
 
     html! {
         div class=(format!("flex items-start gap-3 rounded-lg border border-slate-200 dark:border-slate-700 border-l-4 {} bg-white dark:bg-slate-800 p-3", border_color)) {
@@ -3669,6 +3673,69 @@ fn activity_event_row(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod activity_event_row_tests {
+    use super::{ActivityEventType, ActivitySeverity, HashMap, Ulid, activity_event_row};
+    use hof_core::domain::activity::ActivityEvent;
+
+    fn base_event(event_type: ActivityEventType, video_id: Option<Ulid>) -> ActivityEvent {
+        ActivityEvent {
+            id: Ulid::from_string("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("valid ulid literal"),
+            event_type,
+            severity: ActivitySeverity::Success,
+            message: "Completed \"300G.mp4\" (13.0 MB)".to_string(),
+            source_id: None,
+            video_id,
+            profile_id: None,
+            created_at: chrono::Utc::now(),
+        }
+    }
+
+    /// Download activity rows never carry a `source_id` (it's only set for
+    /// source-level events like `SourceIndexed`). The pill should still
+    /// resolve, via the event's `video_id`, using the `video_id ->
+    /// display_name` map that `db::get_source_names_for_videos` provides.
+    #[test]
+    fn download_completed_event_resolves_source_pill_via_video_id() {
+        let video_id = Ulid::from_string("01BX5ZZKBKACTAV9WEVGEMMVRZ").expect("valid ulid literal");
+        let event = base_event(ActivityEventType::DownloadCompleted, Some(video_id));
+        assert!(
+            event.source_id.is_none(),
+            "precondition: no source_id on row"
+        );
+
+        let source_names: HashMap<Ulid, String> = HashMap::new();
+        let mut video_source_names: HashMap<Ulid, String> = HashMap::new();
+        video_source_names.insert(video_id, "Kobosil 300G".to_string());
+
+        let markup = activity_event_row(&event, &source_names, &video_source_names).into_string();
+
+        assert!(
+            markup.contains("Kobosil 300G"),
+            "expected source pill text in rendered markup: {markup}"
+        );
+    }
+
+    /// When the source can't be resolved at all (e.g. it was deleted, or the
+    /// event has no video association), the pill must be omitted rather than
+    /// rendered empty.
+    #[test]
+    fn download_event_without_resolvable_source_omits_pill() {
+        let video_id = Ulid::from_string("01BX5ZZKBKACTAV9WEVGEMMVRZ").expect("valid ulid literal");
+        let event = base_event(ActivityEventType::DownloadCompleted, Some(video_id));
+
+        let source_names: HashMap<Ulid, String> = HashMap::new();
+        let video_source_names: HashMap<Ulid, String> = HashMap::new();
+
+        let markup = activity_event_row(&event, &source_names, &video_source_names).into_string();
+
+        assert!(
+            !markup.contains("inline-flex rounded-full bg-slate-100 dark:bg-slate-700 px-2 py-0.5 text-xs font-medium text-slate-600 dark:text-slate-300"),
+            "did not expect a source pill span when the source cannot be resolved: {markup}"
+        );
     }
 }
 
@@ -4060,6 +4127,172 @@ fn metric_card(title: &str, value: impl std::fmt::Display, description: &str) ->
     }
 }
 
+/// Format a byte count using decimal (1000-based) SI units with a single decimal place,
+/// e.g. `0.0 B`, `13.0 MB`, `1.4 GB`.
+fn format_bytes_human(bytes: i64) -> String {
+    const UNITS: [&str; 6] = ["B", "KB", "MB", "GB", "TB", "PB"];
+
+    #[allow(clippy::cast_precision_loss)]
+    let mut value = bytes.max(0) as f64;
+    let mut unit_index = 0usize;
+    while value >= 1000.0 && unit_index < UNITS.len() - 1 {
+        value /= 1000.0;
+        unit_index += 1;
+    }
+    format!("{value:.1} {}", UNITS[unit_index])
+}
+
+/// Percentage of quota used, clamped to `0.0..=100.0`.
+///
+/// Returns `0.0` when the quota is non-positive and nothing has been used, so callers never
+/// divide by zero. A non-positive quota with any usage at all is treated as fully over budget.
+fn storage_usage_percent(used_bytes: i64, quota_bytes: i64) -> f64 {
+    let quota = quota_bytes.max(0);
+    if quota == 0 {
+        return if used_bytes > 0 { 100.0 } else { 0.0 };
+    }
+
+    #[allow(clippy::cast_precision_loss)]
+    let percent = (used_bytes.max(0) as f64 / quota as f64) * 100.0;
+    percent.clamp(0.0, 100.0)
+}
+
+/// Whether usage exceeds the quota, treating a non-positive quota as leaving no room at all.
+fn is_storage_over_quota(used_bytes: i64, quota_bytes: i64) -> bool {
+    used_bytes > quota_bytes.max(0)
+}
+
+/// Render the storage quota usage card for the dashboard: a headline "used / quota" figure with
+/// a progress bar, plus a per-profile breakdown when more than one profile exists.
+fn storage_usage_card_markup(usage: &[db::ProfileStorageUsage]) -> Markup {
+    let total_used: i64 = usage.iter().map(|profile| profile.used_bytes).sum();
+    let total_quota: i64 = usage.iter().map(|profile| profile.quota_bytes).sum();
+    let percent = storage_usage_percent(total_used, total_quota);
+    let over_quota = is_storage_over_quota(total_used, total_quota);
+    let headline_class = if over_quota {
+        "text-rose-600 dark:text-rose-400"
+    } else {
+        "text-slate-900 dark:text-slate-100"
+    };
+    let bar_class = if over_quota {
+        "bg-rose-500 dark:bg-rose-400"
+    } else {
+        "bg-emerald-500 dark:bg-emerald-400"
+    };
+
+    html! {
+        section class="mt-8 rounded-2xl border border-slate-200 dark:border-slate-700 bg-white/80 dark:bg-slate-800/80 p-6 shadow-sm" {
+            h2 class="text-lg font-semibold text-slate-900 dark:text-slate-100" { "Storage Quota" }
+            @if usage.is_empty() {
+                p class="mt-3 text-sm text-slate-500 dark:text-slate-400" { "No profiles configured yet." }
+            } @else {
+                p class=(format!("mt-3 text-2xl font-semibold {headline_class}")) {
+                    (format_bytes_human(total_used)) " / " (format_bytes_human(total_quota))
+                }
+                div class="mt-2 h-2 w-full overflow-hidden rounded-full bg-slate-200 dark:bg-slate-700" {
+                    div
+                        class=(format!("h-full rounded-full {bar_class}"))
+                        style=(format!("width: {percent:.1}%"))
+                    {}
+                }
+                @if usage.len() > 1 {
+                    ul class="mt-4 space-y-2" {
+                        @for profile in usage {
+                            @let profile_over = is_storage_over_quota(profile.used_bytes, profile.quota_bytes);
+                            @let profile_class = if profile_over {
+                                "text-rose-600 dark:text-rose-400 font-medium"
+                            } else {
+                                "text-slate-500 dark:text-slate-400"
+                            };
+                            li class="flex items-center justify-between gap-3 text-sm" {
+                                span class="text-slate-700 dark:text-slate-300" { (profile.profile_name) }
+                                span class=(profile_class) {
+                                    (format_bytes_human(profile.used_bytes)) " / " (format_bytes_human(profile.quota_bytes))
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod storage_usage_tests {
+    use super::{format_bytes_human, is_storage_over_quota, storage_usage_percent};
+
+    #[test]
+    fn format_bytes_human_zero() {
+        assert_eq!(format_bytes_human(0), "0.0 B");
+    }
+
+    #[test]
+    fn format_bytes_human_sub_kb() {
+        assert_eq!(format_bytes_human(512), "512.0 B");
+    }
+
+    #[test]
+    fn format_bytes_human_exact_kb_boundary() {
+        assert_eq!(format_bytes_human(1000), "1.0 KB");
+    }
+
+    #[test]
+    fn format_bytes_human_exact_mb_boundary() {
+        assert_eq!(format_bytes_human(1000 * 1000), "1.0 MB");
+    }
+
+    #[test]
+    fn format_bytes_human_mb_example() {
+        assert_eq!(format_bytes_human(13 * 1000 * 1000), "13.0 MB");
+    }
+
+    #[test]
+    fn format_bytes_human_gb_example() {
+        // 1.4 GB, expressed as an exact byte count to avoid a lossy float-to-int cast.
+        let bytes = 1_000_000_000_i64 + 400_000_000;
+        assert_eq!(format_bytes_human(bytes), "1.4 GB");
+    }
+
+    #[test]
+    fn format_bytes_human_exact_tb_boundary() {
+        assert_eq!(format_bytes_human(1000_i64.pow(4)), "1.0 TB");
+    }
+
+    #[test]
+    fn format_bytes_human_negative_clamped_to_zero() {
+        assert_eq!(format_bytes_human(-5), "0.0 B");
+    }
+
+    #[test]
+    fn percent_zero_quota_zero_used_is_zero() {
+        assert!((storage_usage_percent(0, 0) - 0.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn percent_zero_quota_with_usage_is_fully_over() {
+        assert!((storage_usage_percent(5, 0) - 100.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn percent_normal_ratio() {
+        assert!((storage_usage_percent(50, 100) - 50.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn percent_over_quota_clamps_to_100() {
+        assert!((storage_usage_percent(150, 100) - 100.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn over_quota_detection() {
+        assert!(!is_storage_over_quota(50, 100));
+        assert!(is_storage_over_quota(150, 100));
+        assert!(is_storage_over_quota(1, 0));
+        assert!(!is_storage_over_quota(0, 0));
+    }
+}
+
 fn profile_editor(profile: &Profile) -> Markup {
     html! {
         details class="group rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50/60 dark:bg-slate-800/60 p-4 open:bg-white dark:open:bg-slate-800" {
@@ -4340,27 +4573,6 @@ fn video_table_row(video: &hof_core::domain::video::Video) -> Markup {
                 }
             }
             td class="px-3 py-2" { (status_badge(&video.status)) }
-        }
-    }
-}
-
-fn progress_fragment(progress: &DownloadProgress) -> Markup {
-    let percentage = format!("{:.2}", progress.percent);
-    let speed = progress.speed.as_deref().unwrap_or("n/a");
-    let eta = progress.eta.as_deref().unwrap_or("n/a");
-    let now = Utc::now().format("%H:%M:%S").to_string();
-
-    html! {
-        article class="rounded-xl border border-sky-200 dark:border-sky-800 bg-sky-50 dark:bg-sky-900/50 px-3 py-2 text-sm text-sky-900 dark:text-sky-100" {
-            div class="flex flex-wrap items-center justify-between gap-2" {
-                p class="font-medium" {
-                    (progress.platform_video_id.clone()) " · " (percentage) "%"
-                }
-                span class="text-xs text-sky-700" { (now) }
-            }
-            div class="mt-1 text-xs text-sky-800" {
-                "Speed: " (speed) " · ETA: " (eta)
-            }
         }
     }
 }
@@ -4855,14 +5067,6 @@ fn layout_with_flash(
                         setTimeout(function() { t.remove(); }, 4000);
                       }
                     })();
-
-                    // SSE placeholder removal
-                    document.body.addEventListener('htmx:sseMessage', function (event) {
-                      var feed = document.getElementById('download-progress-feed');
-                      if (!feed) return;
-                      var placeholder = feed.querySelector('p');
-                      if (placeholder) placeholder.remove();
-                    });
 
                     // Loading state on form submit
                     document.addEventListener('submit', function(e) {

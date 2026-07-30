@@ -319,7 +319,7 @@ fn start_jellyfin_metadata(
 async fn verify_output_dir_writable(dir: &Path) -> Option<SystemIssue> {
     use ulid::Ulid;
 
-    let test_file = dir.join(format!(".write_test_{}", Ulid::r#gen()));
+    let test_file = dir.join(format!(".write_test_{}", Ulid::generate()));
 
     match tokio::fs::write(&test_file, b"test").await {
         Ok(()) => {

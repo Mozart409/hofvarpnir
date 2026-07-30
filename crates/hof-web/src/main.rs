@@ -102,7 +102,7 @@ async fn main() -> Result<()> {
             }),
         ))
         .merge(api_router)
-        .nest("/docs", hof_api::scalar_router(openapi))
+        .merge(hof_api::scalar_router(openapi))
         .merge(hof_web::router(api_state, oidc_client.as_ref()))
         .layer(session_layer)
         .layer(axum::middleware::from_fn(hof_web::middleware::http_metrics))

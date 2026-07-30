@@ -2,10 +2,12 @@
 //!
 //! Verifies that:
 //! - `/docs` Scalar UI is accessible
+//! - `/docs/` redirects permanently to `/docs`
 //! - `/docs/openapi.json` returns valid `OpenAPI` spec
 //! - All paths in the spec start with `/api`
 //! - All documented endpoints are reachable
 
+use axum::http::StatusCode;
 use sqlx::PgPool;
 
 use crate::helpers::TestApp;
@@ -26,6 +28,25 @@ async fn docs_ui_returns_html(pool: PgPool) {
         content_type.contains("text/html"),
         "Expected HTML content-type, got: {content_type}"
     );
+}
+
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn docs_trailing_slash_redirects_to_docs(pool: PgPool) {
+    let app = TestApp::new(pool).await;
+
+    let response = app.server.get("/docs/").await;
+
+    // 308 Permanent Redirect: `/docs/` is not a distinct resource, it's the same
+    // Scalar UI reachable at the canonical `/docs` - a permanent redirect that
+    // preserves the request method (unlike 301, historically rewritten to GET by
+    // some clients, or 303, which always forces GET).
+    response.assert_status(StatusCode::PERMANENT_REDIRECT);
+    let location = response
+        .headers()
+        .get("location")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert_eq!(location, "/docs", "Expected redirect Location: /docs");
 }
 
 #[sqlx::test(migrations = "../hof-core/migrations")]

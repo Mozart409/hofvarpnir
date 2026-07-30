@@ -128,7 +128,7 @@ fn chapter_serde_round_trip() {
 fn playlist_deserialize() {
     let playlist = fixtures::load_playlist_fixture();
     assert_eq!(playlist.id, "PLhixgUqwRTjwvBI-hmbZ2rpkAl4lutnJG");
-    assert_eq!(playlist.title, "Minecraft:HACKED");
+    assert_eq!(playlist.title.as_deref(), Some("Minecraft:HACKED"));
     assert_eq!(playlist.entries.len(), 5);
 }
 
@@ -207,8 +207,8 @@ fn playlist_entry_fields() {
     let playlist = fixtures::load_playlist_fixture();
     let entry = &playlist.entries[0];
     assert_eq!(entry.id, "Ekcseve-mOg");
-    assert_eq!(entry.title, "I Spent 100 Days Hacking Minecraft");
-    assert!(!entry.url.is_empty());
+    assert_eq!(entry.title.as_deref(), Some("I Spent 100 Days Hacking Minecraft"));
+    assert!(entry.url.as_deref().is_some_and(|u| !u.is_empty()));
 }
 
 #[test]
@@ -297,8 +297,8 @@ fn playlist_hash() {
 fn compute_playlist_download_progress_percentage_correctly() {
     let entry = PlaylistEntry {
         id: "vid1".to_string(),
-        title: "Test".to_string(),
-        url: "https://example.com".to_string(),
+        title: Some("Test".to_string()),
+        url: Some("https://example.com".to_string()),
         index: Some(1),
         duration: Some(60.0),
         thumbnail: None,
@@ -321,8 +321,8 @@ fn compute_playlist_download_progress_percentage_correctly() {
 fn compute_playlist_download_progress_zero_when_total_zero() {
     let entry = PlaylistEntry {
         id: "vid1".to_string(),
-        title: "Test".to_string(),
-        url: "https://example.com".to_string(),
+        title: Some("Test".to_string()),
+        url: Some("https://example.com".to_string()),
         index: None,
         duration: None,
         thumbnail: None,
@@ -344,8 +344,8 @@ fn compute_playlist_download_progress_zero_when_total_zero() {
 fn display_playlist_download_progress_shows_completion_ratio() {
     let entry = PlaylistEntry {
         id: "vid1".to_string(),
-        title: "A Video".to_string(),
-        url: "https://example.com".to_string(),
+        title: Some("A Video".to_string()),
+        url: Some("https://example.com".to_string()),
         index: Some(1),
         duration: None,
         thumbnail: None,
