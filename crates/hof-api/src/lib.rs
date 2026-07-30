@@ -14,7 +14,7 @@ pub mod routes;
 
 use std::sync::Arc;
 
-use axum::{Json, Router, routing::get};
+use axum::{Json, Router, response::Redirect, routing::get};
 use hof_core::actors::cleanup::CleanupActor;
 use hof_core::actors::download_supervisor::DownloadSupervisor;
 use hof_core::actors::jellyfin_metadata::JellyfinMetadataActor;
@@ -217,20 +217,33 @@ pub fn router(state: AppState) -> (Router, utoipa::openapi::OpenApi) {
 
 /// Build the Scalar `OpenAPI` documentation router.
 ///
-/// Mount at `/docs` in the top-level application.
+/// The `/docs` prefix is baked into every route here, so this router must be
+/// `.merge()`d directly into the top-level application router - **not** `.nest()`ed
+/// under `/docs`.
 ///
 /// Provides:
-/// - `/docs/` - Scalar UI for interactive API documentation
+/// - `/docs` - Scalar UI for interactive API documentation
+/// - `/docs/` - Redirects (308 Permanent Redirect) to `/docs`
 /// - `/docs/openapi.json` - Raw `OpenAPI` specification in JSON format
+///
+/// # Why not `nest("/docs", ...)`
+///
+/// Axum's `Router::nest` maps an inner route registered at `"/"` to the *bare* nest
+/// prefix (e.g. `/docs`) rather than `/docs/`, since it special-cases `"/"` to avoid
+/// requiring an empty-path route for the prefix itself. That means nesting this router
+/// under `/docs` makes `/docs` work but leaves `/docs/` completely unmatched (404),
+/// with no way to additionally register a `/docs/` route from the inside of the nested
+/// router. Baking the prefix in here and merging avoids relying on that quirk.
 ///
 /// # Arguments
 ///
 /// * `openapi` - The `OpenAPI` spec from `router()`
 pub fn scalar_router(openapi: utoipa::openapi::OpenApi) -> Router {
     Router::new()
-        .merge(Scalar::with_url("/", openapi.clone()))
+        .merge(Scalar::with_url("/docs", openapi.clone()))
         .route(
-            "/openapi.json",
+            "/docs/openapi.json",
             get(move || async move { Json(openapi.clone()) }),
         )
+        .route("/docs/", get(|| async { Redirect::permanent("/docs") }))
 }

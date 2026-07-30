@@ -112,7 +112,7 @@ impl TestApp {
         let (api_router, openapi) = hof_api::router(state);
         let app = Router::new()
             .merge(api_router)
-            .nest("/docs", hof_api::scalar_router(openapi));
+            .merge(hof_api::scalar_router(openapi));
 
         let server = TestServer::new(app);
 
