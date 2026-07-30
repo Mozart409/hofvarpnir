@@ -440,8 +440,10 @@ async fn list_downloads_includes_source_and_profile_context(pool: PgPool) {
     assert!(item["profile_output_preset"].is_string());
 
     // Pre-existing fields are still present and unchanged in shape.
+    // `VideoStatus` sets `rename_all` on its sqlx type only, not on serde, so
+    // the JSON representation is the PascalCase variant name.
     assert_eq!(item["title"], "Test Video");
-    assert_eq!(item["status"], "completed");
+    assert_eq!(item["status"], "Completed");
 }
 
 #[sqlx::test(migrations = "../hof-core/migrations")]
