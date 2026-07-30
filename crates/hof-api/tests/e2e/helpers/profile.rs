@@ -35,7 +35,7 @@ impl ProfileBuilder {
             output_dir: format!("/tmp/test_downloads_{id}"),
             include_livestreams: false,
             include_shorts: false,
-            storage_quota_bytes: 100 * 1024 * 1024 * 1024, // 100 GB
+            storage_quota_bytes: 100_000_000_000, // 100 GB
             retention_days: None,
         }
     }

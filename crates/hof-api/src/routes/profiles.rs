@@ -114,7 +114,7 @@ pub struct CreateProfileRequest {
 
 const fn default_storage_quota() -> i64 {
     // 100 GB default
-    100 * 1024 * 1024 * 1024
+    100_000_000_000
 }
 
 /// Request body for updating a profile.

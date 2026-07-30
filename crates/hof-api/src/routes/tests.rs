@@ -97,7 +97,7 @@ mod profile_tests {
         assert!(!req.include_shorts); // default false
         assert!(req.output_preset.is_none());
         // Default quota is 100GB
-        assert_eq!(req.storage_quota_bytes, 100 * 1024 * 1024 * 1024);
+        assert_eq!(req.storage_quota_bytes, 100_000_000_000);
         assert!(req.retention_days.is_none());
     }
 

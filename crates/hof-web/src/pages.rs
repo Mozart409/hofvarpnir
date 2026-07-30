@@ -4127,7 +4127,7 @@ fn metric_card(title: &str, value: impl std::fmt::Display, description: &str) ->
     }
 }
 
-/// Format a byte count using binary (1024-based) units with a single decimal place,
+/// Format a byte count using decimal (1000-based) SI units with a single decimal place,
 /// e.g. `0.0 B`, `13.0 MB`, `1.4 GB`.
 fn format_bytes_human(bytes: i64) -> String {
     const UNITS: [&str; 6] = ["B", "KB", "MB", "GB", "TB", "PB"];
@@ -4135,8 +4135,8 @@ fn format_bytes_human(bytes: i64) -> String {
     #[allow(clippy::cast_precision_loss)]
     let mut value = bytes.max(0) as f64;
     let mut unit_index = 0usize;
-    while value >= 1024.0 && unit_index < UNITS.len() - 1 {
-        value /= 1024.0;
+    while value >= 1000.0 && unit_index < UNITS.len() - 1 {
+        value /= 1000.0;
         unit_index += 1;
     }
     format!("{value:.1} {}", UNITS[unit_index])
@@ -4234,29 +4234,29 @@ mod storage_usage_tests {
 
     #[test]
     fn format_bytes_human_exact_kb_boundary() {
-        assert_eq!(format_bytes_human(1024), "1.0 KB");
+        assert_eq!(format_bytes_human(1000), "1.0 KB");
     }
 
     #[test]
     fn format_bytes_human_exact_mb_boundary() {
-        assert_eq!(format_bytes_human(1024 * 1024), "1.0 MB");
+        assert_eq!(format_bytes_human(1000 * 1000), "1.0 MB");
     }
 
     #[test]
     fn format_bytes_human_mb_example() {
-        assert_eq!(format_bytes_human(13 * 1024 * 1024), "13.0 MB");
+        assert_eq!(format_bytes_human(13 * 1000 * 1000), "13.0 MB");
     }
 
     #[test]
     fn format_bytes_human_gb_example() {
-        // 1.4 GiB, expressed as an exact byte count to avoid a lossy float-to-int cast.
-        let bytes = 1024_i64 * 1024 * 1024 + 1024 * 1024 * 1024 * 4 / 10;
+        // 1.4 GB, expressed as an exact byte count to avoid a lossy float-to-int cast.
+        let bytes = 1_000_000_000_i64 + 400_000_000;
         assert_eq!(format_bytes_human(bytes), "1.4 GB");
     }
 
     #[test]
     fn format_bytes_human_exact_tb_boundary() {
-        assert_eq!(format_bytes_human(1024_i64.pow(4)), "1.0 TB");
+        assert_eq!(format_bytes_human(1000_i64.pow(4)), "1.0 TB");
     }
 
     #[test]
