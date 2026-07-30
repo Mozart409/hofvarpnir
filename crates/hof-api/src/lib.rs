@@ -169,6 +169,7 @@ impl AppState {
         system::CleanupResultResponse,
         auth::ApiErrorResponse,
         hof_core::domain::profile::Quality,
+        hof_core::domain::profile::OutputPreset,
         hof_core::domain::source::SourceType,
         hof_core::domain::video::VideoStatus,
         hof_core::domain::activity::ActivityEventType,
