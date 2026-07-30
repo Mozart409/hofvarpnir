@@ -870,3 +870,53 @@ pub async fn delete_video(pool: &PgPool, id: Ulid) -> Result<(), DbError> {
 
     Ok(())
 }
+
+/// Storage usage for a single profile, used to render the storage quota card on the dashboard.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct ProfileStorageUsage {
+    pub profile_name: String,
+    pub used_bytes: i64,
+    pub quota_bytes: i64,
+}
+
+/// Get storage usage (bytes actually occupied on disk) grouped by profile, alongside each
+/// profile's configured quota.
+///
+/// Only videos with status `completed` and a non-null `file_path` are counted, since those are
+/// the only videos that currently occupy space on disk: queued/pending/downloading videos have
+/// no file yet, failed videos never produced one, and `cleaned` videos have had their file
+/// removed by the retention policy. A video linked to multiple sources under the same profile
+/// is only counted once for that profile.
+///
+/// # Errors
+///
+/// Returns an error if the database operation fails.
+#[instrument(skip(pool), fields(otel.kind = "client", db.system = "postgresql"))]
+pub async fn get_storage_usage_by_profile(
+    pool: &PgPool,
+) -> Result<Vec<ProfileStorageUsage>, DbError> {
+    let rows = sqlx::query_as::<_, ProfileStorageUsage>(
+        r"
+        WITH profile_videos AS (
+            SELECT DISTINCT s.profile_id, v.id AS video_id, v.file_size_bytes
+            FROM sources s
+            INNER JOIN source_videos sv ON sv.source_id = s.id
+            INNER JOIN videos v ON v.id = sv.video_id
+            WHERE v.status = 'completed'
+              AND v.file_path IS NOT NULL
+        )
+        SELECT
+            p.name AS profile_name,
+            COALESCE(SUM(pv.file_size_bytes), 0)::BIGINT AS used_bytes,
+            p.storage_quota_bytes AS quota_bytes
+        FROM profiles p
+        LEFT JOIN profile_videos pv ON pv.profile_id = p.id
+        GROUP BY p.id, p.name, p.storage_quota_bytes
+        ORDER BY p.name
+        ",
+    )
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows)
+}
