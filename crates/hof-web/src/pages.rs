@@ -649,17 +649,19 @@ fn auth_layout(title: &str, content: impl Render) -> Markup {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 async fn dashboard_page(
     _auth: AuthUser,
     State(state): State<AppState>,
     session: Session,
 ) -> impl IntoResponse {
     let flash = take_flash(&session).await;
-    let (profiles_result, sources_result, videos_result, source_names_result) = tokio::join!(
+    let (profiles_result, sources_result, videos_result, source_names_result, storage_usage_result) = tokio::join!(
         db::list_profiles(&state.pool),
         db::list_sources(&state.pool),
         db::list_videos(&state.pool, None),
-        db::get_source_names_for_videos(&state.pool)
+        db::get_source_names_for_videos(&state.pool),
+        db::get_storage_usage_by_profile(&state.pool)
     );
 
     let profiles = match profiles_result {
@@ -699,6 +701,17 @@ async fn dashboard_page(
         Ok(data) => data,
         Err(error) => {
             tracing::error!(%error, "failed to load source names for dashboard");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                error_page("Failed to load dashboard"),
+            );
+        }
+    };
+
+    let storage_usage = match storage_usage_result {
+        Ok(data) => data,
+        Err(error) => {
+            tracing::error!(%error, "failed to load storage usage for dashboard");
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 error_page("Failed to load dashboard"),
@@ -749,6 +762,7 @@ async fn dashboard_page(
                         failed,
                         &recent,
                         &source_names,
+                        &storage_usage,
                     ))
                 }
             }
@@ -768,6 +782,7 @@ fn dashboard_metrics_markup(
     failed: usize,
     recent: &[&Video],
     source_names: &HashMap<Ulid, String>,
+    storage_usage: &[db::ProfileStorageUsage],
 ) -> Markup {
     html! {
         div class="grid gap-4 md:grid-cols-2 xl:grid-cols-4" {
@@ -780,6 +795,7 @@ fn dashboard_metrics_markup(
             (metric_card("Completed", completed, "Successfully archived videos"))
             (metric_card("Failed", failed, "Need retry or manual check"))
         }
+        (storage_usage_card_markup(storage_usage))
         section class="mt-8 rounded-2xl border border-slate-200 dark:border-slate-700 bg-white/80 dark:bg-slate-800/80 p-6 shadow-sm" {
             h2 class="text-lg font-semibold text-slate-900 dark:text-slate-100" { "Recent Downloads" }
             @if recent.is_empty() {
@@ -813,17 +829,24 @@ async fn dashboard_events_sse(
     let stream = debounced_broadcast(rx).filter_map(move |()| {
         let pool = state.pool.clone();
         async move {
-            let (profiles_result, sources_result, videos_result, source_names_result) =
-                tokio::join!(
-                    db::list_profiles(&pool),
-                    db::list_sources(&pool),
-                    db::list_videos(&pool, None),
-                    db::get_source_names_for_videos(&pool)
-                );
+            let (
+                profiles_result,
+                sources_result,
+                videos_result,
+                source_names_result,
+                storage_usage_result,
+            ) = tokio::join!(
+                db::list_profiles(&pool),
+                db::list_sources(&pool),
+                db::list_videos(&pool, None),
+                db::get_source_names_for_videos(&pool),
+                db::get_storage_usage_by_profile(&pool)
+            );
             let profiles = profiles_result.ok()?;
             let sources = sources_result.ok()?;
             let videos = videos_result.ok()?;
             let source_names = source_names_result.ok()?;
+            let storage_usage = storage_usage_result.ok()?;
 
             let pending = videos
                 .iter()
@@ -857,6 +880,7 @@ async fn dashboard_events_sse(
                 failed,
                 &recent,
                 &source_names,
+                &storage_usage,
             )
             .into_string();
 
@@ -4057,6 +4081,172 @@ fn metric_card(title: &str, value: impl std::fmt::Display, description: &str) ->
             p class="mt-2 text-3xl font-semibold text-slate-900 dark:text-slate-100" { (value) }
             p class="mt-2 text-sm text-slate-600 dark:text-slate-400" { (description) }
         }
+    }
+}
+
+/// Format a byte count using binary (1024-based) units with a single decimal place,
+/// e.g. `0.0 B`, `13.0 MB`, `1.4 GB`.
+fn format_bytes_human(bytes: i64) -> String {
+    const UNITS: [&str; 6] = ["B", "KB", "MB", "GB", "TB", "PB"];
+
+    #[allow(clippy::cast_precision_loss)]
+    let mut value = bytes.max(0) as f64;
+    let mut unit_index = 0usize;
+    while value >= 1024.0 && unit_index < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit_index += 1;
+    }
+    format!("{value:.1} {}", UNITS[unit_index])
+}
+
+/// Percentage of quota used, clamped to `0.0..=100.0`.
+///
+/// Returns `0.0` when the quota is non-positive and nothing has been used, so callers never
+/// divide by zero. A non-positive quota with any usage at all is treated as fully over budget.
+fn storage_usage_percent(used_bytes: i64, quota_bytes: i64) -> f64 {
+    let quota = quota_bytes.max(0);
+    if quota == 0 {
+        return if used_bytes > 0 { 100.0 } else { 0.0 };
+    }
+
+    #[allow(clippy::cast_precision_loss)]
+    let percent = (used_bytes.max(0) as f64 / quota as f64) * 100.0;
+    percent.clamp(0.0, 100.0)
+}
+
+/// Whether usage exceeds the quota, treating a non-positive quota as leaving no room at all.
+fn is_storage_over_quota(used_bytes: i64, quota_bytes: i64) -> bool {
+    used_bytes > quota_bytes.max(0)
+}
+
+/// Render the storage quota usage card for the dashboard: a headline "used / quota" figure with
+/// a progress bar, plus a per-profile breakdown when more than one profile exists.
+fn storage_usage_card_markup(usage: &[db::ProfileStorageUsage]) -> Markup {
+    let total_used: i64 = usage.iter().map(|profile| profile.used_bytes).sum();
+    let total_quota: i64 = usage.iter().map(|profile| profile.quota_bytes).sum();
+    let percent = storage_usage_percent(total_used, total_quota);
+    let over_quota = is_storage_over_quota(total_used, total_quota);
+    let headline_class = if over_quota {
+        "text-rose-600 dark:text-rose-400"
+    } else {
+        "text-slate-900 dark:text-slate-100"
+    };
+    let bar_class = if over_quota {
+        "bg-rose-500 dark:bg-rose-400"
+    } else {
+        "bg-emerald-500 dark:bg-emerald-400"
+    };
+
+    html! {
+        section class="mt-8 rounded-2xl border border-slate-200 dark:border-slate-700 bg-white/80 dark:bg-slate-800/80 p-6 shadow-sm" {
+            h2 class="text-lg font-semibold text-slate-900 dark:text-slate-100" { "Storage Quota" }
+            @if usage.is_empty() {
+                p class="mt-3 text-sm text-slate-500 dark:text-slate-400" { "No profiles configured yet." }
+            } @else {
+                p class=(format!("mt-3 text-2xl font-semibold {headline_class}")) {
+                    (format_bytes_human(total_used)) " / " (format_bytes_human(total_quota))
+                }
+                div class="mt-2 h-2 w-full overflow-hidden rounded-full bg-slate-200 dark:bg-slate-700" {
+                    div
+                        class=(format!("h-full rounded-full {bar_class}"))
+                        style=(format!("width: {percent:.1}%"))
+                    {}
+                }
+                @if usage.len() > 1 {
+                    ul class="mt-4 space-y-2" {
+                        @for profile in usage {
+                            @let profile_over = is_storage_over_quota(profile.used_bytes, profile.quota_bytes);
+                            @let profile_class = if profile_over {
+                                "text-rose-600 dark:text-rose-400 font-medium"
+                            } else {
+                                "text-slate-500 dark:text-slate-400"
+                            };
+                            li class="flex items-center justify-between gap-3 text-sm" {
+                                span class="text-slate-700 dark:text-slate-300" { (profile.profile_name) }
+                                span class=(profile_class) {
+                                    (format_bytes_human(profile.used_bytes)) " / " (format_bytes_human(profile.quota_bytes))
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod storage_usage_tests {
+    use super::{format_bytes_human, is_storage_over_quota, storage_usage_percent};
+
+    #[test]
+    fn format_bytes_human_zero() {
+        assert_eq!(format_bytes_human(0), "0.0 B");
+    }
+
+    #[test]
+    fn format_bytes_human_sub_kb() {
+        assert_eq!(format_bytes_human(512), "512.0 B");
+    }
+
+    #[test]
+    fn format_bytes_human_exact_kb_boundary() {
+        assert_eq!(format_bytes_human(1024), "1.0 KB");
+    }
+
+    #[test]
+    fn format_bytes_human_exact_mb_boundary() {
+        assert_eq!(format_bytes_human(1024 * 1024), "1.0 MB");
+    }
+
+    #[test]
+    fn format_bytes_human_mb_example() {
+        assert_eq!(format_bytes_human(13 * 1024 * 1024), "13.0 MB");
+    }
+
+    #[test]
+    fn format_bytes_human_gb_example() {
+        // 1.4 GiB, expressed as an exact byte count to avoid a lossy float-to-int cast.
+        let bytes = 1024_i64 * 1024 * 1024 + 1024 * 1024 * 1024 * 4 / 10;
+        assert_eq!(format_bytes_human(bytes), "1.4 GB");
+    }
+
+    #[test]
+    fn format_bytes_human_exact_tb_boundary() {
+        assert_eq!(format_bytes_human(1024_i64.pow(4)), "1.0 TB");
+    }
+
+    #[test]
+    fn format_bytes_human_negative_clamped_to_zero() {
+        assert_eq!(format_bytes_human(-5), "0.0 B");
+    }
+
+    #[test]
+    fn percent_zero_quota_zero_used_is_zero() {
+        assert!((storage_usage_percent(0, 0) - 0.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn percent_zero_quota_with_usage_is_fully_over() {
+        assert!((storage_usage_percent(5, 0) - 100.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn percent_normal_ratio() {
+        assert!((storage_usage_percent(50, 100) - 50.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn percent_over_quota_clamps_to_100() {
+        assert!((storage_usage_percent(150, 100) - 100.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn over_quota_detection() {
+        assert!(!is_storage_over_quota(50, 100));
+        assert!(is_storage_over_quota(150, 100));
+        assert!(is_storage_over_quota(1, 0));
+        assert!(!is_storage_over_quota(0, 0));
     }
 }
 
