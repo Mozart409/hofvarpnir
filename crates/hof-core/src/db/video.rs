@@ -7,8 +7,19 @@ use ulid::Ulid;
 
 use super::DbError;
 use crate::domain::video::{
-    Video, VideoPendingDeletion, VideoPendingDeletionRow, VideoRow, VideoStatus,
+    Video, VideoContext, VideoContextRow, VideoPendingDeletion, VideoPendingDeletionRow, VideoRow,
+    VideoStatus,
 };
+
+// Note: the two `_with_context` queries below (`list_videos_with_context` and
+// `get_video_with_context`) intentionally duplicate their `SELECT`/`LEFT JOIN
+// LATERAL` text rather than sharing it via a `format!`-built string: sqlx 0.9
+// requires `query_as`'s SQL argument to be `&'static str` (its `SqlSafeStr`
+// bound is not implemented for a runtime `String`), so the query text must
+// stay a literal. The `LATERAL` join resolves the first-linked source (and
+// its profile) for each video, ordered by `source_videos.created_at ASC` --
+// i.e. it favors the source the video was *first* linked to, on the rare
+// occasion a video is linked to more than one source.
 
 /// Data required to create a new video.
 #[derive(Debug, Clone)]
@@ -137,6 +148,49 @@ pub async fn get_video(pool: &PgPool, id: Ulid) -> Result<Video, DbError> {
     Ok(Video::try_from(row)?)
 }
 
+/// Get a video by ID, enriched with its (first-linked) source and profile
+/// context (channel URL, custom name, quality preset, ...).
+///
+/// # Errors
+///
+/// Returns `DbError::NotFound` if the video doesn't exist.
+#[instrument(skip(pool), fields(otel.kind = "client", db.system = "postgresql"))]
+pub async fn get_video_with_context(pool: &PgPool, id: Ulid) -> Result<VideoContext, DbError> {
+    let row = sqlx::query_as::<_, VideoContextRow>(
+        r"
+        SELECT v.id, v.platform, v.platform_video_id, v.title, v.description,
+               v.duration_secs, v.published_at, v.thumbnail_url, v.status, v.attempts,
+               v.next_retry, v.last_error, v.file_path, v.file_size_bytes,
+               v.downloaded_at, v.created_at, v.updated_at,
+               sc.source_id, sc.source_url, sc.source_type, sc.source_custom_name,
+               sc.source_channel_id, sc.source_channel_title, sc.source_channel_thumbnail_url,
+               sc.profile_id, sc.profile_name, sc.profile_quality, sc.profile_output_preset
+        FROM videos v
+        LEFT JOIN LATERAL (
+            SELECT s.id AS source_id, s.url AS source_url, s.source_type AS source_type,
+                   s.custom_name AS source_custom_name, s.channel_id AS source_channel_id,
+                   s.channel_title AS source_channel_title,
+                   s.channel_thumbnail_url AS source_channel_thumbnail_url,
+                   p.id AS profile_id, p.name AS profile_name,
+                   p.quality AS profile_quality, p.output_preset AS profile_output_preset
+            FROM source_videos sv
+            INNER JOIN sources s ON s.id = sv.source_id
+            INNER JOIN profiles p ON p.id = s.profile_id
+            WHERE sv.video_id = v.id
+            ORDER BY sv.created_at ASC
+            LIMIT 1
+        ) sc ON true
+        WHERE v.id = $1
+        ",
+    )
+    .bind(id.to_string())
+    .fetch_optional(pool)
+    .await?
+    .ok_or(DbError::NotFound)?;
+
+    Ok(VideoContext::try_from(row)?)
+}
+
 /// Get a video by platform and platform video ID.
 ///
 /// # Errors
@@ -212,6 +266,55 @@ pub async fn list_videos(
 
     rows.into_iter()
         .map(Video::try_from)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(DbError::from)
+}
+
+/// List all videos with optional status filter, enriched with each video's
+/// (first-linked) source and profile context in a single query (no N+1).
+///
+/// # Errors
+///
+/// Returns an error if the database operation fails.
+#[instrument(skip(pool), fields(otel.kind = "client", db.system = "postgresql"))]
+pub async fn list_videos_with_context(
+    pool: &PgPool,
+    status_filter: Option<VideoStatus>,
+) -> Result<Vec<VideoContext>, DbError> {
+    let rows = sqlx::query_as::<_, VideoContextRow>(
+        r"
+        SELECT v.id, v.platform, v.platform_video_id, v.title, v.description,
+               v.duration_secs, v.published_at, v.thumbnail_url, v.status, v.attempts,
+               v.next_retry, v.last_error, v.file_path, v.file_size_bytes,
+               v.downloaded_at, v.created_at, v.updated_at,
+               sc.source_id, sc.source_url, sc.source_type, sc.source_custom_name,
+               sc.source_channel_id, sc.source_channel_title, sc.source_channel_thumbnail_url,
+               sc.profile_id, sc.profile_name, sc.profile_quality, sc.profile_output_preset
+        FROM videos v
+        LEFT JOIN LATERAL (
+            SELECT s.id AS source_id, s.url AS source_url, s.source_type AS source_type,
+                   s.custom_name AS source_custom_name, s.channel_id AS source_channel_id,
+                   s.channel_title AS source_channel_title,
+                   s.channel_thumbnail_url AS source_channel_thumbnail_url,
+                   p.id AS profile_id, p.name AS profile_name,
+                   p.quality AS profile_quality, p.output_preset AS profile_output_preset
+            FROM source_videos sv
+            INNER JOIN sources s ON s.id = sv.source_id
+            INNER JOIN profiles p ON p.id = s.profile_id
+            WHERE sv.video_id = v.id
+            ORDER BY sv.created_at ASC
+            LIMIT 1
+        ) sc ON true
+        WHERE ($1::video_status IS NULL OR v.status = $1)
+        ORDER BY v.created_at DESC
+        ",
+    )
+    .bind(status_filter)
+    .fetch_all(pool)
+    .await?;
+
+    rows.into_iter()
+        .map(VideoContext::try_from)
         .collect::<Result<Vec<_>, _>>()
         .map_err(DbError::from)
 }
@@ -307,6 +410,51 @@ pub async fn list_videos_for_source(pool: &PgPool, source_id: Ulid) -> Result<Ve
 
     rows.into_iter()
         .map(Video::try_from)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(DbError::from)
+}
+
+/// List videos for a specific source, enriched with source/profile context.
+///
+/// Enriched with that source's and its profile's context in a single query
+/// (no N+1). Since the source is already fixed by `source_id`, this joins
+/// directly rather than via the "first-linked source" `LATERAL` used by
+/// [`list_videos_with_context`].
+///
+/// # Errors
+///
+/// Returns an error if the database operation fails.
+#[instrument(skip(pool), fields(otel.kind = "client", db.system = "postgresql"))]
+pub async fn list_videos_for_source_with_context(
+    pool: &PgPool,
+    source_id: Ulid,
+) -> Result<Vec<VideoContext>, DbError> {
+    let rows = sqlx::query_as::<_, VideoContextRow>(
+        r"
+        SELECT v.id, v.platform, v.platform_video_id, v.title, v.description,
+               v.duration_secs, v.published_at, v.thumbnail_url, v.status, v.attempts,
+               v.next_retry, v.last_error, v.file_path, v.file_size_bytes,
+               v.downloaded_at, v.created_at, v.updated_at,
+               s.id AS source_id, s.url AS source_url, s.source_type AS source_type,
+               s.custom_name AS source_custom_name, s.channel_id AS source_channel_id,
+               s.channel_title AS source_channel_title,
+               s.channel_thumbnail_url AS source_channel_thumbnail_url,
+               p.id AS profile_id, p.name AS profile_name,
+               p.quality AS profile_quality, p.output_preset AS profile_output_preset
+        FROM videos v
+        INNER JOIN source_videos sv ON sv.video_id = v.id
+        INNER JOIN sources s ON s.id = sv.source_id
+        INNER JOIN profiles p ON p.id = s.profile_id
+        WHERE sv.source_id = $1
+        ORDER BY v.created_at DESC
+        ",
+    )
+    .bind(source_id.to_string())
+    .fetch_all(pool)
+    .await?;
+
+    rows.into_iter()
+        .map(VideoContext::try_from)
         .collect::<Result<Vec<_>, _>>()
         .map_err(DbError::from)
 }
