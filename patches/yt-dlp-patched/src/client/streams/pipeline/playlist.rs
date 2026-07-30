@@ -353,7 +353,11 @@ impl Downloader {
     ) where
         F: Fn(PlaylistDownloadProgress) + Send + Sync + 'static,
     {
-        tracing::warn!(title = entry.title, id = entry.id, "Skipping unavailable video");
+        tracing::warn!(
+            title = entry.title.as_deref().unwrap_or("unknown"),
+            id = entry.id,
+            "Skipping unavailable video"
+        );
 
         self.emit_event(crate::events::DownloadEvent::PlaylistItemFailed {
             playlist_id: playlist.id.clone(),
@@ -408,12 +412,12 @@ impl Downloader {
 
             let url = match &entry.url {
                 Some(u) => u.clone(),
-                None => {
-                    return (
-                        entry,
-                        Err(Error::video_fetch("unknown", "Video URL not available")),
-                    )
-                }
+                None => return (entry, Err(Error::video_fetch("unknown", "Video URL not available"))),
+            };
+
+            let title = match &entry.title {
+                Some(t) => t.clone(),
+                None => return (entry, Err(Error::video_fetch("unknown", "Video title not available"))),
             };
 
             let video = match youtube.fetch_video_infos(url).await {
@@ -423,14 +427,14 @@ impl Downloader {
 
             let filename = output_pattern
                 .replace("%(playlist_index)s", &entry.index.unwrap_or(0).to_string())
-                .replace("%(title)s", &crate::utils::validation::sanitize_filename(&entry.title))
+                .replace("%(title)s", &crate::utils::validation::sanitize_filename(&title))
                 .replace("%(id)s", &entry.id);
 
             let download_result = youtube.download_video(&video, &filename).await;
 
             if download_result.is_ok() {
                 tracing::info!(
-                    title = entry.title,
+                    title = title,
                     index = entry.index.unwrap_or(0),
                     "✅ Downloaded video from playlist"
                 );
@@ -536,14 +540,30 @@ impl Downloader {
         for &index in indices {
             if let Some(entry) = playlist.get_entry_by_index(index) {
                 if !entry.is_available() {
-                    tracing::warn!(index = index, title = entry.title, "Skipping unavailable video");
+                    tracing::warn!(
+                        index = index,
+                        title = entry.title.as_deref().unwrap_or("unknown"),
+                        "Skipping unavailable video"
+                    );
                     continue;
                 }
 
                 let url = match &entry.url {
                     Some(u) => u.clone(),
                     None => {
-                        tracing::warn!(index = index, title = entry.title, "Skipping video without URL");
+                        tracing::warn!(
+                            index = index,
+                            title = entry.title.as_deref().unwrap_or("unknown"),
+                            "Skipping video without URL"
+                        );
+                        continue;
+                    }
+                };
+
+                let title = match &entry.title {
+                    Some(t) => t.clone(),
+                    None => {
+                        tracing::warn!(index = index, id = entry.id, "Skipping video without title");
                         continue;
                     }
                 };
@@ -555,14 +575,14 @@ impl Downloader {
                 let filename = output_pattern
                     .as_ref()
                     .replace("%(playlist_index)s", &index.to_string())
-                    .replace("%(title)s", &crate::utils::validation::sanitize_filename(&entry.title))
+                    .replace("%(title)s", &crate::utils::validation::sanitize_filename(&title))
                     .replace("%(id)s", &entry.id);
 
                 // Download the video
                 let video_path = self.download_video(&video, &filename).await?;
                 downloaded_files.push(video_path);
 
-                tracing::info!(index = index, title = entry.title, "✅ Downloaded video");
+                tracing::info!(index = index, title = title, "✅ Downloaded video");
             } else {
                 tracing::warn!(index = index, "Index out of bounds for playlist");
             }
@@ -602,14 +622,30 @@ impl Downloader {
 
         for entry in entries {
             if !entry.is_available() {
-                tracing::warn!(title = entry.title, id = entry.id, "Skipping unavailable video");
+                tracing::warn!(
+                    title = entry.title.as_deref().unwrap_or("unknown"),
+                    id = entry.id,
+                    "Skipping unavailable video"
+                );
                 continue;
             }
 
             let url = match &entry.url {
                 Some(u) => u.clone(),
                 None => {
-                    tracing::warn!(title = entry.title, id = entry.id, "Skipping video without URL");
+                    tracing::warn!(
+                        title = entry.title.as_deref().unwrap_or("unknown"),
+                        id = entry.id,
+                        "Skipping video without URL"
+                    );
+                    continue;
+                }
+            };
+
+            let title = match &entry.title {
+                Some(t) => t.clone(),
+                None => {
+                    tracing::warn!(id = entry.id, "Skipping video without title");
                     continue;
                 }
             };
@@ -621,14 +657,14 @@ impl Downloader {
             let filename = output_pattern
                 .as_ref()
                 .replace("%(playlist_index)s", &entry.index.unwrap_or(0).to_string())
-                .replace("%(title)s", &crate::utils::validation::sanitize_filename(&entry.title))
+                .replace("%(title)s", &crate::utils::validation::sanitize_filename(&title))
                 .replace("%(id)s", &entry.id);
 
             // Download the video
             let video_path = self.download_video(&video, &filename).await?;
             downloaded_files.push(video_path);
 
-            tracing::info!(title = entry.title, "✅ Downloaded video");
+            tracing::info!(title = title, "✅ Downloaded video");
         }
 
         Ok(downloaded_files)

@@ -11,7 +11,7 @@ async fn playlist_fixture_loads() {
     assert_eq!(playlist.id, "PLhixgUqwRTjwvBI-hmbZ2rpkAl4lutnJG");
     assert_eq!(playlist.entries.len(), 5);
     assert_eq!(playlist.entry_count(), 5);
-    assert_eq!(playlist.title, "Minecraft:HACKED");
+    assert_eq!(playlist.title.as_deref(), Some("Minecraft:HACKED"));
 }
 
 /// Verify each playlist entry has an ID and URL.
@@ -21,7 +21,11 @@ async fn playlist_entries_have_metadata() {
 
     for (i, entry) in playlist.entries.iter().enumerate() {
         assert!(!entry.id.is_empty(), "Entry {} should have a non-empty ID", i);
-        assert!(!entry.url.is_empty(), "Entry {} should have a non-empty URL", i);
+        assert!(
+            entry.url.as_deref().is_some_and(|u| !u.is_empty()),
+            "Entry {} should have a non-empty URL",
+            i
+        );
     }
 }
 

@@ -189,7 +189,7 @@ pub trait ExtractorBase: VideoExtractor {
                 url = url,
                 extractor = extractor,
                 playlist_id = playlist.id,
-                title = playlist.title,
+                title = playlist.title.as_deref().unwrap_or("unknown"),
                 entry_count = playlist.entries.len(),
                 "✅ Playlist fetched successfully"
             ),
@@ -314,7 +314,7 @@ pub async fn execute_and_parse_playlist(
 
     tracing::debug!(
         playlist_id = %playlist.id,
-        title = %playlist.title,
+        title = playlist.title.as_deref().unwrap_or("unknown"),
         entry_count = playlist.entries.len(),
         "✅ Playlist parsed successfully"
     );

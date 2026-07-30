@@ -53,7 +53,7 @@ impl From<(String, Playlist)> for CachedPlaylist {
 
         Self {
             id: playlist.id.clone(),
-            title: playlist.title.clone(),
+            title: playlist.title.clone().unwrap_or_default(),
             url,
             playlist_json,
             cached_at: current_timestamp(),
