@@ -2,6 +2,31 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.4.0 - 2026-07-30
+#### Features
+- (**api**) add source and profile context to downloads response - (4f2b656) - Amadeus Mader
+- (**dashboard**) show storage quota usage card - (fc7d96f) - Amadeus Mader
+- (**downloads**) remove live progress section - (f085264) - Amadeus Mader
+#### Bug Fixes
+- (**activity**) show source pill on download events - (6e5371d) - Amadeus Mader
+- (**api**) assert actual json casing for download status in test - (483a5f5) - Amadeus Mader
+- (**api**) redirect /docs/ to /docs - (257ead2) - Amadeus Mader
+- (**indexer**) tolerate null video titles in playlist json - (483d213) - Amadeus Mader
+- (**web**) use decimal GB for storage quota display - (e0b7f88) - Amadeus Mader
+#### Documentation
+- (**ytdlp**) record vendored patch delta and re-sync steps - (2ade9cc) - Amadeus Mader
+#### Continuous Integration
+- (**codeql**) fix version mismatch - (c7cb64a) - Amadeus Mader
+#### Refactoring
+- (**ulid**) upgrade to ulid v3 - (aba8c3b) - Amadeus Mader
+#### Miscellaneous Chores
+- (**ci**) type-check vendored patch crates - (35187ff) - Amadeus Mader
+- (**css**) minifiy - (6a83af8) - Amadeus Mader
+- (**deps**) upgrade flake - (0b72637) - Amadeus Mader
+- (**tools**) remove cog install hook as its covered by lefthook - (fb15908) - Amadeus Mader
+
+- - -
+
 ## v0.3.1 - 2026-07-23
 #### Bug Fixes
 - (**downloads**) dispatch pending downloads inline to avoid mailbox drops - (94bbfbf) - Amadeus Mader
