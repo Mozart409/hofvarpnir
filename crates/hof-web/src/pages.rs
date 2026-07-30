@@ -982,6 +982,9 @@ async fn activity_events_sse(
                 }
             };
             let source_names = load_activity_source_names(&pool).await;
+            let video_source_names = db::get_source_names_for_videos(&pool)
+                .await
+                .unwrap_or_default();
             let total = count_result.unwrap_or(0);
             let total_pages = if total == 0 {
                 1
@@ -993,6 +996,7 @@ async fn activity_events_sse(
             let fragment = activity_content_markup(
                 &events,
                 &source_names,
+                &video_source_names,
                 page_num,
                 total_pages,
                 current_severity,
@@ -3035,6 +3039,9 @@ async fn activity_page(
     };
 
     let source_names = load_activity_source_names(&state.pool).await;
+    let video_source_names = db::get_source_names_for_videos(&state.pool)
+        .await
+        .unwrap_or_default();
 
     let total = count_result.unwrap_or(0);
     let total_pages = (total + per_page - 1) / per_page;
@@ -3061,6 +3068,7 @@ async fn activity_page(
                         (activity_content_markup(
                             &events,
                             &source_names,
+                            &video_source_names,
                             page_num,
                             total_pages,
                             current_severity,
@@ -3106,6 +3114,9 @@ async fn activity_list_partial(
     };
 
     let source_names = load_activity_source_names(&state.pool).await;
+    let video_source_names = db::get_source_names_for_videos(&state.pool)
+        .await
+        .unwrap_or_default();
 
     let total = count_result.unwrap_or(0);
     let total_pages = if total == 0 {
@@ -3118,6 +3129,7 @@ async fn activity_list_partial(
     activity_content_markup(
         &events,
         &source_names,
+        &video_source_names,
         page_num,
         total_pages,
         current_severity,
@@ -3512,6 +3524,7 @@ fn downloads_list_markup(
 fn activity_content_markup(
     events: &[hof_core::domain::activity::ActivityEvent],
     source_names: &HashMap<Ulid, String>,
+    video_source_names: &HashMap<Ulid, String>,
     page_num: i64,
     total_pages: i64,
     current_severity: &str,
@@ -3547,7 +3560,7 @@ fn activity_content_markup(
         } @else {
             div class="mt-4 space-y-2" {
                 @for event in events {
-                    (activity_event_row(event, source_names))
+                    (activity_event_row(event, source_names, video_source_names))
                 }
             }
 
@@ -3584,9 +3597,19 @@ fn activity_content_markup(
     }
 }
 
+/// Render a single activity log entry.
+///
+/// `source_names` maps `source_id -> display_name` (from `list_sources`), used
+/// directly for source-level events (e.g. `SourceIndexed`). Download events
+/// don't carry a `source_id` on the row, so `video_source_names` (a
+/// `video_id -> display_name` map derived by joining through `source_videos`,
+/// see `db::get_source_names_for_videos`) is used as a fallback so the source
+/// pill still resolves via the event's `video_id`. If neither resolves (e.g.
+/// the source was since deleted), the pill is simply omitted.
 fn activity_event_row(
     event: &hof_core::domain::activity::ActivityEvent,
     source_names: &HashMap<Ulid, String>,
+    video_source_names: &HashMap<Ulid, String>,
 ) -> Markup {
     let (icon, border_color) = match event.severity {
         ActivitySeverity::Info => ("i", "border-l-sky-400"),
@@ -3633,7 +3656,10 @@ fn activity_event_row(
 
     let time_ago = format_time_ago(event.created_at);
     let source_indexing = event.source_indexing_summary();
-    let source_name = event.source_id.and_then(|id| source_names.get(&id));
+    let source_name = event
+        .source_id
+        .and_then(|id| source_names.get(&id))
+        .or_else(|| event.video_id.and_then(|id| video_source_names.get(&id)));
 
     html! {
         div class=(format!("flex items-start gap-3 rounded-lg border border-slate-200 dark:border-slate-700 border-l-4 {} bg-white dark:bg-slate-800 p-3", border_color)) {
@@ -3669,6 +3695,69 @@ fn activity_event_row(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod activity_event_row_tests {
+    use super::{ActivityEventType, ActivitySeverity, HashMap, Ulid, activity_event_row};
+    use hof_core::domain::activity::ActivityEvent;
+
+    fn base_event(event_type: ActivityEventType, video_id: Option<Ulid>) -> ActivityEvent {
+        ActivityEvent {
+            id: Ulid::from_string("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("valid ulid literal"),
+            event_type,
+            severity: ActivitySeverity::Success,
+            message: "Completed \"300G.mp4\" (13.0 MB)".to_string(),
+            source_id: None,
+            video_id,
+            profile_id: None,
+            created_at: chrono::Utc::now(),
+        }
+    }
+
+    /// Download activity rows never carry a `source_id` (it's only set for
+    /// source-level events like `SourceIndexed`). The pill should still
+    /// resolve, via the event's `video_id`, using the `video_id ->
+    /// display_name` map that `db::get_source_names_for_videos` provides.
+    #[test]
+    fn download_completed_event_resolves_source_pill_via_video_id() {
+        let video_id = Ulid::from_string("01BX5ZZKBKACTAV9WEVGEMMVRZ").expect("valid ulid literal");
+        let event = base_event(ActivityEventType::DownloadCompleted, Some(video_id));
+        assert!(
+            event.source_id.is_none(),
+            "precondition: no source_id on row"
+        );
+
+        let source_names: HashMap<Ulid, String> = HashMap::new();
+        let mut video_source_names: HashMap<Ulid, String> = HashMap::new();
+        video_source_names.insert(video_id, "Kobosil 300G".to_string());
+
+        let markup = activity_event_row(&event, &source_names, &video_source_names).into_string();
+
+        assert!(
+            markup.contains("Kobosil 300G"),
+            "expected source pill text in rendered markup: {markup}"
+        );
+    }
+
+    /// When the source can't be resolved at all (e.g. it was deleted, or the
+    /// event has no video association), the pill must be omitted rather than
+    /// rendered empty.
+    #[test]
+    fn download_event_without_resolvable_source_omits_pill() {
+        let video_id = Ulid::from_string("01BX5ZZKBKACTAV9WEVGEMMVRZ").expect("valid ulid literal");
+        let event = base_event(ActivityEventType::DownloadCompleted, Some(video_id));
+
+        let source_names: HashMap<Ulid, String> = HashMap::new();
+        let video_source_names: HashMap<Ulid, String> = HashMap::new();
+
+        let markup = activity_event_row(&event, &source_names, &video_source_names).into_string();
+
+        assert!(
+            !markup.contains("inline-flex rounded-full bg-slate-100 dark:bg-slate-700 px-2 py-0.5 text-xs font-medium text-slate-600 dark:text-slate-300"),
+            "did not expect a source pill span when the source cannot be resolved: {markup}"
+        );
     }
 }
 
