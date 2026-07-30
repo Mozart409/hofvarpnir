@@ -32,7 +32,7 @@ use hof_core::{
         profile::{OutputPreset, Profile, Quality},
         source::{EntryOrder, Source, SourceType},
         system::IssueSeverity,
-        video::{DownloadProgress, Video, VideoStatus},
+        video::{Video, VideoStatus},
     },
     ytdlp::validate_output_template,
 };
@@ -40,7 +40,6 @@ use maud::{DOCTYPE, Markup, PreEscaped, Render, html};
 use rust_embed::Embed;
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
-use tokio_stream::wrappers::BroadcastStream;
 use tower_sessions::Session;
 use ulid::Ulid;
 
@@ -290,7 +289,6 @@ pub fn router(state: AppState, oidc_enabled: bool) -> Router {
         .route("/downloads/{id}/cancel", post(cancel_download))
         .route("/downloads/{id}/delete", post(delete_download))
         .route("/web/downloads/list", get(downloads_list_partial))
-        .route("/web/downloads/progress", get(download_progress_sse))
         .route("/web/downloads/events", get(downloads_events_sse))
         .route("/web/system-banner", get(system_banner))
         .route("/web/dashboard/events", get(dashboard_events_sse))
@@ -2505,27 +2503,8 @@ async fn downloads_page(
         NavItem::Downloads,
         flash,
         html! {
-            section class="rounded-2xl border border-slate-200 dark:border-slate-700 bg-white/80 dark:bg-slate-800/80 p-6 shadow-sm" {
-                div class="flex items-center justify-between" {
-                    h2 class="text-lg font-semibold text-slate-900 dark:text-slate-100" { "Live Progress" }
-                    p class="text-xs text-slate-500 dark:text-slate-400" { "Streaming from /web/downloads/progress" }
-                }
-                div
-                    class="mt-4 space-y-2"
-                    id="download-progress-feed"
-                    hx-ext="sse"
-                    sse-connect="/web/downloads/progress"
-                    sse-swap="message"
-                    hx-swap="afterbegin"
-                {
-                    p class="rounded-lg border border-dashed border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-800 px-3 py-2 text-sm text-slate-500 dark:text-slate-400" {
-                        "Waiting for progress events..."
-                    }
-                }
-            }
-
             // Filter & search bar
-            section class="mt-8 rounded-2xl border border-slate-200 dark:border-slate-700 bg-white/80 dark:bg-slate-800/80 p-6 shadow-sm" {
+            section class="rounded-2xl border border-slate-200 dark:border-slate-700 bg-white/80 dark:bg-slate-800/80 p-6 shadow-sm" {
                 div class="flex flex-wrap items-center gap-4" {
                     nav class="flex flex-wrap gap-1" {
                         (download_status_filter_link("all", "All", current_status, search_query, per_page))
@@ -2940,31 +2919,6 @@ async fn delete_download(
     )
     .await;
     Redirect::to("/downloads").into_response()
-}
-
-async fn download_progress_sse(
-    State(state): State<AppState>,
-) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
-    let receiver = state.progress_tx.subscribe();
-
-    let stream = BroadcastStream::new(receiver).filter_map(|result| async move {
-        match result {
-            Ok(progress) => {
-                let fragment = progress_fragment(&progress).into_string();
-                Some(Ok(Event::default().event("message").data(fragment)))
-            }
-            Err(error) => {
-                tracing::debug!(%error, "dropped lagged SSE progress event");
-                None
-            }
-        }
-    });
-
-    Sse::new(stream).keep_alive(
-        KeepAlive::new()
-            .interval(Duration::from_secs(15))
-            .text("keep-alive"),
-    )
 }
 
 /// Returns an HTML fragment for the system issues banner.
@@ -4623,27 +4577,6 @@ fn video_table_row(video: &hof_core::domain::video::Video) -> Markup {
     }
 }
 
-fn progress_fragment(progress: &DownloadProgress) -> Markup {
-    let percentage = format!("{:.2}", progress.percent);
-    let speed = progress.speed.as_deref().unwrap_or("n/a");
-    let eta = progress.eta.as_deref().unwrap_or("n/a");
-    let now = Utc::now().format("%H:%M:%S").to_string();
-
-    html! {
-        article class="rounded-xl border border-sky-200 dark:border-sky-800 bg-sky-50 dark:bg-sky-900/50 px-3 py-2 text-sm text-sky-900 dark:text-sky-100" {
-            div class="flex flex-wrap items-center justify-between gap-2" {
-                p class="font-medium" {
-                    (progress.platform_video_id.clone()) " · " (percentage) "%"
-                }
-                span class="text-xs text-sky-700" { (now) }
-            }
-            div class="mt-1 text-xs text-sky-800" {
-                "Speed: " (speed) " · ETA: " (eta)
-            }
-        }
-    }
-}
-
 const fn quality_options() -> &'static [QualityOption] {
     &[
         QualityOption {
@@ -5134,14 +5067,6 @@ fn layout_with_flash(
                         setTimeout(function() { t.remove(); }, 4000);
                       }
                     })();
-
-                    // SSE placeholder removal
-                    document.body.addEventListener('htmx:sseMessage', function (event) {
-                      var feed = document.getElementById('download-progress-feed');
-                      if (!feed) return;
-                      var placeholder = feed.querySelector('p');
-                      if (placeholder) placeholder.remove();
-                    });
 
                     // Loading state on form submit
                     document.addEventListener('submit', function(e) {
