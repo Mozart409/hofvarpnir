@@ -50,8 +50,8 @@ mod profile_tests {
         use ulid::Ulid;
 
         let profile = Profile {
-            id: Ulid::r#gen(),
-            user_id: Ulid::r#gen(),
+            id: Ulid::generate(),
+            user_id: Ulid::generate(),
             name: "Test Profile".to_string(),
             quality: Quality::Q1080p,
             output_preset: OutputPreset::Browser,
@@ -208,8 +208,8 @@ mod source_tests {
         use ulid::Ulid;
 
         let source = Source {
-            id: Ulid::r#gen(),
-            profile_id: Ulid::r#gen(),
+            id: Ulid::generate(),
+            profile_id: Ulid::generate(),
             url: "https://youtube.com/@channel".to_string(),
             source_type: SourceType::Channel,
             custom_name: Some("My Channel".to_string()),
@@ -348,7 +348,7 @@ mod download_tests {
         use ulid::Ulid;
 
         let video = Video {
-            id: Ulid::r#gen(),
+            id: Ulid::generate(),
             platform: "youtube".to_string(),
             platform_video_id: "dQw4w9WgXcQ".to_string(),
             title: "Test Video".to_string(),
@@ -392,7 +392,7 @@ mod download_tests {
         use ulid::Ulid;
 
         let video = Video {
-            id: Ulid::r#gen(),
+            id: Ulid::generate(),
             platform: "youtube".to_string(),
             platform_video_id: "dQw4w9WgXcQ".to_string(),
             title: "Test Video".to_string(),
@@ -736,7 +736,7 @@ mod ulid_tests {
 
     #[test]
     fn test_ulid_roundtrip() {
-        let original = Ulid::r#gen();
+        let original = Ulid::generate();
         let string = original.to_string();
         let parsed = Ulid::from_string(&string).unwrap();
         assert_eq!(original, parsed);

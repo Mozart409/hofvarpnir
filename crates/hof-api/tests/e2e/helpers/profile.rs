@@ -25,7 +25,7 @@ impl ProfileBuilder {
     /// Create a new profile builder for a user.
     #[must_use]
     pub fn new(user_id: Ulid) -> Self {
-        let id = Ulid::r#gen();
+        let id = Ulid::generate();
         Self {
             user_id,
             name: format!("Test Profile {id}"),

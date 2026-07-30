@@ -207,7 +207,7 @@ pub struct UlidRequestId;
 
 impl MakeRequestId for UlidRequestId {
     fn make_request_id<B>(&mut self, _request: &Request<B>) -> Option<RequestId> {
-        let id = Ulid::r#gen().to_string();
+        let id = Ulid::generate().to_string();
         // ULID is always valid ASCII, so this parse cannot fail
         let header_value = id.parse().ok()?;
         Some(RequestId::new(header_value))
