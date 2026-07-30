@@ -217,6 +217,10 @@ impl VideoMetadata {
     }
 }
 
+/// Placeholder title used when yt-dlp reports `title: null` for a playlist
+/// entry (e.g. private/deleted videos in `--flat-playlist` output).
+pub const UNAVAILABLE_TITLE: &str = "Unavailable";
+
 /// Entry from a playlist or channel, used during source indexing.
 #[derive(Debug, Clone)]
 pub struct PlaylistEntry {
@@ -240,7 +244,10 @@ impl PlaylistEntry {
         let url = entry.url.as_ref()?;
         Some(Self {
             platform_video_id: entry.id.clone(),
-            title: entry.title.clone(),
+            title: entry
+                .title
+                .clone()
+                .unwrap_or_else(|| UNAVAILABLE_TITLE.to_string()),
             url: url.clone(),
             duration_secs: entry.duration.map(|d| d as i64),
             thumbnail_url: entry.thumbnail.clone(),
@@ -286,7 +293,10 @@ impl IndexResult {
 
         Self {
             platform: platform.to_string(),
-            title: playlist.title.clone(),
+            title: playlist
+                .title
+                .clone()
+                .unwrap_or_else(|| playlist.id.clone()),
             description: playlist.description.clone(),
             entries,
             total_count: playlist.video_count,
@@ -482,7 +492,7 @@ impl YtdlpClient {
             .map_err(|e| YtdlpError::PlaylistError(e.to_string()))?;
 
         debug!(
-            title = %playlist.title,
+            title = ?playlist.title,
             entries = playlist.entries.len(),
             uploader_id = ?playlist.uploader_id,
             "Source indexed"
@@ -1256,7 +1266,7 @@ mod tests {
     fn sample_playlist() -> Playlist {
         Playlist {
             id: "playlist-1".to_string(),
-            title: "Sample".to_string(),
+            title: Some("Sample".to_string()),
             description: None,
             uploader: Some("Uploader".to_string()),
             uploader_id: Some("UC1234567890".to_string()),
@@ -1783,5 +1793,54 @@ authentication.";
             false,
         );
         assert_eq!(output, PathBuf::from("Great Race-Hx4xrg6wVNI"));
+    }
+
+    const FLAT_PLAYLIST_NULL_TITLES_FIXTURE: &str =
+        include_str!("../tests/fixtures/flat_playlist_null_titles.json");
+
+    #[test]
+    fn test_parses_flat_playlist_with_null_entry_titles() {
+        // Before the yt-dlp-patched fix, this failed with:
+        // "invalid type: null, expected a string" because `title` was the
+        // first key in each entry object and serde hard-failed before `id`
+        // was ever read.
+        let playlist: Playlist = serde_json::from_str(FLAT_PLAYLIST_NULL_TITLES_FIXTURE).unwrap();
+
+        assert_eq!(playlist.entries.len(), 6);
+    }
+
+    #[test]
+    fn test_null_titled_entries_retained_with_placeholder() {
+        let playlist: Playlist = serde_json::from_str(FLAT_PLAYLIST_NULL_TITLES_FIXTURE).unwrap();
+
+        let result = IndexResult::from_playlist(&playlist, "youtube");
+
+        assert_eq!(result.entries.len(), 6);
+
+        for entry in &result.entries[0..4] {
+            assert_eq!(entry.title, UNAVAILABLE_TITLE);
+        }
+
+        for entry in &result.entries[4..6] {
+            assert_ne!(entry.title, UNAVAILABLE_TITLE);
+        }
+
+        let ids: Vec<&str> = result
+            .entries
+            .iter()
+            .map(|e| e.platform_video_id.as_str())
+            .collect();
+        assert!(ids.contains(&"rYF-6c2opm4"));
+        assert!(ids.contains(&"Q9_5Ids1NXg"));
+    }
+
+    #[test]
+    fn test_playlist_title_falls_back_to_id_when_none() {
+        let mut playlist = sample_playlist();
+        playlist.title = None;
+
+        let result = IndexResult::from_playlist(&playlist, "youtube");
+
+        assert_eq!(result.title, playlist.id);
     }
 }

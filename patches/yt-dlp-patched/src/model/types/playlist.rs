@@ -11,8 +11,9 @@ use serde::{Deserialize, Serialize};
 pub struct Playlist {
     /// The unique identifier of the playlist.
     pub id: String,
-    /// The title of the playlist.
-    pub title: String,
+    /// The title of the playlist. `None` if yt-dlp emitted `null` or omitted the field.
+    #[serde(default)]
+    pub title: Option<String>,
     /// The description of the playlist.
     pub description: Option<String>,
 
@@ -113,7 +114,12 @@ impl Playlist {
         let query_lower = query.to_lowercase();
         self.entries
             .iter()
-            .filter(|entry| entry.title.to_lowercase().contains(&query_lower))
+            .filter(|entry| {
+                entry
+                    .title
+                    .as_deref()
+                    .is_some_and(|t| t.to_lowercase().contains(&query_lower))
+            })
             .collect()
     }
 
@@ -212,8 +218,8 @@ impl Playlist {
 pub struct PlaylistEntry {
     /// The video ID.
     pub id: String,
-    /// The video title.
-    pub title: String,
+    /// The video title (may be None for unavailable/private videos).
+    pub title: Option<String>,
     /// The video URL (may be None for unavailable/private videos).
     pub url: Option<String>,
 
