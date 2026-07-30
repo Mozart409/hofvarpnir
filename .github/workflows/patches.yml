@@ -1,0 +1,53 @@
+# Guards the vendored crates under patches/.
+#
+# patches/yt-dlp-patched declares its own [workspace] table and is not a member
+# of the root workspace (members = ["crates/*"]). The root build only ever
+# reaches it as a [patch.crates-io] path dependency, and Cargo builds
+# dependencies as lib targets only -- so `cargo clippy --all-targets` and
+# `cargo test --all-features` at the repo root never compile its tests,
+# examples or benches. Without this workflow those targets are compiled by
+# nothing, and can sit broken indefinitely (they did: the PlaylistEntry.url
+# patch broke them and CI stayed green).
+#
+# Only runs when patches/ actually changes, so it costs nothing on normal PRs.
+# Do NOT mark this a required status check -- the paths filter means it is
+# skipped on most PRs, which would block them.
+name: Patches
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'patches/**'
+      - '.github/workflows/patches.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'patches/**'
+      - '.github/workflows/patches.yml'
+    tags-ignore:
+      - 'v*.*.*'
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  vendored-crates:
+    name: Type-check vendored crates
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - name: Setup Nix
+        uses: DeterminateSystems/nix-installer-action@33c9ab3ef95cd57c164d9d6eb1f9a46338538d41 # main
+      - name: Setup Cachix
+        uses: cachix/cachix-action@5f2d7c5294214f71b873db4b969586b980625e71 # v17
+        with:
+          name: hofvarpnir
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+      # Type-check only: these are upstream's tests and hit the network when
+      # run, so we compile them without executing. Warnings are upstream's
+      # (dead-code in test helpers) and are deliberately not gated on.
+      - name: Check yt-dlp-patched (all targets)
+        run: nix develop .#default --command sh -c "cd patches/yt-dlp-patched && cargo check --all-targets --all-features"
