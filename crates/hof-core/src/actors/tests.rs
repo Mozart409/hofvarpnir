@@ -155,7 +155,7 @@ mod source_indexer_tests {
         use ulid::Ulid;
 
         let result = IndexingResult {
-            source_id: Ulid::r#gen(),
+            source_id: Ulid::generate(),
             new_videos: 0,
             existing_videos: 0,
             filtered_out: 0,
@@ -180,7 +180,7 @@ mod source_indexer_tests {
         use ulid::Ulid;
 
         let result = IndexingResult {
-            source_id: Ulid::r#gen(),
+            source_id: Ulid::generate(),
             new_videos: 10,
             existing_videos: 50,
             filtered_out: 5,
@@ -389,8 +389,8 @@ mod video_filter_tests {
 
     fn test_profile(include_shorts: bool, include_livestreams: bool) -> Profile {
         Profile {
-            id: Ulid::r#gen(),
-            user_id: Ulid::r#gen(),
+            id: Ulid::generate(),
+            user_id: Ulid::generate(),
             name: "Test Profile".to_string(),
             quality: Quality::Q1080p,
             output_preset: OutputPreset::Browser,
@@ -407,8 +407,8 @@ mod video_filter_tests {
 
     fn test_source(cutoff: NaiveDate) -> Source {
         Source {
-            id: Ulid::r#gen(),
-            profile_id: Ulid::r#gen(),
+            id: Ulid::generate(),
+            profile_id: Ulid::generate(),
             url: "https://youtube.com/@test".to_string(),
             source_type: SourceType::Channel,
             custom_name: None,
@@ -638,8 +638,8 @@ mod domain_tests {
     #[test]
     fn test_source_display_name_custom() {
         let source = Source {
-            id: Ulid::r#gen(),
-            profile_id: Ulid::r#gen(),
+            id: Ulid::generate(),
+            profile_id: Ulid::generate(),
             url: "https://youtube.com/@channel".to_string(),
             source_type: SourceType::Channel,
             custom_name: Some("My Custom Name".to_string()),
@@ -668,8 +668,8 @@ mod domain_tests {
     #[test]
     fn test_source_display_name_channel_title() {
         let source = Source {
-            id: Ulid::r#gen(),
-            profile_id: Ulid::r#gen(),
+            id: Ulid::generate(),
+            profile_id: Ulid::generate(),
             url: "https://youtube.com/@channel".to_string(),
             source_type: SourceType::Channel,
             custom_name: None, // No custom name
@@ -698,8 +698,8 @@ mod domain_tests {
     #[test]
     fn test_source_display_name_url_fallback() {
         let source = Source {
-            id: Ulid::r#gen(),
-            profile_id: Ulid::r#gen(),
+            id: Ulid::generate(),
+            profile_id: Ulid::generate(),
             url: "https://youtube.com/@channel".to_string(),
             source_type: SourceType::Channel,
             custom_name: None,
@@ -750,8 +750,8 @@ mod domain_tests {
     #[test]
     fn test_source_completed_dir() {
         let source = Source {
-            id: Ulid::r#gen(),
-            profile_id: Ulid::r#gen(),
+            id: Ulid::generate(),
+            profile_id: Ulid::generate(),
             url: "https://youtube.com/@channel".to_string(),
             source_type: SourceType::Channel,
             custom_name: Some("My Channel".to_string()),

@@ -32,7 +32,7 @@ pub struct UpdateUser<'a> {
 /// Returns an error if the database operation fails.
 #[instrument(skip(pool, data), fields(otel.kind = "client", db.system = "postgresql"))]
 pub async fn create_user(pool: &PgPool, data: CreateUser<'_>) -> Result<User, DbError> {
-    let id = Ulid::r#gen();
+    let id = Ulid::generate();
     let row = sqlx::query_as::<_, UserRow>(
         r"
         INSERT INTO users (id, email, name, password_hash)

@@ -101,7 +101,7 @@ pub async fn create_activity_event(
     pool: &PgPool,
     data: CreateActivityEvent<'_>,
 ) -> Result<ActivityEvent, DbError> {
-    let id = Ulid::r#gen();
+    let id = Ulid::generate();
     let row = sqlx::query_as::<_, ActivityEventRow>(
         r"
         INSERT INTO activity_events (id, event_type, severity, message, source_id, video_id, profile_id)

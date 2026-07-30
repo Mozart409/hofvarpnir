@@ -23,7 +23,7 @@ async fn insert_event(
         VALUES ($1, $2::activity_event_type, $3::activity_severity, $4, $5, $6)
         ",
     )
-    .bind(Ulid::r#gen().to_string())
+    .bind(Ulid::generate().to_string())
     .bind(event_type)
     .bind(severity)
     .bind(message)

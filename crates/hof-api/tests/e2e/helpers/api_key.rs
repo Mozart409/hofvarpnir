@@ -39,7 +39,7 @@ impl ApiKeyBuilder {
     /// Create a new API key builder for a user.
     #[must_use]
     pub fn new(user_id: Ulid) -> Self {
-        let id = Ulid::r#gen();
+        let id = Ulid::generate();
         Self {
             user_id,
             name: format!("test_key_{id}"),

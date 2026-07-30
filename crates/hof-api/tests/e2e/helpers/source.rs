@@ -24,7 +24,7 @@ impl SourceBuilder {
     /// Create a new source builder for a profile.
     #[must_use]
     pub fn new(profile_id: Ulid) -> Self {
-        let id = Ulid::r#gen();
+        let id = Ulid::generate();
         Self {
             profile_id,
             url: format!("https://youtube.com/@test_channel_{id}"),

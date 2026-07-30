@@ -43,7 +43,7 @@ pub struct UpdateProfile<'a> {
 /// Returns an error if the database operation fails.
 #[instrument(skip(pool, data), fields(otel.kind = "client", db.system = "postgresql"))]
 pub async fn create_profile(pool: &PgPool, data: CreateProfile<'_>) -> Result<Profile, DbError> {
-    let id = Ulid::r#gen();
+    let id = Ulid::generate();
     let row = sqlx::query_as::<_, ProfileRow>(
         r"
         INSERT INTO profiles (id, user_id, name, quality, naming_template, output_dir,

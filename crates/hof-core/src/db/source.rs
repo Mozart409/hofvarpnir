@@ -47,7 +47,7 @@ pub struct UpdateChannelMetadata<'a> {
 /// Returns an error if the database operation fails.
 #[instrument(skip(pool, data), fields(otel.kind = "client", db.system = "postgresql"))]
 pub async fn create_source(pool: &PgPool, data: CreateSource<'_>) -> Result<Source, DbError> {
-    let id = Ulid::r#gen();
+    let id = Ulid::generate();
     let id_str = id.to_string();
     let profile_id_str = data.profile_id.to_string();
     let row = sqlx::query_as!(
