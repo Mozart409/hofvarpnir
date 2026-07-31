@@ -3657,7 +3657,7 @@ fn activity_event_row(
                     }
                     span class="text-xs text-slate-400 dark:text-slate-500" title=(event.created_at.to_rfc3339()) { (time_ago) }
                 }
-                p class="mt-1 text-sm text-slate-700 dark:text-slate-300" { (event.message) }
+                p class="mt-1 text-sm text-slate-700 dark:text-slate-300 break-words wrap-anywhere" { (event.message) }
                 @if let Some(summary) = source_indexing {
                     div class="mt-2 flex flex-wrap gap-1.5" {
                         span class="rounded bg-slate-100 dark:bg-slate-700 px-2 py-0.5 text-xs text-slate-600 dark:text-slate-300" { "new: " (summary.new_videos) }
@@ -3735,6 +3735,30 @@ mod activity_event_row_tests {
         assert!(
             !markup.contains("inline-flex rounded-full bg-slate-100 dark:bg-slate-700 px-2 py-0.5 text-xs font-medium text-slate-600 dark:text-slate-300"),
             "did not expect a source pill span when the source cannot be resolved: {markup}"
+        );
+    }
+
+    /// Download failure messages embed unbroken tokens (googlevideo URLs with
+    /// long query strings). Without wrapping classes they overflow the card
+    /// and stretch the page horizontally, so the message paragraph must keep
+    /// both `break-words` and `wrap-anywhere`.
+    #[test]
+    fn long_error_message_paragraph_carries_wrapping_classes() {
+        let mut event = base_event(ActivityEventType::DownloadFailed, None);
+        event.severity = ActivitySeverity::Error;
+        event.message = "[DOWNLOAD_FORMAT_UNAVAILABLE] Permanently failed after 2 attempts — \
+             Download 128 failed: Unexpected HTTP status 401 for \
+             https://rr2---sn-hoxu-h0jz.googlevideo.com/videoplayback?expire=1785506552&itag=278&source=youtube"
+            .to_string();
+
+        let source_names: HashMap<Ulid, String> = HashMap::new();
+        let video_source_names: HashMap<Ulid, String> = HashMap::new();
+
+        let markup = activity_event_row(&event, &source_names, &video_source_names).into_string();
+
+        assert!(
+            markup.contains("break-words wrap-anywhere"),
+            "expected wrapping classes on the message paragraph: {markup}"
         );
     }
 }
@@ -3981,7 +4005,7 @@ fn recent_runs_section(
                                             }
                                         }
                                     }
-                                    td class="px-3 py-2 text-slate-700 dark:text-slate-300" {
+                                    td class="max-w-md px-3 py-2 text-slate-700 dark:text-slate-300 break-words wrap-anywhere" {
                                         (run.message)
                                     }
                                 }
@@ -4862,6 +4886,14 @@ fn input_cutoff_date(label: &str, name: &str, value: &str) -> Markup {
                 required
                 value=(value);
             div class="mt-2 flex flex-wrap gap-2" {
+                // Offset by the viewer's timezone so "today" is their local
+                // date, not the UTC date `toISOString` would otherwise yield.
+                button
+                    class="rounded bg-slate-100 dark:bg-slate-700 px-2 py-1 text-xs font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-600"
+                    type="button"
+                    onclick={"document.getElementById('" (name) "').value = new Date(Date.now() - new Date().getTimezoneOffset()*60*1000).toISOString().split('T')[0]"} {
+                    "Today"
+                }
                 button
                     class="rounded bg-slate-100 dark:bg-slate-700 px-2 py-1 text-xs font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-600"
                     type="button"
@@ -4897,6 +4929,32 @@ fn input_cutoff_date(label: &str, name: &str, value: &str) -> Markup {
     }
 }
 
+#[cfg(test)]
+mod input_cutoff_date_tests {
+    use super::input_cutoff_date;
+
+    /// The "Today" shortcut is a convenience only — the field itself must
+    /// still render pre-filled with whatever default the caller passed
+    /// (a week ago, for the create form).
+    #[test]
+    fn renders_today_pill_without_changing_the_prefilled_value() {
+        let markup = input_cutoff_date("Cutoff Date", "cutoff_date", "2026-07-24").into_string();
+
+        assert!(
+            markup.contains(">Today<"),
+            "expected a Today pill: {markup}"
+        );
+        assert!(
+            markup.contains(r#"value="2026-07-24""#),
+            "expected the passed-in default to stay pre-filled: {markup}"
+        );
+        assert!(
+            markup.contains("getTimezoneOffset"),
+            "Today must resolve to the viewer's local date, not the UTC date: {markup}"
+        );
+    }
+}
+
 fn parse_optional_i32(raw: Option<&str>, field_name: &str) -> Result<Option<i32>, String> {
     match raw.map(str::trim) {
         None | Some("") => Ok(None),
@@ -4914,7 +4972,7 @@ fn error_page(message: &str) -> Markup {
         html! {
             section class="rounded-2xl border border-rose-200 dark:border-rose-800 bg-rose-50 dark:bg-rose-900/30 p-6 shadow-sm" {
                 h2 class="text-lg font-semibold text-rose-900 dark:text-rose-100" { "Something went wrong" }
-                p class="mt-2 text-sm text-rose-800 dark:text-rose-200" { (message) }
+                p class="mt-2 text-sm text-rose-800 dark:text-rose-200 break-words wrap-anywhere" { (message) }
                 div class="mt-4" {
                     a class="inline-flex rounded-lg bg-rose-700 dark:bg-rose-600 px-4 py-2 text-sm font-medium text-white hover:bg-rose-800 dark:hover:bg-rose-700" href="/dashboard" {
                         "Back to dashboard"
