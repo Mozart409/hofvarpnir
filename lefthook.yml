@@ -45,6 +45,9 @@ pre-commit:
 pre-push:
   parallel: true
   jobs:
+    - name: sqlx-prepare
+      run: just prepare
+      stage_fixed: true
     - name: test
       glob:
         - "*.rs"
