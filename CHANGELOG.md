@@ -2,6 +2,15 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.5.1 - 2026-07-31
+#### Bug Fixes
+- (**web**) wrap long error messages in activity - (e5ab1e1) - Amadeus Mader
+#### Miscellaneous Chores
+- (**css**) update css - (79fe073) - Amadeus Mader
+- (**tools**) add sqlx-prepare - (9331f1f) - Amadeus Mader
+
+- - -
+
 ## v0.5.0 - 2026-07-30
 #### Continuous Integration
 - (**flakehub**) remove flakehub stuff - (43ae4d0) - Amadeus Mader
