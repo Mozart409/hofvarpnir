@@ -270,6 +270,15 @@ struct DownloadsQuery {
     per_page: Option<i64>,
 }
 
+/// Free-text filter for the sources and schedule pages.
+///
+/// Both pages already load every source to render, so the term is applied
+/// in-memory rather than pushed into SQL.
+#[derive(Debug, Clone, Deserialize)]
+struct SourcesQuery {
+    search: Option<String>,
+}
+
 pub fn router(state: AppState, oidc_enabled: bool) -> Router {
     Router::new()
         // Auth routes (no session required)
@@ -1078,7 +1087,7 @@ async fn sources_events_sse(
                 .collect();
             sources.sort_by_key(|s| s.display_name().to_lowercase());
 
-            let fragment = sources_list_markup(&sources).into_string();
+            let fragment = sources_list_markup(&sources, None).into_string();
             Some(Ok(Event::default().event("sources-update").data(fragment)))
         }
     });
@@ -1370,12 +1379,61 @@ async fn delete_profile(
     }
 }
 
+/// Plain GET search form shared by the sources and schedule pages.
+///
+/// Both filter the same `Source` set in-memory, so neither needs htmx here —
+/// a full navigation keeps the URL shareable and the back button meaningful.
+fn source_search_form(action: &str, placeholder: &str, search: Option<&str>) -> Markup {
+    html! {
+        form method="get" action=(action) class="flex gap-2" {
+            input
+                type="text"
+                name="search"
+                placeholder=(placeholder)
+                value=(search.unwrap_or(""))
+                class="rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 px-3 py-1.5 text-sm text-slate-900 dark:text-slate-100";
+            button type="submit"
+                class="rounded-lg bg-slate-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-slate-700"
+            { "Search" }
+            @if search.is_some() {
+                a href=(action)
+                    class="rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 px-3 py-1.5 text-sm font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-600"
+                { "Clear" }
+            }
+        }
+    }
+}
+
+/// Case-insensitive match of a source against a search term.
+///
+/// Covers every name a source can be known by — the user's custom label, the
+/// platform channel/playlist title, and the URL — because which one is
+/// populated varies by source type and indexing state.
+fn source_matches_search(source: &Source, needle: &str) -> bool {
+    let needle = needle.to_lowercase();
+    let haystacks = [
+        source.custom_name.as_deref(),
+        source.channel_title.as_deref(),
+        Some(source.url.as_str()),
+    ];
+    haystacks
+        .into_iter()
+        .flatten()
+        .any(|value| value.to_lowercase().contains(&needle))
+}
+
 async fn sources_page(
     auth: AuthUser,
     State(state): State<AppState>,
     session: Session,
+    axum::extract::Query(query): axum::extract::Query<SourcesQuery>,
 ) -> impl IntoResponse {
     let flash = take_flash(&session).await;
+    let search = query
+        .search
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
     // Get profiles for the current user to populate the dropdown
     let profiles = match db::list_profiles_for_user(&state.pool, auth.user_id).await {
         Ok(data) => data,
@@ -1405,6 +1463,10 @@ async fn sources_page(
             );
         }
     };
+
+    if let Some(needle) = search {
+        sources.retain(|source| source_matches_search(source, needle));
+    }
 
     // Sort sources alphabetically by display name
     sources.sort_by_key(|s| s.display_name().to_lowercase());
@@ -1451,10 +1513,21 @@ async fn sources_page(
             }
 
             section class="mt-8 rounded-2xl border border-slate-200 dark:border-slate-700 bg-white/80 dark:bg-slate-800/80 p-6 shadow-sm" {
-                h2 class="text-lg font-semibold text-slate-900 dark:text-slate-100" { "Existing Sources" }
-                div hx-ext="sse" sse-connect="/web/sources/events" {
-                    div id="sources-list" sse-swap="sources-update" hx-swap="innerHTML" {
-                        (sources_list_markup(&sources))
+                div class="flex flex-wrap items-center justify-between gap-3" {
+                    h2 class="text-lg font-semibold text-slate-900 dark:text-slate-100" { "Existing Sources" }
+                    (source_search_form("/sources", "Search name, channel or URL...", search))
+                }
+                // No SSE here: a live refresh would re-render the unfiltered
+                // list and silently discard the user's search.
+                @if search.is_some() {
+                    div id="sources-list" {
+                        (sources_list_markup(&sources, search))
+                    }
+                } @else {
+                    div hx-ext="sse" sse-connect="/web/sources/events" {
+                        div id="sources-list" sse-swap="sources-update" hx-swap="innerHTML show:none" {
+                            (sources_list_markup(&sources, search))
+                        }
                     }
                 }
             }
@@ -4101,8 +4174,14 @@ async fn schedule_page(
     _auth: AuthUser,
     State(state): State<AppState>,
     session: Session,
+    axum::extract::Query(query): axum::extract::Query<SourcesQuery>,
 ) -> impl IntoResponse {
     let flash = take_flash(&session).await;
+    let search = query
+        .search
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
     let (sources_result, profiles_result, recent_activity_result, cleanup_status) = tokio::join!(
         db::list_sources(&state.pool),
         db::list_profiles(&state.pool),
@@ -4143,9 +4222,11 @@ async fn schedule_page(
 
     let now = Utc::now();
 
-    // Build schedule entries
+    // Build schedule entries. The name lookup above is built from the full set
+    // so recent runs still resolve names for sources filtered out of the table.
     let mut entries: Vec<ScheduleEntry> = sources
         .into_iter()
+        .filter(|source| search.is_none_or(|needle| source_matches_search(source, needle)))
         .map(|source| {
             let profile_name = profiles
                 .iter()
@@ -4187,10 +4268,17 @@ async fn schedule_page(
             (cleanup_status_section(cleanup_status.ok().as_ref(), now))
 
             section class="mt-8 rounded-2xl border border-slate-200 dark:border-slate-700 bg-white/80 dark:bg-slate-800/80 p-6 shadow-sm" {
-                h2 class="text-lg font-semibold text-slate-900 dark:text-slate-100" { "Upcoming Indexing" }
+                div class="flex flex-wrap items-center justify-between gap-3" {
+                    h2 class="text-lg font-semibold text-slate-900 dark:text-slate-100" { "Upcoming Indexing" }
+                    (source_search_form("/schedule", "Search channel name...", search))
+                }
                 @if entries.is_empty() {
                     p class="mt-4 rounded-lg border border-dashed border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-800 px-4 py-8 text-center text-sm text-slate-500 dark:text-slate-400" {
-                        "No sources configured yet. Add sources to start scheduling."
+                        @if search.is_some() {
+                            "No sources match your search."
+                        } @else {
+                            "No sources configured yet. Add sources to start scheduling."
+                        }
                     }
                 } @else {
                     div class="mt-4 space-y-2" {
@@ -4796,10 +4884,16 @@ fn source_editor(source: &Source) -> Markup {
     }
 }
 
-fn sources_list_markup(sources: &[Source]) -> Markup {
+fn sources_list_markup(sources: &[Source], search: Option<&str>) -> Markup {
     html! {
         @if sources.is_empty() {
-            p class="mt-3 text-sm text-slate-500 dark:text-slate-400" { "No sources yet." }
+            p class="mt-3 text-sm text-slate-500 dark:text-slate-400" {
+                @if search.is_some() {
+                    "No sources match your search."
+                } @else {
+                    "No sources yet."
+                }
+            }
         } @else {
             div class="mt-4 space-y-4" {
                 @for source in sources {
@@ -5706,6 +5800,72 @@ mod tests {
             per_page: None,
         };
         assert_eq!(downloads_return_url(&query), "/downloads?page=2");
+    }
+
+    // ------------------------------------------------------------------
+    // Source search predicate (sources + schedule pages)
+    // ------------------------------------------------------------------
+
+    fn test_source(custom_name: Option<&str>, channel_title: Option<&str>, url: &str) -> Source {
+        Source {
+            id: Ulid::from_string("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("valid ulid literal"),
+            profile_id: Ulid::from_string("01BX5ZZKBKACTAV9WEVGEMMVRZ")
+                .expect("valid ulid literal"),
+            url: url.to_owned(),
+            source_type: hof_core::domain::source::SourceType::Channel,
+            custom_name: custom_name.map(ToOwned::to_owned),
+            enabled: true,
+            index_frequency_secs: 43200,
+            cutoff_date: chrono::NaiveDate::from_ymd_opt(2026, 1, 1).expect("valid date literal"),
+            retention_days: None,
+            entry_order: hof_core::domain::source::EntryOrder::Unknown,
+            entry_order_detected_at: None,
+            last_indexed_at: None,
+            last_error: None,
+            index_error_count: 0,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            channel_id: None,
+            channel_title: channel_title.map(ToOwned::to_owned),
+            channel_description: None,
+            channel_thumbnail_url: None,
+            jellyfin_metadata_at: None,
+        }
+    }
+
+    #[test]
+    fn source_search_matches_custom_name_case_insensitively() {
+        let source = test_source(Some("My Cooking Channel"), None, "https://example.com/x");
+        assert!(source_matches_search(&source, "cooking"));
+        assert!(source_matches_search(&source, "COOKING"));
+    }
+
+    #[test]
+    fn source_search_matches_channel_title() {
+        let source = test_source(None, Some("Veritasium"), "https://example.com/x");
+        assert!(source_matches_search(&source, "veritas"));
+    }
+
+    #[test]
+    fn source_search_matches_url() {
+        let source = test_source(None, None, "https://youtube.com/@somechannel");
+        assert!(source_matches_search(&source, "somechannel"));
+    }
+
+    /// A custom name must not mask a channel-title match, and vice versa —
+    /// which field is populated varies by source type and indexing state.
+    #[test]
+    fn source_search_checks_every_name_field() {
+        let source = test_source(Some("Label"), Some("Channel"), "https://example.com/slug");
+        assert!(source_matches_search(&source, "Label"));
+        assert!(source_matches_search(&source, "Channel"));
+        assert!(source_matches_search(&source, "slug"));
+    }
+
+    #[test]
+    fn source_search_rejects_non_matches() {
+        let source = test_source(Some("Cooking"), Some("Food"), "https://example.com/x");
+        assert!(!source_matches_search(&source, "astronomy"));
     }
 
     #[test]
