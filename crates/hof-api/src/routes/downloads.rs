@@ -43,6 +43,7 @@ use crate::{
 pub fn router() -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
         .routes(routes!(list_downloads, bulk_retry_downloads))
+        .routes(routes!(bulk_download_action))
         .routes(routes!(list_pending_deletion))
         .routes(routes!(get_download_progress))
         .routes(routes!(get_download, delete_download))
@@ -269,6 +270,56 @@ pub struct BulkRetryResponse {
     pub message: String,
     pub retried_count: usize,
     pub video_ids: Vec<String>,
+}
+
+/// The action to apply to a selection of downloads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum BulkActionKind {
+    Retry,
+    Cancel,
+    Delete,
+}
+
+impl BulkActionKind {
+    /// Whether a video in `status` can take this action.
+    const fn allows(self, status: &VideoStatus) -> bool {
+        match self {
+            Self::Retry => matches!(
+                status,
+                VideoStatus::Failed | VideoStatus::PermanentlyFailed | VideoStatus::Cleaned
+            ),
+            Self::Cancel => matches!(status, VideoStatus::Pending | VideoStatus::Downloading),
+            Self::Delete => matches!(status, VideoStatus::Completed),
+        }
+    }
+}
+
+/// Request body for applying an action to a specific set of downloads.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct BulkActionRequest {
+    /// The action to apply.
+    pub action: BulkActionKind,
+    /// ULIDs of the videos to act on.
+    pub video_ids: Vec<String>,
+}
+
+/// Outcome of a bulk action, reported per category.
+///
+/// A bulk call is best-effort: ineligible and unknown ids are skipped rather
+/// than failing the batch, so the counts are the only way for a caller to tell
+/// a complete result from a partial one.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct BulkActionResponse {
+    pub message: String,
+    /// Videos the action was applied to successfully.
+    pub succeeded: Vec<String>,
+    /// Videos whose current status does not permit the action.
+    pub ineligible: Vec<String>,
+    /// Requested ids that matched no video.
+    pub not_found: Vec<String>,
+    /// Videos that were eligible but errored during the action.
+    pub failed: Vec<String>,
 }
 
 /// Response for cancel endpoint.
@@ -1161,4 +1212,173 @@ pub async fn bulk_retry_downloads(State(state): State<AppState>, auth: Auth) -> 
         }),
     )
         .into_response()
+}
+
+/// Apply an action to a specific set of downloads.
+///
+/// Unlike `bulk_retry_downloads`, which retries everything currently failed,
+/// this acts only on the ids supplied. Ineligible and unknown ids are reported
+/// back rather than failing the request.
+#[utoipa::path(
+    post,
+    path = "/bulk",
+    tag = "downloads",
+    request_body = BulkActionRequest,
+    responses(
+        (status = 202, description = "Bulk action applied", body = BulkActionResponse),
+        (status = 400, description = "Invalid request", body = ErrorResponse),
+        (status = 401, description = "Unauthorized", body = ApiErrorResponse),
+        (status = 403, description = "Forbidden - insufficient scope", body = ApiErrorResponse),
+        (status = 500, description = "Internal server error", body = ErrorResponse)
+    )
+)]
+pub async fn bulk_download_action(
+    State(state): State<AppState>,
+    auth: Auth,
+    Json(payload): Json<BulkActionRequest>,
+) -> impl IntoResponse {
+    if let Err(e) = auth.require_scope(ApiKeyScope::Write) {
+        return e.into_response();
+    }
+
+    if payload.video_ids.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "video_ids must not be empty".to_string(),
+            }),
+        )
+            .into_response();
+    }
+
+    // Malformed ids are reported as not-found rather than rejecting the batch.
+    let mut not_found: Vec<String> = Vec::new();
+    let mut ids: Vec<Ulid> = Vec::new();
+    for raw in &payload.video_ids {
+        match Ulid::from_string(raw.trim()) {
+            Ok(id) => ids.push(id),
+            Err(_) => not_found.push(raw.clone()),
+        }
+    }
+
+    let videos = match db::list_videos_by_ids(&state.pool, &ids).await {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::error!(error = %e, "Failed to load videos for bulk action");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "Failed to load selected downloads".to_string(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    for id in &ids {
+        if !videos.iter().any(|video| video.id == *id) {
+            not_found.push(id.to_string());
+        }
+    }
+
+    let mut succeeded: Vec<String> = Vec::new();
+    let mut ineligible: Vec<String> = Vec::new();
+    let mut failed: Vec<String> = Vec::new();
+
+    for video in videos {
+        if !payload.action.allows(&video.status) {
+            ineligible.push(video.id.to_string());
+            continue;
+        }
+
+        let id = video.id.to_string();
+        let ok = match payload.action {
+            BulkActionKind::Retry => retry_one(&state, video).await,
+            BulkActionKind::Cancel => state
+                .supervisor
+                .ask(CancelDownload { video_id: video.id })
+                .await
+                .is_ok(),
+            BulkActionKind::Delete => delete_one(&state, video).await,
+        };
+
+        if ok {
+            succeeded.push(id);
+        } else {
+            failed.push(id);
+        }
+    }
+
+    (
+        StatusCode::ACCEPTED,
+        Json(BulkActionResponse {
+            message: format!(
+                "{} succeeded, {} ineligible, {} not found, {} failed",
+                succeeded.len(),
+                ineligible.len(),
+                not_found.len(),
+                failed.len()
+            ),
+            succeeded,
+            ineligible,
+            not_found,
+            failed,
+        }),
+    )
+        .into_response()
+}
+
+/// Reset one video to pending and re-enqueue it.
+async fn retry_one(state: &AppState, video: Video) -> bool {
+    let video_id = video.id;
+
+    if let Err(e) = db::update_video_status(&state.pool, video_id, VideoStatus::Pending).await {
+        tracing::warn!(error = %e, %video_id, "bulk retry: status reset failed");
+        return false;
+    }
+
+    let Ok(source_ids) = db::get_sources_for_video(&state.pool, video_id).await else {
+        return false;
+    };
+    let Some(source_id) = source_ids.first() else {
+        tracing::warn!(%video_id, "bulk retry: video has no linked source");
+        return false;
+    };
+    let Ok(source) = db::get_source(&state.pool, *source_id).await else {
+        return false;
+    };
+    let Ok(profile) = db::get_profile(&state.pool, source.profile_id).await else {
+        return false;
+    };
+    // Re-read so the enqueued copy carries the pending status just written.
+    let Ok(refreshed) = db::get_video(&state.pool, video_id).await else {
+        return false;
+    };
+
+    state
+        .supervisor
+        .tell(EnqueueDownload {
+            video: refreshed,
+            profile,
+            source,
+        })
+        .await
+        .is_ok()
+}
+
+/// Remove one completed video's file and mark it cleaned.
+async fn delete_one(state: &AppState, video: Video) -> bool {
+    if let Some(path) = video.file_path.as_ref() {
+        // A file already gone from disk should still let the row be cleaned.
+        if let Err(e) = tokio::fs::remove_file(path).await
+            && e.kind() != std::io::ErrorKind::NotFound
+        {
+            tracing::warn!(error = %e, video_id = %video.id, "bulk delete: file removal failed");
+            return false;
+        }
+    }
+
+    db::update_video_status(&state.pool, video.id, VideoStatus::Cleaned)
+        .await
+        .is_ok()
 }

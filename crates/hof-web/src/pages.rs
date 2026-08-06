@@ -307,6 +307,7 @@ pub fn router(state: AppState, oidc_enabled: bool) -> Router {
         .route("/downloads/{id}/retry", post(retry_download))
         .route("/downloads/{id}/cancel", post(cancel_download))
         .route("/downloads/{id}/delete", post(delete_download))
+        .route("/downloads/bulk", post(bulk_download_action))
         .route("/web/downloads/list", get(downloads_list_partial))
         .route("/web/downloads/events", get(downloads_events_sse))
         .route("/web/system-banner", get(system_banner))
@@ -2744,6 +2745,238 @@ async fn downloads_list_partial(
     .into_response()
 }
 
+/// A bulk action submitted from the downloads table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BulkAction {
+    Retry,
+    Cancel,
+    Delete,
+}
+
+impl BulkAction {
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "retry" => Some(Self::Retry),
+            "cancel" => Some(Self::Cancel),
+            "delete" => Some(Self::Delete),
+            _ => None,
+        }
+    }
+
+    /// Whether a video in `status` can take this action.
+    ///
+    /// Mirrors the guards in the single-item handlers; keep the two in step.
+    const fn allows(self, status: &VideoStatus) -> bool {
+        match self {
+            Self::Retry => matches!(
+                status,
+                VideoStatus::Failed | VideoStatus::PermanentlyFailed | VideoStatus::Cleaned
+            ),
+            Self::Cancel => matches!(status, VideoStatus::Pending | VideoStatus::Downloading),
+            Self::Delete => matches!(status, VideoStatus::Completed),
+        }
+    }
+
+    const fn past_tense(self) -> &'static str {
+        match self {
+            Self::Retry => "re-queued",
+            Self::Cancel => "cancelled",
+            Self::Delete => "deleted",
+        }
+    }
+}
+
+/// Bulk action form payload.
+///
+/// `ids` is a comma-separated list rather than repeated checkbox fields:
+/// `serde_urlencoded` (what `axum::Form` uses) cannot collect repeated keys
+/// into a `Vec`, and selection already requires JS to drive the toolbar.
+#[derive(Debug, Deserialize)]
+struct BulkDownloadForm {
+    action: String,
+    #[serde(default)]
+    ids: String,
+}
+
+/// Apply retry/cancel/delete to a selected set of downloads.
+///
+/// Ineligible and missing ids are skipped rather than failing the batch, and
+/// the flash message reports both counts so a partial result is never silently
+/// presented as a complete one.
+#[allow(clippy::too_many_lines)]
+async fn bulk_download_action(
+    _auth: AuthUser,
+    State(state): State<AppState>,
+    session: Session,
+    axum::extract::Query(query): axum::extract::Query<DownloadsQuery>,
+    axum::extract::Form(form): axum::extract::Form<BulkDownloadForm>,
+) -> impl IntoResponse {
+    let return_url = downloads_return_url(&query);
+
+    let Some(action) = BulkAction::parse(form.action.trim()) else {
+        set_flash(&session, "error", "Unknown bulk action").await;
+        return Redirect::to(&return_url).into_response();
+    };
+
+    let ids: Vec<Ulid> = form
+        .ids
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .filter_map(|value| Ulid::from_string(value).ok())
+        .collect();
+
+    if ids.is_empty() {
+        set_flash(&session, "error", "No downloads selected").await;
+        return Redirect::to(&return_url).into_response();
+    }
+
+    let videos = match db::list_videos_by_ids(&state.pool, &ids).await {
+        Ok(value) => value,
+        Err(error) => {
+            tracing::error!(%error, "failed to load videos for bulk action");
+            set_flash(&session, "error", "Failed to load selected downloads").await;
+            return Redirect::to(&return_url).into_response();
+        }
+    };
+
+    let requested = ids.len();
+    let (eligible, ineligible): (Vec<_>, Vec<_>) = videos
+        .into_iter()
+        .partition(|video| action.allows(&video.status));
+    // Ids that matched no row at all (deleted since the page rendered).
+    let missing = requested - eligible.len() - ineligible.len();
+
+    let mut succeeded = 0usize;
+    let mut failed = 0usize;
+
+    match action {
+        BulkAction::Retry => {
+            for video in &eligible {
+                if bulk_retry_one(&state, video).await {
+                    succeeded += 1;
+                } else {
+                    failed += 1;
+                }
+            }
+        }
+        BulkAction::Cancel => {
+            for video in &eligible {
+                match state
+                    .supervisor
+                    .ask(CancelDownload { video_id: video.id })
+                    .await
+                {
+                    Ok(()) => succeeded += 1,
+                    Err(error) => {
+                        tracing::error!(%error, video_id = %video.id, "bulk cancel failed");
+                        failed += 1;
+                    }
+                }
+            }
+        }
+        BulkAction::Delete => {
+            for video in &eligible {
+                if bulk_delete_one(&state, video).await {
+                    succeeded += 1;
+                } else {
+                    failed += 1;
+                }
+            }
+        }
+    }
+
+    if succeeded > 0 {
+        state.broadcaster.invalidate();
+    }
+
+    let mut parts = vec![format!("{succeeded} {}", action.past_tense())];
+    if !ineligible.is_empty() {
+        parts.push(format!("{} not eligible", ineligible.len()));
+    }
+    if missing > 0 {
+        parts.push(format!("{missing} no longer exist"));
+    }
+    if failed > 0 {
+        parts.push(format!("{failed} failed"));
+    }
+    let level = if failed > 0 || succeeded == 0 {
+        "error"
+    } else {
+        "success"
+    };
+    set_flash(&session, level, &parts.join(", ")).await;
+
+    Redirect::to(&return_url).into_response()
+}
+
+/// Reset one video to pending and re-enqueue it. Returns whether it worked.
+async fn bulk_retry_one(state: &AppState, video: &hof_core::domain::video::Video) -> bool {
+    if let Err(error) = db::update_video_status(&state.pool, video.id, VideoStatus::Pending).await {
+        tracing::error!(%error, video_id = %video.id, "bulk retry: status reset failed");
+        return false;
+    }
+
+    let Ok(source_ids) = db::get_sources_for_video(&state.pool, video.id).await else {
+        tracing::error!(video_id = %video.id, "bulk retry: source lookup failed");
+        return false;
+    };
+    let Some(source_id) = source_ids.first() else {
+        tracing::warn!(video_id = %video.id, "bulk retry: video has no linked source");
+        return false;
+    };
+    let Ok(source) = db::get_source(&state.pool, *source_id).await else {
+        tracing::error!(video_id = %video.id, "bulk retry: source load failed");
+        return false;
+    };
+    let Ok(profile) = db::get_profile(&state.pool, source.profile_id).await else {
+        tracing::error!(video_id = %video.id, "bulk retry: profile load failed");
+        return false;
+    };
+    // Re-read so the enqueued copy carries the pending status just written.
+    let Ok(refreshed) = db::get_video(&state.pool, video.id).await else {
+        tracing::error!(video_id = %video.id, "bulk retry: video reload failed");
+        return false;
+    };
+
+    match state
+        .supervisor
+        .tell(EnqueueDownload {
+            video: refreshed,
+            profile,
+            source,
+        })
+        .await
+    {
+        Ok(()) => true,
+        Err(error) => {
+            tracing::error!(%error, video_id = %video.id, "bulk retry: enqueue failed");
+            false
+        }
+    }
+}
+
+/// Remove one completed video's file and mark it cleaned.
+async fn bulk_delete_one(state: &AppState, video: &hof_core::domain::video::Video) -> bool {
+    if let Some(path) = video.file_path.as_ref() {
+        // A file already gone from disk should still let the row be cleaned.
+        if let Err(error) = tokio::fs::remove_file(path).await
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            tracing::error!(%error, video_id = %video.id, "bulk delete: file removal failed");
+            return false;
+        }
+    }
+
+    match db::update_video_status(&state.pool, video.id, VideoStatus::Cleaned).await {
+        Ok(()) => true,
+        Err(error) => {
+            tracing::error!(%error, video_id = %video.id, "bulk delete: status update failed");
+            false
+        }
+    }
+}
+
 #[allow(clippy::too_many_lines)]
 async fn retry_download(
     _auth: AuthUser,
@@ -3454,6 +3687,22 @@ const fn parse_activity_page_size(value: Option<i64>) -> i64 {
     }
 }
 
+/// The canonical slug for a status, matching [`parse_download_status`].
+///
+/// Rendered into `data-status` so the bulk toolbar can decide client-side
+/// which actions apply to the current selection.
+const fn download_status_slug(status: &VideoStatus) -> &'static str {
+    match status {
+        VideoStatus::Pending => "pending",
+        VideoStatus::Downloading => "downloading",
+        VideoStatus::Completed => "completed",
+        VideoStatus::Failed => "failed",
+        VideoStatus::Skipped => "skipped",
+        VideoStatus::Cleaned => "cleaned",
+        VideoStatus::PermanentlyFailed => "permanently_failed",
+    }
+}
+
 fn parse_download_status(status: Option<&str>) -> Option<VideoStatus> {
     status.and_then(|s| match s {
         "pending" => Some(VideoStatus::Pending),
@@ -3627,6 +3876,149 @@ fn activity_url(base: &str, filter: ActivityFilter<'_>, page: i64, per_page: i64
 
 #[allow(clippy::too_many_arguments)]
 #[allow(clippy::too_many_lines)]
+/// Toolbar for acting on the current checkbox selection.
+///
+/// Hidden until something is selected. The buttons stay disabled unless the
+/// selection contains at least one video eligible for that action, so the
+/// affordance matches what the server will actually do.
+fn bulk_action_bar(
+    status: Option<&str>,
+    search: Option<&str>,
+    page_num: i64,
+    per_page: i64,
+) -> Markup {
+    let action_url = downloads_url("/downloads/bulk", status, search, page_num, per_page);
+
+    html! {
+        form
+            method="post"
+            action=(action_url)
+            data-bulk-form="1"
+            hidden
+            class="mt-4 flex flex-wrap items-center gap-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 px-4 py-3"
+        {
+            input type="hidden" name="ids" data-bulk-ids="1" value="";
+            input type="hidden" name="action" data-bulk-action="1" value="";
+            span class="text-sm font-medium text-slate-700 dark:text-slate-300" {
+                span data-bulk-count="1" { "0" }
+                " selected"
+            }
+            button
+                type="submit"
+                value="retry"
+                data-bulk-button="retry"
+                class="rounded-lg border border-sky-200 dark:border-sky-800 bg-sky-50 dark:bg-sky-900/50 px-3 py-1.5 text-xs font-medium text-sky-700 dark:text-sky-300 hover:bg-sky-100 dark:hover:bg-sky-900 disabled:opacity-40"
+            { "Retry selected" }
+            button
+                type="submit"
+                value="cancel"
+                data-bulk-button="cancel"
+                data-confirm="Cancel the selected downloads?"
+                class="rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/50 px-3 py-1.5 text-xs font-medium text-amber-700 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-900 disabled:opacity-40"
+            { "Cancel selected" }
+            button
+                type="submit"
+                value="delete"
+                data-bulk-button="delete"
+                data-confirm="Delete the selected videos? Their files will be removed from disk."
+                class="rounded-lg border border-rose-200 dark:border-rose-800 bg-rose-50 dark:bg-rose-900/50 px-3 py-1.5 text-xs font-medium text-rose-700 dark:text-rose-300 hover:bg-rose-100 dark:hover:bg-rose-900 disabled:opacity-40"
+            { "Delete selected" }
+            button
+                type="button"
+                data-bulk-clear="1"
+                class="rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 px-3 py-1.5 text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-600"
+            { "Clear selection" }
+        }
+    }
+}
+
+/// One download row, including its per-item action buttons.
+///
+/// The action forms carry the current list state so the post-redirect returns
+/// to the same page and filters rather than resetting to the top.
+#[allow(clippy::too_many_arguments)]
+fn downloads_row(
+    video: &Video,
+    source_names: &HashMap<Ulid, String>,
+    status_param: Option<&str>,
+    search: Option<&str>,
+    page_num: i64,
+    per_page: i64,
+) -> Markup {
+    let action_url = |verb: &str| {
+        downloads_url(
+            &format!("/downloads/{}/{verb}", video.id),
+            status_param,
+            search,
+            page_num,
+            per_page,
+        )
+    };
+
+    html! {
+        tr id=(format!("video-{}", video.id)) {
+            td class="px-3 py-2" {
+                input
+                    type="checkbox"
+                    data-bulk-select=(video.id.to_string())
+                    data-status=(download_status_slug(&video.status))
+                    aria-label=(format!("Select {}", video.title))
+                    class="h-4 w-4 rounded border-slate-300 dark:border-slate-600";
+            }
+            td class="max-w-lg px-3 py-2 text-slate-900 dark:text-slate-100" {
+                p class="truncate font-medium" { (video.title) }
+                p class="truncate text-xs text-slate-500 dark:text-slate-400" { (video.id.to_string()) }
+            }
+            td class="max-w-xs px-3 py-2 text-slate-600 dark:text-slate-400" {
+                p class="truncate" {
+                    @if let Some(name) = source_names.get(&video.id) {
+                        (name)
+                    } @else {
+                        span class="text-slate-400 dark:text-slate-500 italic" { "—" }
+                    }
+                }
+            }
+            td class="px-3 py-2 text-slate-600 dark:text-slate-400" { (video.platform) }
+            td class="px-3 py-2" { (status_badge(&video.status)) }
+            td class="px-3 py-2 text-slate-600 dark:text-slate-400" { (video.attempts) }
+            td class="px-3 py-2" {
+                div class="flex gap-2" {
+                    @if BulkAction::Retry.allows(&video.status) {
+                        form method="post" action=(action_url("retry")) {
+                            button class="rounded-lg border border-sky-200 dark:border-sky-800 bg-sky-50 dark:bg-sky-900/50 px-3 py-1.5 text-xs font-medium text-sky-700 dark:text-sky-300 hover:bg-sky-100 dark:hover:bg-sky-900" type="submit" {
+                                "Retry"
+                            }
+                        }
+                    }
+                    @if BulkAction::Cancel.allows(&video.status) {
+                        form method="post" action=(action_url("cancel")) {
+                            button
+                                class="rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/50 px-3 py-1.5 text-xs font-medium text-amber-700 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-900"
+                                type="submit"
+                                onclick="return confirm('Cancel this download?')"
+                            {
+                                "Cancel"
+                            }
+                        }
+                    }
+                    @if BulkAction::Delete.allows(&video.status) {
+                        form method="post" action=(action_url("delete")) {
+                            button
+                                class="rounded-lg border border-rose-200 dark:border-rose-800 bg-rose-50 dark:bg-rose-900/50 px-3 py-1.5 text-xs font-medium text-rose-700 dark:text-rose-300 hover:bg-rose-100 dark:hover:bg-rose-900"
+                                type="submit"
+                                onclick="return confirm('Delete this video? The file will be removed from disk.')"
+                            {
+                                "Delete"
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn downloads_list_markup(
     videos: &[Video],
     source_names: &HashMap<Ulid, String>,
@@ -3655,10 +4047,18 @@ fn downloads_list_markup(
             @if videos.is_empty() {
                 p class="mt-3 text-sm text-slate-500 dark:text-slate-400" { "No downloads match your filters." }
             } @else {
+                (bulk_action_bar(status_param, search, page_num, per_page))
                 div class="mt-4 overflow-x-auto" {
-                    table class="min-w-full divide-y divide-slate-200 text-sm" {
+                    table class="min-w-full divide-y divide-slate-200 text-sm" data-bulk-table="1" {
                         thead class="bg-slate-50 dark:bg-slate-800" {
                             tr {
+                                th class="w-8 px-3 py-2 text-left" {
+                                    input
+                                        type="checkbox"
+                                        data-bulk-select-all="1"
+                                        aria-label="Select all downloads on this page"
+                                        class="h-4 w-4 rounded border-slate-300 dark:border-slate-600";
+                                }
                                 th class="px-3 py-2 text-left font-semibold text-slate-700 dark:text-slate-300" { "Title" }
                                 th class="px-3 py-2 text-left font-semibold text-slate-700 dark:text-slate-300" { "Source" }
                                 th class="px-3 py-2 text-left font-semibold text-slate-700 dark:text-slate-300" { "Platform" }
@@ -3669,57 +4069,7 @@ fn downloads_list_markup(
                         }
                         tbody class="divide-y divide-slate-100 dark:divide-slate-700 bg-white dark:bg-slate-900" {
                             @for video in videos {
-                                tr id=(format!("video-{}", video.id)) {
-                                    td class="max-w-lg px-3 py-2 text-slate-900 dark:text-slate-100" {
-                                        p class="truncate font-medium" { (video.title) }
-                                        p class="truncate text-xs text-slate-500 dark:text-slate-400" { (video.id.to_string()) }
-                                    }
-                                    td class="max-w-xs px-3 py-2 text-slate-600 dark:text-slate-400" {
-                                        p class="truncate" {
-                                            @if let Some(name) = source_names.get(&video.id) {
-                                                (name)
-                                            } @else {
-                                                span class="text-slate-400 dark:text-slate-500 italic" { "—" }
-                                            }
-                                        }
-                                    }
-                                    td class="px-3 py-2 text-slate-600 dark:text-slate-400" { (video.platform) }
-                                    td class="px-3 py-2" { (status_badge(&video.status)) }
-                                    td class="px-3 py-2 text-slate-600 dark:text-slate-400" { (video.attempts) }
-                                    td class="px-3 py-2" {
-                                        div class="flex gap-2" {
-                                            @if matches!(video.status, VideoStatus::Failed | VideoStatus::PermanentlyFailed | VideoStatus::Cleaned) {
-                                                form method="post" action=(downloads_url(&format!("/downloads/{}/retry", video.id), status_param, search, page_num, per_page)) {
-                                                    button class="rounded-lg border border-sky-200 dark:border-sky-800 bg-sky-50 dark:bg-sky-900/50 px-3 py-1.5 text-xs font-medium text-sky-700 dark:text-sky-300 hover:bg-sky-100 dark:hover:bg-sky-900" type="submit" {
-                                                        "Retry"
-                                                    }
-                                                }
-                                            }
-                                            @if matches!(video.status, VideoStatus::Pending | VideoStatus::Downloading) {
-                                                form method="post" action=(downloads_url(&format!("/downloads/{}/cancel", video.id), status_param, search, page_num, per_page)) {
-                                                    button
-                                                        class="rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/50 px-3 py-1.5 text-xs font-medium text-amber-700 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-900"
-                                                        type="submit"
-                                                        onclick="return confirm('Cancel this download?')"
-                                                    {
-                                                        "Cancel"
-                                                    }
-                                                }
-                                            }
-                                            @if video.status == VideoStatus::Completed {
-                                                form method="post" action=(downloads_url(&format!("/downloads/{}/delete", video.id), status_param, search, page_num, per_page)) {
-                                                    button
-                                                        class="rounded-lg border border-rose-200 dark:border-rose-800 bg-rose-50 dark:bg-rose-900/50 px-3 py-1.5 text-xs font-medium text-rose-700 dark:text-rose-300 hover:bg-rose-100 dark:hover:bg-rose-900"
-                                                        type="submit"
-                                                        onclick="return confirm('Delete this video? The file will be removed from disk.')"
-                                                    {
-                                                        "Delete"
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
+                                (downloads_row(video, source_names, status_param, search, page_num, per_page))
                             }
                         }
                     }
@@ -5557,10 +5907,13 @@ fn layout_with_flash(
                       }
                     })();
 
-                    // Loading state on form submit
+                    // Loading state on form submit. Skips a submit already
+                    // cancelled (e.g. a declined confirm), which would otherwise
+                    // leave the button stuck disabled on a form that never went.
                     document.addEventListener('submit', function(e) {
                       var form = e.target;
                       if (form.tagName !== 'FORM') return;
+                      if (e.defaultPrevented) return;
                       var btn = e.submitter;
                       if (!btn || btn.disabled) return;
                       btn.disabled = true;
@@ -5577,6 +5930,96 @@ fn layout_with_flash(
                       var field = document.getElementById(el.dataset.resetPage);
                       if (field) field.value = '1';
                     });
+
+                    // ---- Bulk selection on the downloads table ----
+                    // All handlers are delegated from document: the table is
+                    // replaced wholesale by htmx and SSE, so anything bound to
+                    // the elements themselves would be lost on the next swap.
+                    // Selection deliberately resets on swap, since the rows (and
+                    // their statuses) may no longer be the ones that were picked.
+                    var BULK_ELIGIBLE = {
+                      retry: ['failed', 'permanently_failed', 'cleaned'],
+                      cancel: ['pending', 'downloading'],
+                      delete: ['completed']
+                    };
+
+                    function bulkBoxes() {
+                      return Array.prototype.slice.call(
+                        document.querySelectorAll('[data-bulk-select]'));
+                    }
+
+                    function bulkRefresh() {
+                      var form = document.querySelector('[data-bulk-form]');
+                      if (!form) return;
+                      var selected = bulkBoxes().filter(function(b) { return b.checked; });
+                      var ids = selected.map(function(b) { return b.dataset.bulkSelect; });
+                      var statuses = selected.map(function(b) { return b.dataset.status; });
+
+                      form.hidden = ids.length === 0;
+                      var idField = form.querySelector('[data-bulk-ids]');
+                      if (idField) idField.value = ids.join(',');
+                      var count = form.querySelector('[data-bulk-count]');
+                      if (count) count.textContent = String(ids.length);
+
+                      Object.keys(BULK_ELIGIBLE).forEach(function(action) {
+                        var btn = form.querySelector('[data-bulk-button=' + action + ']');
+                        if (!btn) return;
+                        var ok = statuses.some(function(s) {
+                          return BULK_ELIGIBLE[action].indexOf(s) !== -1;
+                        });
+                        btn.disabled = !ok;
+                        btn.title = ok ? '' : 'No selected download is eligible';
+                      });
+
+                      var all = document.querySelector('[data-bulk-select-all]');
+                      if (all) {
+                        var boxes = bulkBoxes();
+                        all.checked = boxes.length > 0 && selected.length === boxes.length;
+                        all.indeterminate = selected.length > 0 && selected.length < boxes.length;
+                      }
+                    }
+
+                    document.addEventListener('change', function(e) {
+                      var el = e.target;
+                      if (!el || !el.dataset) return;
+                      if (el.dataset.bulkSelectAll !== undefined) {
+                        bulkBoxes().forEach(function(b) { b.checked = el.checked; });
+                        bulkRefresh();
+                      } else if (el.dataset.bulkSelect !== undefined) {
+                        bulkRefresh();
+                      }
+                    });
+
+                    document.addEventListener('click', function(e) {
+                      var el = e.target.closest ? e.target.closest('[data-bulk-clear]') : null;
+                      if (!el) return;
+                      e.preventDefault();
+                      bulkBoxes().forEach(function(b) { b.checked = false; });
+                      var all = document.querySelector('[data-bulk-select-all]');
+                      if (all) { all.checked = false; all.indeterminate = false; }
+                      bulkRefresh();
+                    });
+
+                    // Record which button submitted, and confirm destructive ones.
+                    // `submitter.value` is not sent for us because the action is
+                    // carried in a hidden field the server reads.
+                    // Capture phase so this runs before the loading-state handler
+                    // above and can cancel the submit cleanly.
+                    document.addEventListener('submit', function(e) {
+                      var form = e.target;
+                      if (!form.dataset || form.dataset.bulkForm === undefined) return;
+                      var btn = e.submitter;
+                      if (!btn) return;
+                      if (btn.dataset.confirm && !confirm(btn.dataset.confirm)) {
+                        e.preventDefault();
+                        return;
+                      }
+                      var field = form.querySelector('[data-bulk-action]');
+                      if (field) field.value = btn.value;
+                    }, true);
+
+                    document.body.addEventListener('htmx:afterSwap', bulkRefresh);
+                    bulkRefresh();
                     </script>"))
             }
         }
@@ -5800,6 +6243,107 @@ mod tests {
             per_page: None,
         };
         assert_eq!(downloads_return_url(&query), "/downloads?page=2");
+    }
+
+    // ------------------------------------------------------------------
+    // Bulk action eligibility
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn bulk_action_parses_known_verbs() {
+        assert_eq!(BulkAction::parse("retry"), Some(BulkAction::Retry));
+        assert_eq!(BulkAction::parse("cancel"), Some(BulkAction::Cancel));
+        assert_eq!(BulkAction::parse("delete"), Some(BulkAction::Delete));
+    }
+
+    #[test]
+    fn bulk_action_rejects_unknown_verbs() {
+        assert_eq!(BulkAction::parse("purge"), None);
+        assert_eq!(BulkAction::parse(""), None);
+        assert_eq!(BulkAction::parse("RETRY"), None);
+    }
+
+    /// These must stay in step with the guards in the single-item handlers,
+    /// or a bulk action would accept work the individual button refuses.
+    #[test]
+    fn bulk_retry_matches_single_retry_eligibility() {
+        for status in [
+            VideoStatus::Failed,
+            VideoStatus::PermanentlyFailed,
+            VideoStatus::Cleaned,
+        ] {
+            assert!(BulkAction::Retry.allows(&status));
+        }
+        for status in [
+            VideoStatus::Pending,
+            VideoStatus::Downloading,
+            VideoStatus::Completed,
+            VideoStatus::Skipped,
+        ] {
+            assert!(!BulkAction::Retry.allows(&status));
+        }
+    }
+
+    #[test]
+    fn bulk_cancel_matches_single_cancel_eligibility() {
+        for status in [VideoStatus::Pending, VideoStatus::Downloading] {
+            assert!(BulkAction::Cancel.allows(&status));
+        }
+        for status in [
+            VideoStatus::Completed,
+            VideoStatus::Failed,
+            VideoStatus::Cleaned,
+            VideoStatus::PermanentlyFailed,
+            VideoStatus::Skipped,
+        ] {
+            assert!(!BulkAction::Cancel.allows(&status));
+        }
+    }
+
+    #[test]
+    fn bulk_delete_only_accepts_completed() {
+        assert!(BulkAction::Delete.allows(&VideoStatus::Completed));
+        for status in [
+            VideoStatus::Pending,
+            VideoStatus::Downloading,
+            VideoStatus::Failed,
+            VideoStatus::Cleaned,
+            VideoStatus::PermanentlyFailed,
+            VideoStatus::Skipped,
+        ] {
+            assert!(!BulkAction::Delete.allows(&status));
+        }
+    }
+
+    /// The slug is rendered into `data-status` and parsed back by the status
+    /// filter links, so the two directions must agree exactly.
+    #[test]
+    fn download_status_slug_round_trips_through_parse() {
+        for status in [
+            VideoStatus::Pending,
+            VideoStatus::Downloading,
+            VideoStatus::Completed,
+            VideoStatus::Failed,
+            VideoStatus::Skipped,
+            VideoStatus::Cleaned,
+            VideoStatus::PermanentlyFailed,
+        ] {
+            let slug = download_status_slug(&status);
+            assert_eq!(
+                parse_download_status(Some(slug)),
+                Some(status.clone()),
+                "slug {slug} did not round-trip"
+            );
+        }
+    }
+
+    #[test]
+    fn bulk_action_url_carries_list_state() {
+        let url = downloads_url("/downloads/bulk", Some("failed"), Some("cats"), 3, 50);
+        assert_eq!(
+            url,
+            "/downloads/bulk?status=failed&search=cats&page=3&per_page=50"
+        );
     }
 
     // ------------------------------------------------------------------
