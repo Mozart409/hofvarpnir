@@ -989,10 +989,14 @@ async fn activity_events_sse(
         let pool = state.pool.clone();
         let query = query.clone();
         async move {
-            let page_num = query.page.unwrap_or(1).max(1);
-            let per_page = parse_activity_page_size(query.per_page);
-            let offset = (page_num - 1) * per_page;
-            let severity_filter = parse_activity_severity(query.severity.as_deref());
+            let params = ActivityParams::from_query(&query);
+            let ActivityParams {
+                page_num,
+                per_page,
+                offset,
+                ref severity_filter,
+                ..
+            } = params;
 
             let (events_result, count_result) = tokio::join!(
                 db::list_activity_events(
@@ -1001,9 +1005,16 @@ async fn activity_events_sse(
                     offset,
                     severity_filter.clone(),
                     None,
-                    None
+                    params.source_id,
+                    params.search.as_deref(),
                 ),
-                db::count_activity_events(&pool, severity_filter, None, None)
+                db::count_activity_events(
+                    &pool,
+                    severity_filter.clone(),
+                    None,
+                    params.source_id,
+                    params.search.as_deref(),
+                )
             );
 
             let events = match events_result {
@@ -1023,16 +1034,16 @@ async fn activity_events_sse(
             } else {
                 (total + per_page - 1) / per_page
             };
-            let current_severity = normalized_activity_severity(query.severity.as_deref());
-
             let fragment = activity_content_markup(
                 &events,
                 &source_names,
                 &video_source_names,
                 page_num,
                 total_pages,
-                current_severity,
+                &params.severity_label,
                 per_page,
+                params.search.as_deref(),
+                params.source.as_deref(),
             )
             .into_string();
 
@@ -2997,8 +3008,74 @@ async fn system_banner(State(state): State<AppState>) -> impl IntoResponse {
 #[derive(Debug, Clone, Deserialize)]
 struct ActivityQuery {
     severity: Option<String>,
+    search: Option<String>,
+    /// Restrict to one source; set by clicking a source pill on an event row.
+    source: Option<String>,
     page: Option<i64>,
     per_page: Option<i64>,
+}
+
+/// Request-scoped activity filter state, normalized once.
+///
+/// The page, list partial and SSE stream all need the same derived values;
+/// deriving them in one place keeps the three views from drifting apart.
+struct ActivityParams {
+    page_num: i64,
+    per_page: i64,
+    offset: i64,
+    severity_filter: Option<ActivitySeverity>,
+    severity_label: String,
+    search: Option<String>,
+    source_id: Option<Ulid>,
+    source: Option<String>,
+}
+
+impl ActivityParams {
+    fn from_query(query: &ActivityQuery) -> Self {
+        let page_num = query.page.unwrap_or(1).max(1);
+        let per_page = parse_activity_page_size(query.per_page);
+        let search = query
+            .search
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned);
+        // Only keep a source filter we can actually parse; a malformed id would
+        // otherwise silently match nothing while still showing an active pill.
+        let source_id = query
+            .source
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .and_then(|value| Ulid::from_string(value).ok());
+
+        Self {
+            page_num,
+            per_page,
+            offset: (page_num - 1) * per_page,
+            severity_filter: parse_activity_severity(query.severity.as_deref()),
+            severity_label: normalized_activity_severity(query.severity.as_deref()).to_owned(),
+            search,
+            source_id,
+            source: source_id.map(|id| id.to_string()),
+        }
+    }
+
+    fn severity_param(&self) -> Option<&str> {
+        if self.severity_label == "all" {
+            None
+        } else {
+            Some(&self.severity_label)
+        }
+    }
+
+    fn filter(&self) -> ActivityFilter<'_> {
+        ActivityFilter {
+            severity: self.severity_param(),
+            search: self.search.as_deref(),
+            source: self.source.as_deref(),
+        }
+    }
 }
 
 async fn activity_page(
@@ -3006,11 +3083,14 @@ async fn activity_page(
     State(state): State<AppState>,
     axum::extract::Query(query): axum::extract::Query<ActivityQuery>,
 ) -> impl IntoResponse {
-    let page_num = query.page.unwrap_or(1).max(1);
-    let per_page = parse_activity_page_size(query.per_page);
-    let offset = (page_num - 1) * per_page;
-
-    let severity_filter = parse_activity_severity(query.severity.as_deref());
+    let params = ActivityParams::from_query(&query);
+    let ActivityParams {
+        page_num,
+        per_page,
+        offset,
+        ref severity_filter,
+        ..
+    } = params;
 
     let (events_result, count_result) = tokio::join!(
         db::list_activity_events(
@@ -3019,9 +3099,16 @@ async fn activity_page(
             offset,
             severity_filter.clone(),
             None,
-            None
+            params.source_id,
+            params.search.as_deref(),
         ),
-        db::count_activity_events(&state.pool, severity_filter.clone(), None, None)
+        db::count_activity_events(
+            &state.pool,
+            severity_filter.clone(),
+            None,
+            params.source_id,
+            params.search.as_deref(),
+        )
     );
 
     let events = match events_result {
@@ -3043,9 +3130,9 @@ async fn activity_page(
     let total = count_result.unwrap_or(0);
     let total_pages = (total + per_page - 1) / per_page;
 
-    let current_severity = normalized_activity_severity(query.severity.as_deref());
-    let list_url = activity_list_url(query.severity.as_deref(), page_num, per_page);
-    let events_url = activity_events_url(query.severity.as_deref(), page_num, per_page);
+    let current_severity = params.severity_label.as_str();
+    let list_url = activity_list_url(params.filter(), page_num, per_page);
+    let events_url = activity_events_url(params.filter(), page_num, per_page);
 
     let page = layout(
         "Activity",
@@ -3072,6 +3159,8 @@ async fn activity_page(
                             total_pages,
                             current_severity,
                             per_page,
+                            params.search.as_deref(),
+                            params.source.as_deref(),
                         ))
                     }
                 }
@@ -3087,10 +3176,14 @@ async fn activity_list_partial(
     State(state): State<AppState>,
     axum::extract::Query(query): axum::extract::Query<ActivityQuery>,
 ) -> impl IntoResponse {
-    let page_num = query.page.unwrap_or(1).max(1);
-    let per_page = parse_activity_page_size(query.per_page);
-    let offset = (page_num - 1) * per_page;
-    let severity_filter = parse_activity_severity(query.severity.as_deref());
+    let params = ActivityParams::from_query(&query);
+    let ActivityParams {
+        page_num,
+        per_page,
+        offset,
+        ref severity_filter,
+        ..
+    } = params;
 
     let (events_result, count_result) = tokio::join!(
         db::list_activity_events(
@@ -3099,9 +3192,16 @@ async fn activity_list_partial(
             offset,
             severity_filter.clone(),
             None,
-            None
+            params.source_id,
+            params.search.as_deref(),
         ),
-        db::count_activity_events(&state.pool, severity_filter, None, None)
+        db::count_activity_events(
+            &state.pool,
+            severity_filter.clone(),
+            None,
+            params.source_id,
+            params.search.as_deref(),
+        )
     );
 
     let events = match events_result {
@@ -3123,16 +3223,16 @@ async fn activity_list_partial(
     } else {
         (total + per_page - 1) / per_page
     };
-    let current_severity = normalized_activity_severity(query.severity.as_deref());
-
     activity_content_markup(
         &events,
         &source_names,
         &video_source_names,
         page_num,
         total_pages,
-        current_severity,
+        &params.severity_label,
         per_page,
+        params.search.as_deref(),
+        params.source.as_deref(),
     )
     .into_response()
 }
@@ -3185,7 +3285,14 @@ fn download_status_filter_link(
     }
 }
 
-fn severity_filter_link(value: &str, label: &str, current: &str, per_page: i64) -> Markup {
+fn severity_filter_link(
+    value: &str,
+    label: &str,
+    current: &str,
+    per_page: i64,
+    search: Option<&str>,
+    source: Option<&str>,
+) -> Markup {
     let active = value == current;
     let classes = if active {
         "rounded-full bg-slate-900 dark:bg-slate-100 px-3 py-1 text-xs font-medium text-white dark:text-slate-900"
@@ -3193,8 +3300,13 @@ fn severity_filter_link(value: &str, label: &str, current: &str, per_page: i64) 
         "rounded-full bg-slate-100 dark:bg-slate-700 px-3 py-1 text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-600"
     };
     let severity = if value == "all" { None } else { Some(value) };
-    let href = activity_page_url(severity, 1, per_page);
-    let hx_get = activity_list_url(severity, 1, per_page);
+    let filter = ActivityFilter {
+        severity,
+        search,
+        source,
+    };
+    let href = activity_page_url(filter, 1, per_page);
+    let hx_get = activity_list_url(filter, 1, per_page);
 
     html! {
         a
@@ -3209,15 +3321,26 @@ fn severity_filter_link(value: &str, label: &str, current: &str, per_page: i64) 
     }
 }
 
-fn activity_page_size_link(size: i64, current_size: i64, severity: Option<&str>) -> Markup {
+fn activity_page_size_link(
+    size: i64,
+    current_size: i64,
+    severity: Option<&str>,
+    search: Option<&str>,
+    source: Option<&str>,
+) -> Markup {
     let active = size == current_size;
     let classes = if active {
         "rounded-full bg-slate-900 dark:bg-slate-100 px-2.5 py-1 text-xs font-medium text-white dark:text-slate-900"
     } else {
         "rounded-full bg-slate-100 dark:bg-slate-700 px-2.5 py-1 text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-600"
     };
-    let href = activity_page_url(severity, 1, size);
-    let hx_get = activity_list_url(severity, 1, size);
+    let filter = ActivityFilter {
+        severity,
+        search,
+        source,
+    };
+    let href = activity_page_url(filter, 1, size);
+    let hx_get = activity_list_url(filter, 1, size);
 
     html! {
         a
@@ -3379,23 +3502,41 @@ fn downloads_url(
     }
 }
 
-fn activity_page_url(severity: Option<&str>, page: i64, per_page: i64) -> String {
-    activity_url("/activity", severity, page, per_page)
+/// The filter state shared by every activity URL variant.
+///
+/// Grouped into a struct because these four values must travel together through
+/// the page, the list partial, the SSE stream and every filter link — passing
+/// them positionally invited dropping one and silently resetting the view.
+#[derive(Debug, Clone, Copy, Default)]
+struct ActivityFilter<'a> {
+    severity: Option<&'a str>,
+    search: Option<&'a str>,
+    source: Option<&'a str>,
 }
 
-fn activity_list_url(severity: Option<&str>, page: i64, per_page: i64) -> String {
-    activity_url("/web/activity/list", severity, page, per_page)
+fn activity_page_url(filter: ActivityFilter<'_>, page: i64, per_page: i64) -> String {
+    activity_url("/activity", filter, page, per_page)
 }
 
-fn activity_events_url(severity: Option<&str>, page: i64, per_page: i64) -> String {
-    activity_url("/web/activity/events", severity, page, per_page)
+fn activity_list_url(filter: ActivityFilter<'_>, page: i64, per_page: i64) -> String {
+    activity_url("/web/activity/list", filter, page, per_page)
 }
 
-fn activity_url(base: &str, severity: Option<&str>, page: i64, per_page: i64) -> String {
+fn activity_events_url(filter: ActivityFilter<'_>, page: i64, per_page: i64) -> String {
+    activity_url("/web/activity/events", filter, page, per_page)
+}
+
+fn activity_url(base: &str, filter: ActivityFilter<'_>, page: i64, per_page: i64) -> String {
     let mut params = Vec::new();
 
-    if let Some(value) = severity.filter(|value| *value != "all") {
+    if let Some(value) = filter.severity.filter(|value| *value != "all") {
         params.push(format!("severity={value}"));
+    }
+    if let Some(value) = filter.search.filter(|value| !value.is_empty()) {
+        params.push(format!("search={}", encode_query_value(value)));
+    }
+    if let Some(value) = filter.source.filter(|value| !value.is_empty()) {
+        params.push(format!("source={}", encode_query_value(value)));
     }
     if page > 1 {
         params.push(format!("page={page}"));
@@ -3545,6 +3686,103 @@ fn downloads_list_markup(
     }
 }
 
+/// Severity pills, page-size pills, and the message search box.
+fn activity_filter_bar(
+    filter: ActivityFilter<'_>,
+    current_severity: &str,
+    page_num: i64,
+    per_page: i64,
+) -> Markup {
+    let ActivityFilter {
+        severity,
+        search,
+        source,
+    } = filter;
+
+    html! {
+        div class="mt-3 flex flex-wrap items-center gap-3" {
+            nav class="flex gap-1" {
+                (severity_filter_link("all", "All", current_severity, per_page, search, source))
+                (severity_filter_link("info", "Info", current_severity, per_page, search, source))
+                (severity_filter_link("success", "Success", current_severity, per_page, search, source))
+                (severity_filter_link("warning", "Warning", current_severity, per_page, search, source))
+                (severity_filter_link("error", "Error", current_severity, per_page, search, source))
+            }
+            nav class="flex items-center gap-1" {
+                span class="px-2 text-xs font-medium text-slate-500 dark:text-slate-400" { "Rows" }
+                (activity_page_size_link(25, per_page, severity, search, source))
+                (activity_page_size_link(50, per_page, severity, search, source))
+                (activity_page_size_link(100, per_page, severity, search, source))
+            }
+            form
+                method="get"
+                action="/activity"
+                class="flex gap-2"
+                hx-get="/web/activity/list"
+                hx-target="#activity-content"
+                hx-push-url=(activity_page_url(filter, page_num, per_page))
+            {
+                // Severity and source live outside this form as pills, so they
+                // ride along as hidden fields to survive a search submit.
+                @if let Some(value) = severity {
+                    input type="hidden" name="severity" value=(value);
+                }
+                @if let Some(value) = source {
+                    input type="hidden" name="source" value=(value);
+                }
+                input type="hidden" name="per_page" value=(per_page);
+                input id="activity-page-field" type="hidden" name="page" value=(page_num);
+                input
+                    type="text"
+                    name="search"
+                    placeholder="Search messages..."
+                    value=(search.unwrap_or(""))
+                    data-reset-page="activity-page-field"
+                    class="rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 px-3 py-1.5 text-sm text-slate-900 dark:text-slate-100";
+                button type="submit"
+                    class="rounded-lg bg-slate-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-slate-700"
+                { "Search" }
+            }
+        }
+    }
+}
+
+/// The active source filter, rendered as a pill with a clear affordance.
+///
+/// `display_name` is `None` for a source that has since been deleted; the raw
+/// id is shown instead so the filter is still identifiable and clearable.
+fn activity_source_pill(
+    filter: ActivityFilter<'_>,
+    display_name: Option<&str>,
+    per_page: i64,
+) -> Markup {
+    let Some(source_id) = filter.source else {
+        return html! {};
+    };
+    let cleared = ActivityFilter {
+        source: None,
+        ..filter
+    };
+
+    html! {
+        div class="mt-3 flex flex-wrap items-center gap-2" {
+            span class="text-xs font-medium text-slate-500 dark:text-slate-400" { "Filtered to source" }
+            span class="inline-flex items-center gap-2 rounded-full bg-slate-900 dark:bg-slate-100 px-3 py-1 text-xs font-medium text-white dark:text-slate-900" {
+                (display_name.unwrap_or(source_id))
+                a
+                    href=(activity_page_url(cleared, 1, per_page))
+                    hx-get=(activity_list_url(cleared, 1, per_page))
+                    hx-target="#activity-content"
+                    hx-push-url=(activity_page_url(cleared, 1, per_page))
+                    class="text-slate-300 dark:text-slate-600 hover:text-white dark:hover:text-slate-900"
+                    aria-label="Clear source filter"
+                { "\u{00d7}" }
+            }
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn activity_content_markup(
     events: &[hof_core::domain::activity::ActivityEvent],
     source_names: &HashMap<Ulid, String>,
@@ -3553,38 +3791,43 @@ fn activity_content_markup(
     total_pages: i64,
     current_severity: &str,
     per_page: i64,
+    search: Option<&str>,
+    source: Option<&str>,
 ) -> Markup {
     let severity_param = if current_severity == "all" {
         None
     } else {
         Some(current_severity)
     };
+    let filter = ActivityFilter {
+        severity: severity_param,
+        search,
+        source,
+    };
+    let has_filters = search.is_some() || source.is_some() || severity_param.is_some();
+    // The pill shows the source's display name when we can resolve it, falling
+    // back to the raw id for a source that has since been deleted.
+    let active_source_name = source
+        .and_then(|id| Ulid::from_string(id).ok())
+        .and_then(|id| source_names.get(&id))
+        .map(String::as_str);
 
     html! {
-        div class="mt-3 flex flex-wrap items-center gap-3" {
-            nav class="flex gap-1" {
-                (severity_filter_link("all", "All", current_severity, per_page))
-                (severity_filter_link("info", "Info", current_severity, per_page))
-                (severity_filter_link("success", "Success", current_severity, per_page))
-                (severity_filter_link("warning", "Warning", current_severity, per_page))
-                (severity_filter_link("error", "Error", current_severity, per_page))
-            }
-            nav class="flex items-center gap-1" {
-                span class="px-2 text-xs font-medium text-slate-500 dark:text-slate-400" { "Rows" }
-                (activity_page_size_link(25, per_page, severity_param))
-                (activity_page_size_link(50, per_page, severity_param))
-                (activity_page_size_link(100, per_page, severity_param))
-            }
-        }
+        (activity_filter_bar(filter, current_severity, page_num, per_page))
+        (activity_source_pill(filter, active_source_name, per_page))
 
         @if events.is_empty() {
             p class="mt-4 rounded-lg border border-dashed border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-800 px-4 py-8 text-center text-sm text-slate-500 dark:text-slate-400" {
-                "No activity events recorded yet."
+                @if has_filters {
+                    "No activity events match your filters."
+                } @else {
+                    "No activity events recorded yet."
+                }
             }
         } @else {
             div class="mt-4 space-y-2" {
                 @for event in events {
-                    (activity_event_row(event, source_names, video_source_names))
+                    (activity_event_row(event, source_names, video_source_names, filter, per_page))
                 }
             }
 
@@ -3593,10 +3836,10 @@ fn activity_content_markup(
                     @if page_num > 1 {
                         a
                             class="rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 px-3 py-1.5 text-sm text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-600"
-                            href=(activity_page_url(severity_param, page_num - 1, per_page))
-                            hx-get=(activity_list_url(severity_param, page_num - 1, per_page))
+                            href=(activity_page_url(filter, page_num - 1, per_page))
+                            hx-get=(activity_list_url(filter, page_num - 1, per_page))
                             hx-target="#activity-content"
-                            hx-push-url=(activity_page_url(severity_param, page_num - 1, per_page))
+                            hx-push-url=(activity_page_url(filter, page_num - 1, per_page))
                         {
                             "Previous"
                         }
@@ -3607,10 +3850,10 @@ fn activity_content_markup(
                     @if page_num < total_pages {
                         a
                             class="rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 px-3 py-1.5 text-sm text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-600"
-                            href=(activity_page_url(severity_param, page_num + 1, per_page))
-                            hx-get=(activity_list_url(severity_param, page_num + 1, per_page))
+                            href=(activity_page_url(filter, page_num + 1, per_page))
+                            hx-get=(activity_list_url(filter, page_num + 1, per_page))
                             hx-target="#activity-content"
-                            hx-push-url=(activity_page_url(severity_param, page_num + 1, per_page))
+                            hx-push-url=(activity_page_url(filter, page_num + 1, per_page))
                         {
                             "Next"
                         }
@@ -3634,6 +3877,8 @@ fn activity_event_row(
     event: &hof_core::domain::activity::ActivityEvent,
     source_names: &HashMap<Ulid, String>,
     video_source_names: &HashMap<Ulid, String>,
+    filter: ActivityFilter<'_>,
+    per_page: i64,
 ) -> Markup {
     let (icon, border_color) = match event.severity {
         ActivitySeverity::Info => ("i", "border-l-sky-400"),
@@ -3684,9 +3929,12 @@ fn activity_event_row(
         .source_id
         .and_then(|id| source_names.get(&id))
         .or_else(|| event.video_id.and_then(|id| video_source_names.get(&id)));
+    // Only events carrying a source id can be turned into a filter link; names
+    // resolved via `video_source_names` have no id to filter on.
+    let pill_source_id = event.source_id.filter(|id| source_names.contains_key(id));
 
     html! {
-        div class=(format!("flex items-start gap-3 rounded-lg border border-slate-200 dark:border-slate-700 border-l-4 {} bg-white dark:bg-slate-800 p-3", border_color)) {
+        div id=(format!("activity-{}", event.id)) class=(format!("flex items-start gap-3 rounded-lg border border-slate-200 dark:border-slate-700 border-l-4 {} bg-white dark:bg-slate-800 p-3", border_color)) {
             span class="mt-0.5 flex h-6 w-6 items-center justify-center rounded-full bg-slate-100 dark:bg-slate-700 text-xs font-bold text-slate-600 dark:text-slate-300" {
                 (icon)
             }
@@ -3697,8 +3945,26 @@ fn activity_event_row(
                     }
                     span class="text-xs font-medium text-slate-500 dark:text-slate-400" { (event_label) }
                     @if let Some(name) = source_name {
-                        span class="inline-flex rounded-full bg-slate-100 dark:bg-slate-700 px-2 py-0.5 text-xs font-medium text-slate-600 dark:text-slate-300" {
-                            (name)
+                        @if let Some(source_id) = pill_source_id {
+                            @let pill_filter = ActivityFilter {
+                                severity: filter.severity,
+                                search: filter.search,
+                                source: Some(&source_id.to_string()),
+                            };
+                            a
+                                href=(activity_page_url(pill_filter, 1, per_page))
+                                hx-get=(activity_list_url(pill_filter, 1, per_page))
+                                hx-target="#activity-content"
+                                hx-push-url=(activity_page_url(pill_filter, 1, per_page))
+                                title=(format!("Show only activity from {name}"))
+                                class="inline-flex rounded-full bg-slate-100 dark:bg-slate-700 px-2 py-0.5 text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-600"
+                            {
+                                (name)
+                            }
+                        } @else {
+                            span class="inline-flex rounded-full bg-slate-100 dark:bg-slate-700 px-2 py-0.5 text-xs font-medium text-slate-600 dark:text-slate-300" {
+                                (name)
+                            }
                         }
                     }
                     span class="text-xs text-slate-400 dark:text-slate-500" title=(event.created_at.to_rfc3339()) { (time_ago) }
@@ -3724,7 +3990,9 @@ fn activity_event_row(
 
 #[cfg(test)]
 mod activity_event_row_tests {
-    use super::{ActivityEventType, ActivitySeverity, HashMap, Ulid, activity_event_row};
+    use super::{
+        ActivityEventType, ActivityFilter, ActivitySeverity, HashMap, Ulid, activity_event_row,
+    };
     use hof_core::domain::activity::ActivityEvent;
 
     fn base_event(event_type: ActivityEventType, video_id: Option<Ulid>) -> ActivityEvent {
@@ -3738,6 +4006,11 @@ mod activity_event_row_tests {
             profile_id: None,
             created_at: chrono::Utc::now(),
         }
+    }
+
+    /// Default (unfiltered) view state for rendering a row under test.
+    fn filter() -> ActivityFilter<'static> {
+        ActivityFilter::default()
     }
 
     /// Download activity rows never carry a `source_id` (it's only set for
@@ -3757,7 +4030,8 @@ mod activity_event_row_tests {
         let mut video_source_names: HashMap<Ulid, String> = HashMap::new();
         video_source_names.insert(video_id, "Kobosil 300G".to_string());
 
-        let markup = activity_event_row(&event, &source_names, &video_source_names).into_string();
+        let markup = activity_event_row(&event, &source_names, &video_source_names, filter(), 50)
+            .into_string();
 
         assert!(
             markup.contains("Kobosil 300G"),
@@ -3776,7 +4050,8 @@ mod activity_event_row_tests {
         let source_names: HashMap<Ulid, String> = HashMap::new();
         let video_source_names: HashMap<Ulid, String> = HashMap::new();
 
-        let markup = activity_event_row(&event, &source_names, &video_source_names).into_string();
+        let markup = activity_event_row(&event, &source_names, &video_source_names, filter(), 50)
+            .into_string();
 
         assert!(
             !markup.contains("inline-flex rounded-full bg-slate-100 dark:bg-slate-700 px-2 py-0.5 text-xs font-medium text-slate-600 dark:text-slate-300"),
@@ -3800,7 +4075,8 @@ mod activity_event_row_tests {
         let source_names: HashMap<Ulid, String> = HashMap::new();
         let video_source_names: HashMap<Ulid, String> = HashMap::new();
 
-        let markup = activity_event_row(&event, &source_names, &video_source_names).into_string();
+        let markup = activity_event_row(&event, &source_names, &video_source_names, filter(), 50)
+            .into_string();
 
         assert!(
             markup.contains("break-words wrap-anywhere"),
@@ -3830,7 +4106,7 @@ async fn schedule_page(
     let (sources_result, profiles_result, recent_activity_result, cleanup_status) = tokio::join!(
         db::list_sources(&state.pool),
         db::list_profiles(&state.pool),
-        db::list_activity_events(&state.pool, 20, 0, None, None, None),
+        db::list_activity_events(&state.pool, 20, 0, None, None, None, None),
         state.cleanup.ask(GetCleanupStatus)
     );
 
@@ -5321,7 +5597,12 @@ mod tests {
     fn pushed_activity_urls_are_never_partial_endpoints() {
         for page in [1, 4] {
             for severity in [None, Some("error"), Some("all")] {
-                let pushed = activity_page_url(severity, page, 50);
+                let filter = ActivityFilter {
+                    severity,
+                    search: Some("q"),
+                    source: Some("01ARZ3NDEKTSV4RRFFQ69G5FAV"),
+                };
+                let pushed = activity_page_url(filter, page, 50);
                 assert!(
                     !pushed.starts_with("/web/"),
                     "pushed URL must be navigable, got {pushed}"
@@ -5336,15 +5617,55 @@ mod tests {
 
     #[test]
     fn activity_url_omits_defaults() {
-        assert_eq!(activity_page_url(None, 1, 50), "/activity");
+        assert_eq!(
+            activity_page_url(ActivityFilter::default(), 1, 50),
+            "/activity"
+        );
     }
 
     #[test]
     fn activity_url_includes_non_default_params() {
+        let filter = ActivityFilter {
+            severity: Some("error"),
+            ..ActivityFilter::default()
+        };
         assert_eq!(
-            activity_page_url(Some("error"), 2, 100),
+            activity_page_url(filter, 2, 100),
             "/activity?severity=error&page=2&per_page=100"
         );
+    }
+
+    #[test]
+    fn activity_url_carries_search_and_source() {
+        let filter = ActivityFilter {
+            severity: Some("error"),
+            search: Some("disk full"),
+            source: Some("01ARZ3NDEKTSV4RRFFQ69G5FAV"),
+        };
+        assert_eq!(
+            activity_page_url(filter, 1, 50),
+            "/activity?severity=error&search=disk%20full&source=01ARZ3NDEKTSV4RRFFQ69G5FAV"
+        );
+    }
+
+    #[test]
+    fn activity_url_treats_all_severity_as_unfiltered() {
+        let filter = ActivityFilter {
+            severity: Some("all"),
+            ..ActivityFilter::default()
+        };
+        assert_eq!(activity_page_url(filter, 1, 50), "/activity");
+    }
+
+    #[test]
+    fn activity_url_search_cannot_inject_parameters() {
+        let filter = ActivityFilter {
+            search: Some("x&severity=error"),
+            ..ActivityFilter::default()
+        };
+        let url = activity_page_url(filter, 1, 50);
+        assert_eq!(url, "/activity?search=x%26severity%3Derror");
+        assert!(!url.contains("&severity=error"));
     }
 
     // ------------------------------------------------------------------

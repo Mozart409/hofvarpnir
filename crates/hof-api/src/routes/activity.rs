@@ -57,6 +57,8 @@ pub struct ListActivityQuery {
     pub event_type: Option<ActivityEventType>,
     /// Filter by source ID.
     pub source_id: Option<String>,
+    /// Case-insensitive substring match against the event message.
+    pub search: Option<String>,
 }
 
 const fn default_limit() -> i64 {
@@ -218,11 +220,18 @@ pub async fn list_activity(
 
     // Get total count
     let severity_filter = query.severity.clone();
+    let search: Option<String> = query
+        .search
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned);
     let total = match db::count_activity_events(
         &state.pool,
         severity_filter,
         query.event_type.clone(),
         source_id,
+        search.as_deref(),
     )
     .await
     {
@@ -247,6 +256,7 @@ pub async fn list_activity(
         query.severity,
         query.event_type,
         source_id,
+        search.as_deref(),
     )
     .await
     {

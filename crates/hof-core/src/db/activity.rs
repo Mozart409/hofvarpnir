@@ -124,6 +124,8 @@ pub async fn create_activity_event(
 
 /// List activity events in reverse-chronological order.
 ///
+/// `search` matches the event message case-insensitively.
+///
 /// # Errors
 ///
 /// Returns an error if the database operation fails.
@@ -135,6 +137,7 @@ pub async fn list_activity_events(
     severity: Option<ActivitySeverity>,
     event_type: Option<ActivityEventType>,
     source_id: Option<Ulid>,
+    search: Option<&str>,
 ) -> Result<Vec<ActivityEvent>, DbError> {
     let rows = sqlx::query_as::<_, ActivityEventRow>(
         r"
@@ -143,13 +146,15 @@ pub async fn list_activity_events(
         WHERE ($1::activity_severity IS NULL OR severity = $1)
           AND ($2::activity_event_type IS NULL OR event_type = $2)
           AND ($3::text IS NULL OR source_id = $3)
+          AND ($4::text IS NULL OR message ILIKE '%' || $4 || '%')
         ORDER BY created_at DESC
-        LIMIT $4 OFFSET $5
+        LIMIT $5 OFFSET $6
         ",
     )
     .bind(severity)
     .bind(event_type)
     .bind(source_id.map(|id| id.to_string()))
+    .bind(search)
     .bind(limit)
     .bind(offset)
     .fetch_all(pool)
@@ -228,6 +233,9 @@ pub async fn list_unhealthy_sources(
 
 /// Count activity events (for pagination).
 ///
+/// Must apply exactly the same predicate as [`list_activity_events`], or the
+/// pagination controls will disagree with the rows actually returned.
+///
 /// # Errors
 ///
 /// Returns an error if the database operation fails.
@@ -237,6 +245,7 @@ pub async fn count_activity_events(
     severity: Option<ActivitySeverity>,
     event_type: Option<ActivityEventType>,
     source_id: Option<Ulid>,
+    search: Option<&str>,
 ) -> Result<i64, DbError> {
     let row: (i64,) = sqlx::query_as(
         r"
@@ -245,11 +254,13 @@ pub async fn count_activity_events(
         WHERE ($1::activity_severity IS NULL OR severity = $1)
           AND ($2::activity_event_type IS NULL OR event_type = $2)
           AND ($3::text IS NULL OR source_id = $3)
+          AND ($4::text IS NULL OR message ILIKE '%' || $4 || '%')
         ",
     )
     .bind(severity)
     .bind(event_type)
     .bind(source_id.map(|id| id.to_string()))
+    .bind(search)
     .fetch_one(pool)
     .await?;
 
