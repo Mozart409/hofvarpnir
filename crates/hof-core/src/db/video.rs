@@ -529,6 +529,11 @@ pub async fn list_videos_past_retention(
     // Complex query: video is past retention when ALL sources referencing it
     // have an effective retention that has expired.
     // Effective retention: source.retention_days ?? profile.retention_days ?? global
+    //
+    // The second NOT EXISTS is a hard veto, deliberately separate from the
+    // retention window: a video linked to *any* source marked
+    // `exclude_from_cleanup` is never collected, no matter how old it is or
+    // what the other sources' retention says.
     let rows = sqlx::query_as::<_, VideoRow>(
         r"
         SELECT v.id, v.platform, v.platform_video_id, v.title, v.description,
@@ -544,6 +549,12 @@ pub async fn list_videos_past_retention(
             INNER JOIN profiles p ON p.id = s.profile_id
             WHERE sv.video_id = v.id
               AND v.downloaded_at + make_interval(days => COALESCE(s.retention_days, p.retention_days, $1)) > NOW()
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM source_videos sv
+            INNER JOIN sources s ON s.id = sv.source_id
+            WHERE sv.video_id = v.id
+              AND s.exclude_from_cleanup
           )
         ORDER BY v.downloaded_at ASC
         ",

@@ -299,6 +299,10 @@ pub fn router(state: AppState, oidc_enabled: bool) -> Router {
         .route("/sources/{id}", get(source_detail_page).post(update_source))
         .route("/sources/{id}/delete", post(delete_source))
         .route("/sources/{id}/toggle", post(toggle_source_enabled))
+        .route(
+            "/sources/{id}/toggle-cleanup-exclusion",
+            post(toggle_source_cleanup_exclusion),
+        )
         .route("/sources/{id}/index", post(trigger_index))
         .route("/sources/{id}/metadata", post(trigger_metadata))
         .route("/web/sources/events", get(sources_events_sse))
@@ -1782,6 +1786,74 @@ async fn toggle_source_enabled(
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 error_page("Failed to toggle source"),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// Toggle whether a source's videos are exempt from automatic cleanup.
+async fn toggle_source_cleanup_exclusion(
+    _auth: AuthUser,
+    State(state): State<AppState>,
+    session: Session,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let Ok(source_id) = Ulid::from_string(id.trim()) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            error_page("Invalid source ID provided"),
+        )
+            .into_response();
+    };
+
+    let source = match db::get_source(&state.pool, source_id).await {
+        Ok(s) => s,
+        Err(db::DbError::NotFound) => {
+            return (StatusCode::NOT_FOUND, error_page("Source not found")).into_response();
+        }
+        Err(error) => {
+            tracing::error!(%error, "failed to get source for cleanup exclusion toggle");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                error_page("Failed to toggle cleanup exclusion"),
+            )
+                .into_response();
+        }
+    };
+
+    let new_excluded = !source.exclude_from_cleanup;
+    match db::set_source_exclude_from_cleanup(&state.pool, source_id, new_excluded).await {
+        Ok(()) => {
+            let status = if new_excluded {
+                "excluded from cleanup"
+            } else {
+                "included in cleanup"
+            };
+            let name = source.display_name();
+            state
+                .broadcaster
+                .log_and_broadcast(
+                    &state.pool,
+                    ActivityEventType::SourceUpdated,
+                    ActivitySeverity::Info,
+                    &format!("Source \"{name}\" {status}"),
+                    Some(source_id),
+                    None,
+                    Some(source.profile_id),
+                )
+                .await;
+            set_flash(&session, "success", &format!("Source {status}")).await;
+            Redirect::to("/sources").into_response()
+        }
+        Err(db::DbError::NotFound) => {
+            (StatusCode::NOT_FOUND, error_page("Source not found")).into_response()
+        }
+        Err(error) => {
+            tracing::error!(%error, "failed to toggle source cleanup exclusion");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                error_page("Failed to toggle cleanup exclusion"),
             )
                 .into_response()
         }
@@ -5140,6 +5212,64 @@ fn profile_editor(profile: &Profile) -> Markup {
     }
 }
 
+/// The action buttons under a source's edit form.
+///
+/// All of these submit the surrounding form, overriding its target with
+/// `formaction`, so field edits are not lost when triggering a side action.
+fn source_editor_actions(source: &Source) -> Markup {
+    let action = |verb: &str| format!("/sources/{}/{verb}", source.id);
+
+    html! {
+        div class="md:col-span-2 flex flex-wrap gap-2" {
+            button class="rounded-lg bg-slate-900 dark:bg-slate-100 px-4 py-2 text-sm font-medium text-white dark:text-slate-900 hover:bg-slate-700 dark:hover:bg-slate-200" type="submit" {
+                "Save Source"
+            }
+            @if source.enabled {
+                button class="rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/50 px-4 py-2 text-sm font-medium text-amber-700 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-900" type="submit" formaction=(action("toggle")) {
+                    "Disable"
+                }
+            } @else {
+                button class="rounded-lg border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-900/50 px-4 py-2 text-sm font-medium text-emerald-700 dark:text-emerald-300 hover:bg-emerald-100 dark:hover:bg-emerald-900" type="submit" formaction=(action("toggle")) {
+                    "Enable"
+                }
+            }
+            @if source.exclude_from_cleanup {
+                button
+                    class="rounded-lg border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-900/50 px-4 py-2 text-sm font-medium text-emerald-700 dark:text-emerald-300 hover:bg-emerald-100 dark:hover:bg-emerald-900"
+                    type="submit"
+                    title="Videos from this source are currently kept forever"
+                    formaction=(action("toggle-cleanup-exclusion"))
+                {
+                    "Include in Cleanup"
+                }
+            } @else {
+                button
+                    class="rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 px-4 py-2 text-sm font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-600"
+                    type="submit"
+                    title="Keep this source's videos forever, ignoring retention and quota"
+                    formaction=(action("toggle-cleanup-exclusion"))
+                {
+                    "Exclude from Cleanup"
+                }
+            }
+            button class="rounded-lg border border-sky-200 dark:border-sky-800 bg-sky-50 dark:bg-sky-900/50 px-4 py-2 text-sm font-medium text-sky-700 dark:text-sky-300 hover:bg-sky-100 dark:hover:bg-sky-900" type="submit" formaction=(action("index")) {
+                "Trigger Index"
+            }
+            button class="rounded-lg border border-violet-200 dark:border-violet-800 bg-violet-50 dark:bg-violet-900/50 px-4 py-2 text-sm font-medium text-violet-700 dark:text-violet-300 hover:bg-violet-100 dark:hover:bg-violet-900" type="submit" formaction=(action("metadata")) {
+                "Trigger Image Download"
+            }
+            button
+                class="rounded-lg border border-rose-200 dark:border-rose-800 bg-rose-50 dark:bg-rose-900/50 px-4 py-2 text-sm font-medium text-rose-700 dark:text-rose-300 hover:bg-rose-100 dark:hover:bg-rose-900"
+                type="submit"
+                formaction=(action("delete"))
+                onclick="return confirm('Delete this source? This cannot be undone.')"
+            {
+                "Delete"
+            }
+        }
+    }
+}
+
 fn source_editor(source: &Source) -> Markup {
     // Determine border color based on enabled and error state
     let border_class = if !source.enabled {
@@ -5168,6 +5298,9 @@ fn source_editor(source: &Source) -> Markup {
                         }
                         @if !source.enabled {
                             (status_chip("Disabled", "amber"))
+                        }
+                        @if source.exclude_from_cleanup {
+                            (status_chip("Cleanup exempt", "emerald"))
                         }
                         @if source.last_error.is_some() {
                             (status_chip(&format!("Error ({})", source.index_error_count), "rose"))
@@ -5201,34 +5334,7 @@ fn source_editor(source: &Source) -> Markup {
                 (input_index_frequency("Index Frequency", "index_frequency_secs", source.index_frequency_secs))
                 (input_cutoff_date("Cutoff Date", "cutoff_date", &source.cutoff_date.to_string()))
                 (input_number("Retention Days", "retention_days", "Optional", false, &source.retention_days.map_or_else(String::new, |days| days.to_string())))
-                div class="md:col-span-2 flex flex-wrap gap-2" {
-                    button class="rounded-lg bg-slate-900 dark:bg-slate-100 px-4 py-2 text-sm font-medium text-white dark:text-slate-900 hover:bg-slate-700 dark:hover:bg-slate-200" type="submit" {
-                        "Save Source"
-                    }
-                    @if source.enabled {
-                        button class="rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/50 px-4 py-2 text-sm font-medium text-amber-700 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-900" type="submit" formaction={(format!("/sources/{}/toggle", source.id))} {
-                            "Disable"
-                        }
-                    } @else {
-                        button class="rounded-lg border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-900/50 px-4 py-2 text-sm font-medium text-emerald-700 dark:text-emerald-300 hover:bg-emerald-100 dark:hover:bg-emerald-900" type="submit" formaction={(format!("/sources/{}/toggle", source.id))} {
-                            "Enable"
-                        }
-                    }
-                    button class="rounded-lg border border-sky-200 dark:border-sky-800 bg-sky-50 dark:bg-sky-900/50 px-4 py-2 text-sm font-medium text-sky-700 dark:text-sky-300 hover:bg-sky-100 dark:hover:bg-sky-900" type="submit" formaction={(format!("/sources/{}/index", source.id))} {
-                        "Trigger Index"
-                    }
-                    button class="rounded-lg border border-violet-200 dark:border-violet-800 bg-violet-50 dark:bg-violet-900/50 px-4 py-2 text-sm font-medium text-violet-700 dark:text-violet-300 hover:bg-violet-100 dark:hover:bg-violet-900" type="submit" formaction={(format!("/sources/{}/metadata", source.id))} {
-                        "Trigger Image Download"
-                    }
-                    button
-                        class="rounded-lg border border-rose-200 dark:border-rose-800 bg-rose-50 dark:bg-rose-900/50 px-4 py-2 text-sm font-medium text-rose-700 dark:text-rose-300 hover:bg-rose-100 dark:hover:bg-rose-900"
-                        type="submit"
-                        formaction={(format!("/sources/{}/delete", source.id))}
-                        onclick="return confirm('Delete this source? This cannot be undone.')"
-                    {
-                        "Delete"
-                    }
-                }
+                (source_editor_actions(source))
             }
         }
     }
@@ -5539,6 +5645,7 @@ fn status_chip(label: &str, tone: &str) -> Markup {
         "sky" => "bg-sky-100 dark:bg-sky-900/50 text-sky-900 dark:text-sky-100",
         "slate" => "bg-slate-200 dark:bg-slate-700 text-slate-900 dark:text-slate-100",
         "rose" => "bg-rose-100 dark:bg-rose-900/50 text-rose-900 dark:text-rose-100",
+        "emerald" => "bg-emerald-100 dark:bg-emerald-900/50 text-emerald-900 dark:text-emerald-100",
         _ => "bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-300",
     };
 
@@ -6359,6 +6466,7 @@ mod tests {
             source_type: hof_core::domain::source::SourceType::Channel,
             custom_name: custom_name.map(ToOwned::to_owned),
             enabled: true,
+            exclude_from_cleanup: false,
             index_frequency_secs: 43200,
             cutoff_date: chrono::NaiveDate::from_ymd_opt(2026, 1, 1).expect("valid date literal"),
             retention_days: None,

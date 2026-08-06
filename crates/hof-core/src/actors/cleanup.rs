@@ -497,8 +497,21 @@ impl CleanupActor {
     }
 
     /// Get videos for a profile, sorted by download date (oldest first).
+    ///
+    /// Videos belonging to a source marked `exclude_from_cleanup` are omitted
+    /// entirely, so quota enforcement can never evict them. The exclusion is
+    /// collected across all of the profile's sources first: a video shared
+    /// between an excluded and a non-excluded source must still be protected,
+    /// which a per-source skip would miss depending on iteration order.
     async fn get_profile_videos_by_age(&self, profile_id: Ulid) -> color_eyre::Result<Vec<Video>> {
         let sources = db::list_sources_for_profile(&self.pool, profile_id).await?;
+
+        let mut protected = std::collections::HashSet::new();
+        for source in sources.iter().filter(|s| s.exclude_from_cleanup) {
+            for video in db::list_videos_for_source(&self.pool, source.id).await? {
+                protected.insert(video.id);
+            }
+        }
 
         let mut videos = Vec::new();
         let mut seen = std::collections::HashSet::new();
@@ -511,6 +524,10 @@ impl CleanupActor {
                     continue;
                 }
                 seen.insert(video.id);
+
+                if protected.contains(&video.id) {
+                    continue;
+                }
 
                 // Only include completed videos
                 if video.status == VideoStatus::Completed {
