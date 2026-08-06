@@ -280,3 +280,168 @@ async fn list_sources_filter_by_profile(pool: PgPool) {
         assert_eq!(source["profile_id"], profile1.id.to_string());
     }
 }
+
+// ---------------------------------------------------------------------------
+// Cleanup exclusion
+// ---------------------------------------------------------------------------
+
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn source_defaults_to_included_in_cleanup(pool: PgPool) {
+    let app = TestApp::new(pool.clone()).await;
+    let user = UserBuilder::new().build(&pool).await;
+    let profile = ProfileBuilder::new(user.id).build(&pool).await;
+    let source = SourceBuilder::new(profile.id).build(&pool).await;
+    let key = ApiKeyBuilder::new(user.id).read_only().build(&pool).await;
+
+    assert!(!source.exclude_from_cleanup);
+
+    let response = app
+        .server
+        .get(&format!("/api/v1/sources/{}", source.id))
+        .add_header("Authorization", key.bearer())
+        .await;
+
+    response.assert_status_ok();
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["exclude_from_cleanup"], false);
+}
+
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn excluded_source_is_reported_in_api_response(pool: PgPool) {
+    let app = TestApp::new(pool.clone()).await;
+    let user = UserBuilder::new().build(&pool).await;
+    let profile = ProfileBuilder::new(user.id).build(&pool).await;
+    let source = SourceBuilder::new(profile.id)
+        .exclude_from_cleanup()
+        .build(&pool)
+        .await;
+    let key = ApiKeyBuilder::new(user.id).read_only().build(&pool).await;
+
+    assert!(source.exclude_from_cleanup);
+
+    let response = app
+        .server
+        .get(&format!("/api/v1/sources/{}", source.id))
+        .add_header("Authorization", key.bearer())
+        .await;
+
+    response.assert_status_ok();
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["exclude_from_cleanup"], true);
+}
+
+/// The whole point of the flag: a long-expired video belonging to an excluded
+/// source must never be offered up for retention cleanup.
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn excluded_source_videos_are_never_past_retention(pool: PgPool) {
+    use hof_core::db;
+
+    let user = UserBuilder::new().build(&pool).await;
+    let profile = ProfileBuilder::new(user.id).build(&pool).await;
+
+    let kept = SourceBuilder::new(profile.id)
+        .retention_days(1)
+        .exclude_from_cleanup()
+        .build(&pool)
+        .await;
+    let collected = SourceBuilder::new(profile.id)
+        .retention_days(1)
+        .build(&pool)
+        .await;
+
+    let protected = seed_expired_video(&pool, kept.id, "kept_video").await;
+    let expired = seed_expired_video(&pool, collected.id, "collected_video").await;
+
+    let past = db::list_videos_past_retention(&pool, Some(1))
+        .await
+        .expect("list past retention");
+    let ids: Vec<_> = past.iter().map(|v| v.id).collect();
+
+    assert!(
+        ids.contains(&expired),
+        "non-excluded source's expired video should be collected"
+    );
+    assert!(
+        !ids.contains(&protected),
+        "excluded source's video must never be collected"
+    );
+}
+
+/// A video shared between an excluded and a non-excluded source stays
+/// protected: the exclusion is a veto, not a vote.
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn exclusion_protects_videos_shared_with_other_sources(pool: PgPool) {
+    use hof_core::db;
+
+    let user = UserBuilder::new().build(&pool).await;
+    let profile = ProfileBuilder::new(user.id).build(&pool).await;
+
+    let excluded = SourceBuilder::new(profile.id)
+        .retention_days(1)
+        .exclude_from_cleanup()
+        .build(&pool)
+        .await;
+    let normal = SourceBuilder::new(profile.id)
+        .retention_days(1)
+        .build(&pool)
+        .await;
+
+    let video = seed_expired_video(&pool, normal.id, "shared_expired").await;
+    db::link_video_to_source(&pool, excluded.id, video)
+        .await
+        .expect("link excluded source");
+
+    let past = db::list_videos_past_retention(&pool, Some(1))
+        .await
+        .expect("list past retention");
+
+    assert!(
+        !past.iter().any(|v| v.id == video),
+        "a video linked to any excluded source must be protected"
+    );
+}
+
+/// Seed a completed video downloaded long enough ago to be past any retention.
+async fn seed_expired_video(
+    pool: &PgPool,
+    source_id: ulid::Ulid,
+    platform_video_id: &str,
+) -> ulid::Ulid {
+    use hof_core::db;
+
+    let video = db::create_video(
+        pool,
+        db::CreateVideo {
+            platform: "youtube",
+            platform_video_id,
+            title: "Expired Video",
+            description: None,
+            duration_secs: Some(100),
+            published_at: None,
+            thumbnail_url: None,
+        },
+    )
+    .await
+    .expect("create video");
+
+    sqlx::query(
+        r"
+        UPDATE videos
+        SET status = 'completed',
+            downloaded_at = NOW() - make_interval(days => 400),
+            file_path = '/tmp/expired.mp4',
+            file_size_bytes = 1000
+        WHERE id = $1
+        ",
+    )
+    .bind(video.id.to_string())
+    .execute(pool)
+    .await
+    .expect("mark video expired");
+
+    db::link_video_to_source(pool, source_id, video.id)
+        .await
+        .expect("link video to source");
+
+    video.id
+}
