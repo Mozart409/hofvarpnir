@@ -1763,6 +1763,7 @@ dependencies = [
  "maud",
  "metrics",
  "mime_guess",
+ "percent-encoding",
  "rust-embed",
  "serde",
  "sqlx",

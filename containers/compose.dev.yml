@@ -27,7 +27,7 @@ services:
       start_period: 30s
   postgres_exporter:
     container_name: postgres_exporter
-    image: prometheuscommunity/postgres-exporter:latest
+    image: docker.io/prometheuscommunity/postgres-exporter:latest
     environment:
       DATA_SOURCE_NAME: postgresql://postgres:postgres@postgres:5432/hofvarpnir_dev?sslmode=disable
     command:

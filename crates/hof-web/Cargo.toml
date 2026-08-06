@@ -32,6 +32,7 @@ tower-sessions-sqlx-store.workspace = true
 sqlx.workspace = true
 rust-embed.workspace = true
 mime_guess.workspace = true
+percent-encoding.workspace = true
 
 [lints]
 workspace = true
