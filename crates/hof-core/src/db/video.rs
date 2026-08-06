@@ -690,6 +690,77 @@ pub async fn update_video(
     Ok(Video::try_from(row)?)
 }
 
+/// List videos by id, preserving nothing about the input order.
+///
+/// Used by bulk actions to load a selection in one round trip so each video's
+/// current status can be checked for eligibility before acting on it.
+///
+/// # Errors
+///
+/// Returns an error if the database operation fails.
+#[instrument(skip(pool, ids), fields(otel.kind = "client", db.system = "postgresql"))]
+pub async fn list_videos_by_ids(pool: &PgPool, ids: &[Ulid]) -> Result<Vec<Video>, DbError> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let id_strings: Vec<String> = ids.iter().map(ToString::to_string).collect();
+    let rows = sqlx::query_as::<_, VideoRow>(
+        r"
+        SELECT id, platform, platform_video_id, title, description,
+               duration_secs, published_at, thumbnail_url, status, attempts,
+               next_retry, last_error, file_path, file_size_bytes,
+               downloaded_at, created_at, updated_at
+        FROM videos
+        WHERE id = ANY($1)
+        ",
+    )
+    .bind(&id_strings)
+    .fetch_all(pool)
+    .await?;
+
+    rows.into_iter()
+        .map(Video::try_from)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(DbError::from)
+}
+
+/// Set the status of many videos in a single statement.
+///
+/// Returns the number of rows actually updated. Unlike
+/// [`update_video_status`], a missing id is not an error — bulk callers have
+/// already filtered by eligibility, and a row deleted concurrently should not
+/// fail the whole batch.
+///
+/// # Errors
+///
+/// Returns an error if the database operation fails.
+#[instrument(skip(pool, ids), fields(otel.kind = "client", db.system = "postgresql"))]
+pub async fn update_videos_status(
+    pool: &PgPool,
+    ids: &[Ulid],
+    status: VideoStatus,
+) -> Result<u64, DbError> {
+    if ids.is_empty() {
+        return Ok(0);
+    }
+
+    let id_strings: Vec<String> = ids.iter().map(ToString::to_string).collect();
+    let result = sqlx::query(
+        r"
+        UPDATE videos
+        SET status = $2
+        WHERE id = ANY($1)
+        ",
+    )
+    .bind(&id_strings)
+    .bind(&status)
+    .execute(pool)
+    .await?;
+
+    Ok(result.rows_affected())
+}
+
 /// Update video status (convenience function for common status transitions).
 ///
 /// # Errors
