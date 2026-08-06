@@ -50,6 +50,16 @@ use crate::auth::AuthUser;
 #[folder = "assets/"]
 struct Assets;
 
+/// Characters that must be escaped inside a query-string value.
+///
+/// Beyond the standard non-ASCII/control set, `&` and `#` would terminate the
+/// value and `+`/space would be decoded as a space by form parsers.
+const QUERY_VALUE_ENCODE_SET: &percent_encoding::AsciiSet = &percent_encoding::NON_ALPHANUMERIC
+    .remove(b'-')
+    .remove(b'_')
+    .remove(b'.')
+    .remove(b'~');
+
 // ============================================================================
 // SSE Utilities
 // ============================================================================
@@ -2522,12 +2532,15 @@ async fn downloads_page(
                         class="flex gap-2"
                         hx-get="/web/downloads/list"
                         hx-target="#downloads-list"
-                        hx-push-url="true"
+                        hx-push-url=(downloads_page_url(query.status.as_deref(), search_query, page_num, per_page))
                     {
                         @if let Some(ref status) = query.status {
                             input type="hidden" name="status" value=(status);
                         }
-                        input type="hidden" name="page" value="1";
+                        // Keep the current page across per_page changes. Editing the
+                        // search term narrows the result set, so `data-reset-page`
+                        // snaps this back to 1 before the form is serialised.
+                        input id="downloads-page-field" type="hidden" name="page" value=(page_num);
                         select
                             name="per_page"
                             class="rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 px-2 py-1.5 text-sm text-slate-900 dark:text-slate-100"
@@ -2539,8 +2552,9 @@ async fn downloads_page(
                         input
                             type="text"
                             name="search"
-                            placeholder="Search by title..."
+                            placeholder="Search title or channel..."
                             value=(search_query.unwrap_or(""))
+                            data-reset-page="downloads-page-field"
                             class="rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 px-3 py-1.5 text-sm text-slate-900 dark:text-slate-100";
                         button type="submit"
                             class="rounded-lg bg-slate-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-slate-700"
@@ -2550,7 +2564,7 @@ async fn downloads_page(
                                 href=(downloads_page_url(None, None, 1, per_page))
                                 hx-get=(downloads_list_url(None, None, 1, per_page))
                                 hx-target="#downloads-list"
-                                hx-push-url="true"
+                                hx-push-url=(downloads_page_url(None, None, 1, per_page))
                                 class="rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 px-3 py-1.5 text-sm font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-600"
                             { "Clear" }
                         }
@@ -2565,7 +2579,9 @@ async fn downloads_page(
                 div
                     id="downloads-list"
                     sse-swap="downloads-update"
-                    hx-swap="innerHTML"
+                    // `show:none` keeps background SSE refreshes from scrolling the
+                    // viewport out from under someone reading mid-list.
+                    hx-swap="innerHTML show:none"
                     hx-get=(list_url)
                     hx-trigger="load"
                     hx-target="this"
@@ -2619,7 +2635,7 @@ async fn downloads_list_partial(
         Ok(data) => data,
         Err(error) => {
             tracing::error!(%error, "failed to load downloads partial");
-            return error_page("Failed to load downloads page").into_response();
+            return error_fragment("Failed to load downloads page").into_response();
         }
     };
 
@@ -2650,6 +2666,7 @@ async fn retry_download(
     State(state): State<AppState>,
     session: Session,
     Path(id): Path<String>,
+    axum::extract::Query(query): axum::extract::Query<DownloadsQuery>,
 ) -> impl IntoResponse {
     let Ok(video_id) = Ulid::from_string(id.trim()) else {
         return (
@@ -2762,7 +2779,7 @@ async fn retry_download(
         Ok(()) => {
             state.broadcaster.invalidate();
             set_flash(&session, "info", "Download re-queued").await;
-            Redirect::to("/downloads").into_response()
+            Redirect::to(&downloads_return_url(&query)).into_response()
         }
         Err(error) => {
             tracing::error!(%error, "failed to enqueue retry download");
@@ -2780,6 +2797,7 @@ async fn cancel_download(
     State(state): State<AppState>,
     session: Session,
     Path(id): Path<String>,
+    axum::extract::Query(query): axum::extract::Query<DownloadsQuery>,
 ) -> impl IntoResponse {
     let Ok(video_id) = Ulid::from_string(id.trim()) else {
         return (
@@ -2821,7 +2839,7 @@ async fn cancel_download(
         Ok(()) => {
             state.broadcaster.invalidate();
             set_flash(&session, "info", "Download cancelled").await;
-            Redirect::to("/downloads").into_response()
+            Redirect::to(&downloads_return_url(&query)).into_response()
         }
         Err(error) => {
             tracing::error!(%error, "failed to cancel download");
@@ -2839,6 +2857,7 @@ async fn delete_download(
     State(state): State<AppState>,
     session: Session,
     Path(id): Path<String>,
+    axum::extract::Query(query): axum::extract::Query<DownloadsQuery>,
 ) -> impl IntoResponse {
     let Ok(video_id) = Ulid::from_string(id.trim()) else {
         return (
@@ -2918,7 +2937,7 @@ async fn delete_download(
         &format!("\"{title}\" deleted ({size_mb:.1} MB freed)"),
     )
     .await;
-    Redirect::to("/downloads").into_response()
+    Redirect::to(&downloads_return_url(&query)).into_response()
 }
 
 /// Returns an HTML fragment for the system issues banner.
@@ -3038,7 +3057,9 @@ async fn activity_page(
                     div
                         id="activity-content"
                         sse-swap="activity-update"
-                        hx-swap="innerHTML"
+                        // `show:none` keeps background SSE refreshes from scrolling the
+                        // viewport out from under someone reading mid-list.
+                        hx-swap="innerHTML show:none"
                         hx-get=(list_url)
                         hx-trigger="load"
                         hx-target="this"
@@ -3087,7 +3108,7 @@ async fn activity_list_partial(
         Ok(data) => data,
         Err(error) => {
             tracing::error!(%error, "failed to load activity partial");
-            return error_page("Failed to load activity log").into_response();
+            return error_fragment("Failed to load activity log").into_response();
         }
     };
 
@@ -3157,7 +3178,7 @@ fn download_status_filter_link(
             href=(href)
             hx-get=(hx_get)
             hx-target="#downloads-list"
-            hx-push-url="true"
+            hx-push-url=(href)
         {
             (label)
         }
@@ -3181,7 +3202,7 @@ fn severity_filter_link(value: &str, label: &str, current: &str, per_page: i64) 
             href=(href)
             hx-get=(hx_get)
             hx-target="#activity-content"
-            hx-push-url="true"
+            hx-push-url=(href)
         {
             (label)
         }
@@ -3204,7 +3225,7 @@ fn activity_page_size_link(size: i64, current_size: i64, severity: Option<&str>)
             href=(href)
             hx-get=(hx_get)
             hx-target="#activity-content"
-            hx-push-url="true"
+            hx-push-url=(href)
         {
             (size)
         }
@@ -3304,6 +3325,31 @@ fn downloads_events_url(
     downloads_url("/web/downloads/events", status, search, page, per_page)
 }
 
+/// Percent-encode a value for use in a query string.
+///
+/// Search terms are user-supplied and routinely contain spaces and `&`, which
+/// would otherwise truncate the URL or inject a spurious parameter.
+fn encode_query_value(value: &str) -> String {
+    percent_encoding::utf8_percent_encode(value, QUERY_VALUE_ENCODE_SET).to_string()
+}
+
+/// Rebuild the `/downloads` URL a mutating action should return to.
+///
+/// Retry/cancel/delete carry the list state (status, search, page, `per_page`) as
+/// query params on their form action, so the post-redirect lands back on the row
+/// the user acted from instead of resetting to page 1 with no filters.
+fn downloads_return_url(query: &DownloadsQuery) -> String {
+    let page = query.page.unwrap_or(1).max(1);
+    let per_page = parse_downloads_page_size(query.per_page);
+    let search = query
+        .search
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+
+    downloads_page_url(query.status.as_deref(), search, page, per_page)
+}
+
 fn downloads_url(
     base: &str,
     status: Option<&str>,
@@ -3317,7 +3363,7 @@ fn downloads_url(
         params.push(format!("status={value}"));
     }
     if let Some(value) = search.filter(|value| !value.is_empty()) {
-        params.push(format!("search={value}"));
+        params.push(format!("search={}", encode_query_value(value)));
     }
     if page > 1 {
         params.push(format!("page={page}"));
@@ -3409,7 +3455,7 @@ fn downloads_list_markup(
                         }
                         tbody class="divide-y divide-slate-100 dark:divide-slate-700 bg-white dark:bg-slate-900" {
                             @for video in videos {
-                                tr {
+                                tr id=(format!("video-{}", video.id)) {
                                     td class="max-w-lg px-3 py-2 text-slate-900 dark:text-slate-100" {
                                         p class="truncate font-medium" { (video.title) }
                                         p class="truncate text-xs text-slate-500 dark:text-slate-400" { (video.id.to_string()) }
@@ -3429,14 +3475,14 @@ fn downloads_list_markup(
                                     td class="px-3 py-2" {
                                         div class="flex gap-2" {
                                             @if matches!(video.status, VideoStatus::Failed | VideoStatus::PermanentlyFailed | VideoStatus::Cleaned) {
-                                                form method="post" action=(format!("/downloads/{}/retry", video.id)) {
+                                                form method="post" action=(downloads_url(&format!("/downloads/{}/retry", video.id), status_param, search, page_num, per_page)) {
                                                     button class="rounded-lg border border-sky-200 dark:border-sky-800 bg-sky-50 dark:bg-sky-900/50 px-3 py-1.5 text-xs font-medium text-sky-700 dark:text-sky-300 hover:bg-sky-100 dark:hover:bg-sky-900" type="submit" {
                                                         "Retry"
                                                     }
                                                 }
                                             }
                                             @if matches!(video.status, VideoStatus::Pending | VideoStatus::Downloading) {
-                                                form method="post" action=(format!("/downloads/{}/cancel", video.id)) {
+                                                form method="post" action=(downloads_url(&format!("/downloads/{}/cancel", video.id), status_param, search, page_num, per_page)) {
                                                     button
                                                         class="rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/50 px-3 py-1.5 text-xs font-medium text-amber-700 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-900"
                                                         type="submit"
@@ -3447,7 +3493,7 @@ fn downloads_list_markup(
                                                 }
                                             }
                                             @if video.status == VideoStatus::Completed {
-                                                form method="post" action=(format!("/downloads/{}/delete", video.id)) {
+                                                form method="post" action=(downloads_url(&format!("/downloads/{}/delete", video.id), status_param, search, page_num, per_page)) {
                                                     button
                                                         class="rounded-lg border border-rose-200 dark:border-rose-800 bg-rose-50 dark:bg-rose-900/50 px-3 py-1.5 text-xs font-medium text-rose-700 dark:text-rose-300 hover:bg-rose-100 dark:hover:bg-rose-900"
                                                         type="submit"
@@ -3474,7 +3520,7 @@ fn downloads_list_markup(
                             href=(downloads_page_url(status_param, search, page_num - 1, per_page))
                             hx-get=(downloads_list_url(status_param, search, page_num - 1, per_page))
                             hx-target="#downloads-list"
-                            hx-push-url="true"
+                            hx-push-url=(downloads_page_url(status_param, search, page_num - 1, per_page))
                         {
                             "Previous"
                         }
@@ -3488,7 +3534,7 @@ fn downloads_list_markup(
                             href=(downloads_page_url(status_param, search, page_num + 1, per_page))
                             hx-get=(downloads_list_url(status_param, search, page_num + 1, per_page))
                             hx-target="#downloads-list"
-                            hx-push-url="true"
+                            hx-push-url=(downloads_page_url(status_param, search, page_num + 1, per_page))
                         {
                             "Next"
                         }
@@ -3550,7 +3596,7 @@ fn activity_content_markup(
                             href=(activity_page_url(severity_param, page_num - 1, per_page))
                             hx-get=(activity_list_url(severity_param, page_num - 1, per_page))
                             hx-target="#activity-content"
-                            hx-push-url="true"
+                            hx-push-url=(activity_page_url(severity_param, page_num - 1, per_page))
                         {
                             "Previous"
                         }
@@ -3564,7 +3610,7 @@ fn activity_content_markup(
                             href=(activity_page_url(severity_param, page_num + 1, per_page))
                             hx-get=(activity_list_url(severity_param, page_num + 1, per_page))
                             hx-target="#activity-content"
-                            hx-push-url="true"
+                            hx-push-url=(activity_page_url(severity_param, page_num + 1, per_page))
                         {
                             "Next"
                         }
@@ -4983,6 +5029,21 @@ fn error_page(message: &str) -> Markup {
     )
 }
 
+/// Error markup for htmx partial endpoints.
+///
+/// Partials are swapped into an existing element with `innerHTML`, so they must
+/// never return a full document. Returning [`error_page`] here nests a
+/// `<!DOCTYPE><html><head>` inside a `<div>`, which browsers reparent — dropping
+/// the stylesheet link and leaving the page unstyled.
+fn error_fragment(message: &str) -> Markup {
+    html! {
+        section class="rounded-2xl border border-rose-200 dark:border-rose-800 bg-rose-50 dark:bg-rose-900/30 p-6 shadow-sm" {
+            h2 class="text-lg font-semibold text-rose-900 dark:text-rose-100" { "Something went wrong" }
+            p class="mt-2 text-sm text-rose-800 dark:text-rose-200 break-words wrap-anywhere" { (message) }
+        }
+    }
+}
+
 /// Handler for 404 Not Found responses.
 async fn not_found() -> impl IntoResponse {
     (StatusCode::NOT_FOUND, not_found_page())
@@ -5136,6 +5197,16 @@ fn layout_with_flash(
                       btn.dataset.originalText = btn.textContent;
                       btn.textContent = 'Working\u2026';
                     });
+
+                    // A changed search term invalidates the current page offset,
+                    // so snap the companion page field back to 1. Delegated so it
+                    // survives htmx swaps replacing the filter bar.
+                    document.addEventListener('input', function(e) {
+                      var el = e.target;
+                      if (!el || !el.dataset || !el.dataset.resetPage) return;
+                      var field = document.getElementById(el.dataset.resetPage);
+                      if (field) field.value = '1';
+                    });
                     </script>"))
             }
         }
@@ -5151,5 +5222,179 @@ fn nav_link(href: &str, label: &str, selected: bool) -> Markup {
 
     html! {
         a class=(classes) href=(href) { (label) }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ------------------------------------------------------------------
+    // Query-value encoding
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn encode_query_value_escapes_ampersand_and_space() {
+        assert_eq!(encode_query_value("rust & go"), "rust%20%26%20go");
+    }
+
+    #[test]
+    fn encode_query_value_escapes_fragment_and_equals() {
+        assert_eq!(encode_query_value("a#b=c"), "a%23b%3Dc");
+    }
+
+    #[test]
+    fn encode_query_value_leaves_unreserved_characters_alone() {
+        assert_eq!(encode_query_value("a-b_c.d~e9"), "a-b_c.d~e9");
+    }
+
+    // ------------------------------------------------------------------
+    // Downloads URL construction
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn downloads_url_omits_defaults() {
+        assert_eq!(downloads_page_url(None, None, 1, 25), "/downloads");
+    }
+
+    #[test]
+    fn downloads_url_includes_non_default_params() {
+        assert_eq!(
+            downloads_page_url(Some("failed"), Some("cats"), 3, 50),
+            "/downloads?status=failed&search=cats&page=3&per_page=50"
+        );
+    }
+
+    #[test]
+    fn downloads_url_treats_all_status_as_unfiltered() {
+        assert_eq!(downloads_page_url(Some("all"), None, 1, 25), "/downloads");
+    }
+
+    #[test]
+    fn downloads_url_percent_encodes_search() {
+        assert_eq!(
+            downloads_page_url(None, Some("a&b"), 1, 25),
+            "/downloads?search=a%26b"
+        );
+    }
+
+    /// A search term containing `&` must not smuggle in an extra parameter.
+    #[test]
+    fn downloads_url_search_cannot_inject_parameters() {
+        let url = downloads_page_url(None, Some("x&status=completed"), 1, 25);
+        assert_eq!(url, "/downloads?search=x%26status%3Dcompleted");
+        assert!(!url.contains("&status=completed"));
+    }
+
+    // ------------------------------------------------------------------
+    // Regression: the pushed URL must be the navigable page, never the
+    // partial endpoint. Pushing `/web/downloads/list` meant a reload served
+    // a bare fragment with no <head>, leaving the page unstyled.
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn page_urls_and_partial_urls_are_distinct() {
+        let page = downloads_page_url(Some("failed"), None, 2, 25);
+        let list = downloads_list_url(Some("failed"), None, 2, 25);
+        let events = downloads_events_url(Some("failed"), None, 2, 25);
+
+        assert!(page.starts_with("/downloads"));
+        assert!(list.starts_with("/web/downloads/list"));
+        assert!(events.starts_with("/web/downloads/events"));
+        assert_ne!(page, list);
+    }
+
+    #[test]
+    fn pushed_download_urls_are_never_partial_endpoints() {
+        for page in [1, 2, 7] {
+            for status in [None, Some("failed"), Some("all")] {
+                let pushed = downloads_page_url(status, Some("q"), page, 25);
+                assert!(
+                    !pushed.starts_with("/web/"),
+                    "pushed URL must be navigable, got {pushed}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn pushed_activity_urls_are_never_partial_endpoints() {
+        for page in [1, 4] {
+            for severity in [None, Some("error"), Some("all")] {
+                let pushed = activity_page_url(severity, page, 50);
+                assert!(
+                    !pushed.starts_with("/web/"),
+                    "pushed URL must be navigable, got {pushed}"
+                );
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Activity URL construction
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn activity_url_omits_defaults() {
+        assert_eq!(activity_page_url(None, 1, 50), "/activity");
+    }
+
+    #[test]
+    fn activity_url_includes_non_default_params() {
+        assert_eq!(
+            activity_page_url(Some("error"), 2, 100),
+            "/activity?severity=error&page=2&per_page=100"
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // Post-action redirect target preserves list state
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn downloads_return_url_preserves_page_and_filters() {
+        let query = DownloadsQuery {
+            status: Some("failed".to_owned()),
+            search: Some("cats".to_owned()),
+            page: Some(4),
+            per_page: Some(50),
+        };
+        assert_eq!(
+            downloads_return_url(&query),
+            "/downloads?status=failed&search=cats&page=4&per_page=50"
+        );
+    }
+
+    #[test]
+    fn downloads_return_url_defaults_to_bare_path() {
+        let query = DownloadsQuery {
+            status: None,
+            search: None,
+            page: None,
+            per_page: None,
+        };
+        assert_eq!(downloads_return_url(&query), "/downloads");
+    }
+
+    #[test]
+    fn downloads_return_url_ignores_blank_search() {
+        let query = DownloadsQuery {
+            status: None,
+            search: Some("   ".to_owned()),
+            page: Some(2),
+            per_page: None,
+        };
+        assert_eq!(downloads_return_url(&query), "/downloads?page=2");
+    }
+
+    #[test]
+    fn downloads_return_url_clamps_non_positive_page() {
+        let query = DownloadsQuery {
+            status: None,
+            search: None,
+            page: Some(0),
+            per_page: None,
+        };
+        assert_eq!(downloads_return_url(&query), "/downloads");
     }
 }
