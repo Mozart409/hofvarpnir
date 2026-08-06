@@ -6,6 +6,9 @@ set dotenv-load
 # Cachix binary cache name
 cachix_cache := "hofvarpnir"
 
+# Attic binary cache name
+attic_cache := "homelab"
+
 default:
     @just --list
 
@@ -136,6 +139,21 @@ cache-warm: clear
       .#devShells.x86_64-linux.ci \
       .#devShells.aarch64-linux.ci \
       | cachix push {{ cachix_cache }}
+
+# Seed the Attic cache: builds the dev shells, the package, and the container,
+# then pushes each closure with `attic push`. x86_64 only (aarch64 goes to
+# Cachix via cache-warm). Builds a lot the first time.
+seed-cache: clear
+    nix build --no-link --print-out-paths \
+      .#devShells.x86_64-linux.default \
+      .#devShells.x86_64-linux.ci \
+      .#packages.x86_64-linux.hofvarpnir \
+      .#packages.x86_64-linux.container \
+      | xargs attic push {{ attic_cache }}
+
+# Push any flake attribute's closure to Attic, e.g. .#packages.x86_64-linux.container
+attic-push attr: clear
+    nix build --no-link --print-out-paths {{ attr }} | xargs attic push {{ attic_cache }}
 
 trivy: clear build-oci
     trivy image --input result --scanners vuln
