@@ -189,7 +189,8 @@ async fn activity_search_matches_message_substring(pool: PgPool) {
     response.assert_status_ok();
     let body: serde_json::Value = response.json();
     assert_eq!(body["total"], 1, "only the matching message should count");
-    assert_eq!(body["events"][0]["severity"], "error");
+    // The API serialises severity in PascalCase, unlike the web layer's slugs.
+    assert_eq!(body["events"][0]["severity"], "Error");
 }
 
 /// Search is case-insensitive, matching the ILIKE predicate.
@@ -279,7 +280,7 @@ async fn activity_search_combines_with_severity(pool: PgPool) {
 
     let response = app
         .server
-        .get("/api/v1/activity?search=timeout&severity=error")
+        .get("/api/v1/activity?search=timeout&severity=Error")
         .add_header("Authorization", key.bearer())
         .await;
 
@@ -289,7 +290,7 @@ async fn activity_search_combines_with_severity(pool: PgPool) {
         body["total"], 1,
         "both predicates must apply, not just the last"
     );
-    assert_eq!(body["events"][0]["severity"], "error");
+    assert_eq!(body["events"][0]["severity"], "Error");
 }
 
 /// A blank search must behave as no filter at all.

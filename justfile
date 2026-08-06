@@ -102,6 +102,12 @@ test: clear up
 e2e: clear mig-run
     cargo test --package hof-api --test e2e --all-features -- --test-threads=4
 
+# Same as `e2e`, but against an already-running, already-migrated database.
+# Skips `up`, so it still works when an unrelated container in the compose
+# stack (e.g. grafana) is failing to start.
+e2e-only: clear
+    cargo test --package hof-api --test e2e --all-features -- --test-threads=4
+
 # CI simulation (requires database)
 ci: clear mig-run
     SQLX_OFFLINE=true cargo build --release
