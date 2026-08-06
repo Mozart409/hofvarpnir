@@ -38,6 +38,12 @@ pub struct Source {
     pub custom_name: Option<String>,
     /// Whether this source is enabled for indexing and downloading.
     pub enabled: bool,
+    /// Exempt this source's videos from automatic cleanup.
+    ///
+    /// When set, neither retention expiry nor profile quota enforcement will
+    /// remove videos belonging to this source. Takes precedence over
+    /// `retention_days`.
+    pub exclude_from_cleanup: bool,
     /// How often to check for new videos, stored as seconds.
     pub index_frequency_secs: i64,
     /// Ignore videos published before this date.
@@ -78,6 +84,7 @@ pub struct SourceRow {
     pub source_type: SourceType,
     pub custom_name: Option<String>,
     pub enabled: bool,
+    pub exclude_from_cleanup: bool,
     pub index_frequency_secs: i64,
     pub cutoff_date: NaiveDate,
     pub retention_days: Option<i32>,
@@ -107,6 +114,7 @@ impl TryFrom<SourceRow> for Source {
             source_type: row.source_type,
             custom_name: row.custom_name,
             enabled: row.enabled,
+            exclude_from_cleanup: row.exclude_from_cleanup,
             index_frequency_secs: row.index_frequency_secs,
             cutoff_date: row.cutoff_date,
             retention_days: row.retention_days,

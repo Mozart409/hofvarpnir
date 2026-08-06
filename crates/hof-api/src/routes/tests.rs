@@ -214,6 +214,7 @@ mod source_tests {
             source_type: SourceType::Channel,
             custom_name: Some("My Channel".to_string()),
             enabled: true,
+            exclude_from_cleanup: false,
             index_frequency_secs: 3600,
             cutoff_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
             retention_days: Some(60),

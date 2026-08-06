@@ -60,6 +60,9 @@ pub struct SourceResponse {
     pub custom_name: Option<String>,
     /// Whether this source is enabled for indexing and downloading.
     pub enabled: bool,
+    /// When true, this source's videos are exempt from automatic cleanup
+    /// (both retention expiry and profile quota enforcement).
+    pub exclude_from_cleanup: bool,
     /// How often to check for new videos (seconds).
     pub index_frequency_secs: i64,
     /// Ignore videos published before this date (YYYY-MM-DD).
@@ -82,6 +85,7 @@ impl From<Source> for SourceResponse {
             source_type: s.source_type,
             custom_name: s.custom_name,
             enabled: s.enabled,
+            exclude_from_cleanup: s.exclude_from_cleanup,
             index_frequency_secs: s.index_frequency_secs,
             cutoff_date: s.cutoff_date.to_string(),
             retention_days: s.retention_days,
