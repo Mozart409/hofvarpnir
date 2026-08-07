@@ -2,6 +2,24 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.6.0 - 2026-08-07
+#### Features
+- (**activity**) add message search and source filter pill - (0ed7501) - developmentbot
+- (**downloads**) add bulk retry, cancel and delete - (3d626e9) - developmentbot
+- (**sources**) add exclude from cleanup toggle - (ca4af29) - developmentbot
+- (**web**) add search to sources and schedule pages - (858e680) - developmentbot
+#### Bug Fixes
+- (**web**) push navigable urls and stop partials returning full documents - (b250c74) - developmentbot
+#### Tests
+- (**activity**) assert api severity casing and add e2e-only recipe - (c601d5a) - developmentbot
+- cover search, bulk actions and cleanup exclusion - (91677d8) - developmentbot
+#### Miscellaneous Chores
+- (**deps**) upgrade flake and rust to 1.97.1 - (915a381) - Amadeus Mader
+- (**tools**) scope pre-push sqruff lint to pushed files - (74f6019) - developmentbot
+- (**tools**) add attic cache - (d402f8f) - Amadeus Mader
+
+- - -
+
 ## v0.5.1 - 2026-07-31
 #### Bug Fixes
 - (**web**) wrap long error messages in activity - (e5ab1e1) - Amadeus Mader
