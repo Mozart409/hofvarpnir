@@ -15,6 +15,7 @@ pub struct SourceBuilder {
     source_type: SourceType,
     custom_name: Option<String>,
     enabled: bool,
+    exclude_from_cleanup: bool,
     index_frequency_secs: i64,
     cutoff_date: NaiveDate,
     retention_days: Option<i32>,
@@ -31,6 +32,7 @@ impl SourceBuilder {
             source_type: SourceType::Channel,
             custom_name: None,
             enabled: true,
+            exclude_from_cleanup: false,
             index_frequency_secs: 3600,
             cutoff_date: NaiveDate::from_ymd_opt(2024, 1, 1).expect("valid date"),
             retention_days: None,
@@ -72,6 +74,13 @@ impl SourceBuilder {
         self
     }
 
+    /// Exempt this source's videos from automatic cleanup.
+    #[must_use]
+    pub fn exclude_from_cleanup(mut self) -> Self {
+        self.exclude_from_cleanup = true;
+        self
+    }
+
     /// Set index frequency.
     #[must_use]
     pub fn index_frequency_secs(mut self, secs: i64) -> Self {
@@ -94,8 +103,12 @@ impl SourceBuilder {
     }
 
     /// Build and insert the source into the database.
+    ///
+    /// `enabled` and `exclude_from_cleanup` are not part of `CreateSource`
+    /// (both default at the column level), so they are applied as follow-up
+    /// updates and the source is re-read so the returned value reflects them.
     pub async fn build(self, pool: &PgPool) -> Source {
-        db::create_source(
+        let source = db::create_source(
             pool,
             CreateSource {
                 profile_id: self.profile_id,
@@ -108,6 +121,25 @@ impl SourceBuilder {
             },
         )
         .await
-        .expect("Failed to create test source")
+        .expect("Failed to create test source");
+
+        if !self.enabled {
+            db::set_source_enabled(pool, source.id, false)
+                .await
+                .expect("Failed to disable test source");
+        }
+        if self.exclude_from_cleanup {
+            db::set_source_exclude_from_cleanup(pool, source.id, true)
+                .await
+                .expect("Failed to exclude test source from cleanup");
+        }
+
+        if !self.enabled || self.exclude_from_cleanup {
+            db::get_source(pool, source.id)
+                .await
+                .expect("Failed to reload test source")
+        } else {
+            source
+        }
     }
 }

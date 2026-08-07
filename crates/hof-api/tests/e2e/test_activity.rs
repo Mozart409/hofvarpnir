@@ -147,3 +147,178 @@ async fn unhealthy_sources_respects_min_errors_threshold(pool: PgPool) {
     let body: serde_json::Value = response.json();
     assert_eq!(body["total"], 0);
 }
+
+// ---------------------------------------------------------------------------
+// Message search and source filter
+// ---------------------------------------------------------------------------
+
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn activity_search_matches_message_substring(pool: PgPool) {
+    let app = TestApp::new(pool.clone()).await;
+    let user = UserBuilder::new().build(&pool).await;
+    let key = ApiKeyBuilder::new(user.id).read_only().build(&pool).await;
+    let profile = ProfileBuilder::new(user.id).build(&pool).await;
+    let source = SourceBuilder::new(profile.id).build(&pool).await;
+
+    let now = Utc::now();
+    insert_event(
+        &pool,
+        source.id,
+        "source_error",
+        "error",
+        "Disk quota exceeded while writing",
+        now,
+    )
+    .await;
+    insert_event(
+        &pool,
+        source.id,
+        "source_indexed",
+        "success",
+        "Indexed 12 new videos",
+        now - Duration::minutes(1),
+    )
+    .await;
+
+    let response = app
+        .server
+        .get("/api/v1/activity?search=quota")
+        .add_header("Authorization", key.bearer())
+        .await;
+
+    response.assert_status_ok();
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["total"], 1, "only the matching message should count");
+    // The API serialises severity in PascalCase, unlike the web layer's slugs.
+    assert_eq!(body["events"][0]["severity"], "Error");
+}
+
+/// Search is case-insensitive, matching the ILIKE predicate.
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn activity_search_is_case_insensitive(pool: PgPool) {
+    let app = TestApp::new(pool.clone()).await;
+    let user = UserBuilder::new().build(&pool).await;
+    let key = ApiKeyBuilder::new(user.id).read_only().build(&pool).await;
+    let profile = ProfileBuilder::new(user.id).build(&pool).await;
+    let source = SourceBuilder::new(profile.id).build(&pool).await;
+
+    insert_event(
+        &pool,
+        source.id,
+        "source_error",
+        "error",
+        "Disk Quota Exceeded",
+        Utc::now(),
+    )
+    .await;
+
+    let response = app
+        .server
+        .get("/api/v1/activity?search=QUOTA")
+        .add_header("Authorization", key.bearer())
+        .await;
+
+    response.assert_status_ok();
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["total"], 1);
+}
+
+/// Filtering by source is what the clickable name pill drives.
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn activity_filters_by_source_id(pool: PgPool) {
+    let app = TestApp::new(pool.clone()).await;
+    let user = UserBuilder::new().build(&pool).await;
+    let key = ApiKeyBuilder::new(user.id).read_only().build(&pool).await;
+    let profile = ProfileBuilder::new(user.id).build(&pool).await;
+    let wanted = SourceBuilder::new(profile.id).build(&pool).await;
+    let other = SourceBuilder::new(profile.id).build(&pool).await;
+
+    let now = Utc::now();
+    insert_event(&pool, wanted.id, "source_indexed", "success", "A", now).await;
+    insert_event(
+        &pool,
+        other.id,
+        "source_indexed",
+        "success",
+        "B",
+        now - Duration::minutes(1),
+    )
+    .await;
+
+    let response = app
+        .server
+        .get(&format!("/api/v1/activity?source_id={}", wanted.id))
+        .add_header("Authorization", key.bearer())
+        .await;
+
+    response.assert_status_ok();
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["total"], 1);
+    assert_eq!(body["events"][0]["source_id"], wanted.id.to_string());
+}
+
+/// Search and severity must intersect, not replace one another.
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn activity_search_combines_with_severity(pool: PgPool) {
+    let app = TestApp::new(pool.clone()).await;
+    let user = UserBuilder::new().build(&pool).await;
+    let key = ApiKeyBuilder::new(user.id).read_only().build(&pool).await;
+    let profile = ProfileBuilder::new(user.id).build(&pool).await;
+    let source = SourceBuilder::new(profile.id).build(&pool).await;
+
+    let now = Utc::now();
+    insert_event(&pool, source.id, "source_error", "error", "timeout", now).await;
+    insert_event(
+        &pool,
+        source.id,
+        "source_indexed",
+        "success",
+        "timeout",
+        now - Duration::minutes(1),
+    )
+    .await;
+
+    let response = app
+        .server
+        .get("/api/v1/activity?search=timeout&severity=Error")
+        .add_header("Authorization", key.bearer())
+        .await;
+
+    response.assert_status_ok();
+    let body: serde_json::Value = response.json();
+    assert_eq!(
+        body["total"], 1,
+        "both predicates must apply, not just the last"
+    );
+    assert_eq!(body["events"][0]["severity"], "Error");
+}
+
+/// A blank search must behave as no filter at all.
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn activity_blank_search_is_ignored(pool: PgPool) {
+    let app = TestApp::new(pool.clone()).await;
+    let user = UserBuilder::new().build(&pool).await;
+    let key = ApiKeyBuilder::new(user.id).read_only().build(&pool).await;
+    let profile = ProfileBuilder::new(user.id).build(&pool).await;
+    let source = SourceBuilder::new(profile.id).build(&pool).await;
+
+    insert_event(
+        &pool,
+        source.id,
+        "source_indexed",
+        "success",
+        "anything",
+        Utc::now(),
+    )
+    .await;
+
+    let response = app
+        .server
+        .get("/api/v1/activity?search=%20%20")
+        .add_header("Authorization", key.bearer())
+        .await;
+
+    response.assert_status_ok();
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["total"], 1);
+}

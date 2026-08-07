@@ -59,7 +59,7 @@ pub async fn create_source(pool: &PgPool, data: CreateSource<'_>) -> Result<Sour
         RETURNING
             id, profile_id, url,
             source_type AS "source_type: SourceType",
-            custom_name, enabled, index_frequency_secs,
+            custom_name, enabled, exclude_from_cleanup, index_frequency_secs,
             cutoff_date AS "cutoff_date: NaiveDate",
             retention_days,
             entry_order AS "entry_order: EntryOrder",
@@ -99,7 +99,7 @@ pub async fn get_source(pool: &PgPool, id: Ulid) -> Result<Source, DbError> {
         SELECT
             id, profile_id, url,
             source_type AS "source_type: SourceType",
-            custom_name, enabled, index_frequency_secs,
+            custom_name, enabled, exclude_from_cleanup, index_frequency_secs,
             cutoff_date AS "cutoff_date: NaiveDate",
             retention_days,
             entry_order AS "entry_order: EntryOrder",
@@ -138,7 +138,7 @@ pub async fn list_sources_for_profile(
         SELECT
             id, profile_id, url,
             source_type AS "source_type: SourceType",
-            custom_name, enabled, index_frequency_secs,
+            custom_name, enabled, exclude_from_cleanup, index_frequency_secs,
             cutoff_date AS "cutoff_date: NaiveDate",
             retention_days,
             entry_order AS "entry_order: EntryOrder",
@@ -177,7 +177,7 @@ pub async fn list_sources(pool: &PgPool) -> Result<Vec<Source>, DbError> {
         SELECT
             id, profile_id, url,
             source_type AS "source_type: SourceType",
-            custom_name, enabled, index_frequency_secs,
+            custom_name, enabled, exclude_from_cleanup, index_frequency_secs,
             cutoff_date AS "cutoff_date: NaiveDate",
             retention_days,
             entry_order AS "entry_order: EntryOrder",
@@ -222,7 +222,7 @@ pub async fn list_sources_due_for_indexing(pool: &PgPool) -> Result<Vec<Source>,
         SELECT
             id, profile_id, url,
             source_type AS "source_type: SourceType",
-            custom_name, enabled, index_frequency_secs,
+            custom_name, enabled, exclude_from_cleanup, index_frequency_secs,
             cutoff_date AS "cutoff_date: NaiveDate",
             retention_days,
             entry_order AS "entry_order: EntryOrder",
@@ -276,7 +276,7 @@ pub async fn update_source(
         RETURNING
             id, profile_id, url,
             source_type AS "source_type: SourceType",
-            custom_name, enabled, index_frequency_secs,
+            custom_name, enabled, exclude_from_cleanup, index_frequency_secs,
             cutoff_date AS "cutoff_date: NaiveDate",
             retention_days,
             entry_order AS "entry_order: EntryOrder",
@@ -321,6 +321,36 @@ pub async fn set_source_enabled(pool: &PgPool, id: Ulid, enabled: bool) -> Resul
     )
     .bind(id.to_string())
     .bind(enabled)
+    .execute(pool)
+    .await?;
+
+    if result.rows_affected() == 0 {
+        return Err(DbError::NotFound);
+    }
+
+    Ok(())
+}
+
+/// Set whether a source's videos are exempt from automatic cleanup.
+///
+/// # Errors
+///
+/// Returns `DbError::NotFound` if the source doesn't exist.
+#[instrument(skip(pool), fields(otel.kind = "client", db.system = "postgresql"))]
+pub async fn set_source_exclude_from_cleanup(
+    pool: &PgPool,
+    id: Ulid,
+    exclude: bool,
+) -> Result<(), DbError> {
+    let result = sqlx::query(
+        r"
+        UPDATE sources
+        SET exclude_from_cleanup = $2
+        WHERE id = $1
+        ",
+    )
+    .bind(id.to_string())
+    .bind(exclude)
     .execute(pool)
     .await?;
 
@@ -508,7 +538,7 @@ pub async fn list_sources_needing_jellyfin_metadata(pool: &PgPool) -> Result<Vec
         SELECT
             id, profile_id, url,
             source_type AS "source_type: SourceType",
-            custom_name, enabled, index_frequency_secs,
+            custom_name, enabled, exclude_from_cleanup, index_frequency_secs,
             cutoff_date AS "cutoff_date: NaiveDate",
             retention_days,
             entry_order AS "entry_order: EntryOrder",

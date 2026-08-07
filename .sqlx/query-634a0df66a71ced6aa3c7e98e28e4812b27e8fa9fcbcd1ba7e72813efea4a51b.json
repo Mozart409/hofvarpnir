@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT\n            id, profile_id, url,\n            source_type AS \"source_type: SourceType\",\n            custom_name, enabled, index_frequency_secs,\n            cutoff_date AS \"cutoff_date: NaiveDate\",\n            retention_days,\n            entry_order AS \"entry_order: EntryOrder\",\n            entry_order_detected_at AS \"entry_order_detected_at: DateTime<Utc>\",\n            last_indexed_at AS \"last_indexed_at: DateTime<Utc>\",\n            last_error, index_error_count,\n            created_at AS \"created_at: DateTime<Utc>\",\n            updated_at AS \"updated_at: DateTime<Utc>\",\n            channel_id, channel_title, channel_description, channel_thumbnail_url,\n            jellyfin_metadata_at AS \"jellyfin_metadata_at: DateTime<Utc>\"\n        FROM sources\n        ORDER BY created_at DESC\n        ",
+  "query": "\n        SELECT\n            id, profile_id, url,\n            source_type AS \"source_type: SourceType\",\n            custom_name, enabled, exclude_from_cleanup, index_frequency_secs,\n            cutoff_date AS \"cutoff_date: NaiveDate\",\n            retention_days,\n            entry_order AS \"entry_order: EntryOrder\",\n            entry_order_detected_at AS \"entry_order_detected_at: DateTime<Utc>\",\n            last_indexed_at AS \"last_indexed_at: DateTime<Utc>\",\n            last_error, index_error_count,\n            created_at AS \"created_at: DateTime<Utc>\",\n            updated_at AS \"updated_at: DateTime<Utc>\",\n            channel_id, channel_title, channel_description, channel_thumbnail_url,\n            jellyfin_metadata_at AS \"jellyfin_metadata_at: DateTime<Utc>\"\n        FROM sources\n        WHERE enabled = true\n          AND index_error_count < $1\n          AND (last_indexed_at IS NULL\n               OR last_indexed_at + make_interval(secs => index_frequency_secs) < NOW())\n        ORDER BY last_indexed_at NULLS FIRST\n        ",
   "describe": {
     "columns": [
       {
@@ -81,6 +81,17 @@
       },
       {
         "ordinal": 6,
+        "name": "exclude_from_cleanup",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "sources",
+            "name": "exclude_from_cleanup"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
         "name": "index_frequency_secs",
         "type_info": "Int8",
         "origin": {
@@ -91,7 +102,7 @@
         }
       },
       {
-        "ordinal": 7,
+        "ordinal": 8,
         "name": "cutoff_date: NaiveDate",
         "type_info": "Date",
         "origin": {
@@ -102,7 +113,7 @@
         }
       },
       {
-        "ordinal": 8,
+        "ordinal": 9,
         "name": "retention_days",
         "type_info": "Int4",
         "origin": {
@@ -113,7 +124,7 @@
         }
       },
       {
-        "ordinal": 9,
+        "ordinal": 10,
         "name": "entry_order: EntryOrder",
         "type_info": {
           "Custom": {
@@ -136,7 +147,7 @@
         }
       },
       {
-        "ordinal": 10,
+        "ordinal": 11,
         "name": "entry_order_detected_at: DateTime<Utc>",
         "type_info": "Timestamptz",
         "origin": {
@@ -147,7 +158,7 @@
         }
       },
       {
-        "ordinal": 11,
+        "ordinal": 12,
         "name": "last_indexed_at: DateTime<Utc>",
         "type_info": "Timestamptz",
         "origin": {
@@ -158,7 +169,7 @@
         }
       },
       {
-        "ordinal": 12,
+        "ordinal": 13,
         "name": "last_error",
         "type_info": "Text",
         "origin": {
@@ -169,7 +180,7 @@
         }
       },
       {
-        "ordinal": 13,
+        "ordinal": 14,
         "name": "index_error_count",
         "type_info": "Int4",
         "origin": {
@@ -180,7 +191,7 @@
         }
       },
       {
-        "ordinal": 14,
+        "ordinal": 15,
         "name": "created_at: DateTime<Utc>",
         "type_info": "Timestamptz",
         "origin": {
@@ -191,7 +202,7 @@
         }
       },
       {
-        "ordinal": 15,
+        "ordinal": 16,
         "name": "updated_at: DateTime<Utc>",
         "type_info": "Timestamptz",
         "origin": {
@@ -202,7 +213,7 @@
         }
       },
       {
-        "ordinal": 16,
+        "ordinal": 17,
         "name": "channel_id",
         "type_info": "Text",
         "origin": {
@@ -213,7 +224,7 @@
         }
       },
       {
-        "ordinal": 17,
+        "ordinal": 18,
         "name": "channel_title",
         "type_info": "Text",
         "origin": {
@@ -224,7 +235,7 @@
         }
       },
       {
-        "ordinal": 18,
+        "ordinal": 19,
         "name": "channel_description",
         "type_info": "Text",
         "origin": {
@@ -235,7 +246,7 @@
         }
       },
       {
-        "ordinal": 19,
+        "ordinal": 20,
         "name": "channel_thumbnail_url",
         "type_info": "Text",
         "origin": {
@@ -246,7 +257,7 @@
         }
       },
       {
-        "ordinal": 20,
+        "ordinal": 21,
         "name": "jellyfin_metadata_at: DateTime<Utc>",
         "type_info": "Timestamptz",
         "origin": {
@@ -258,7 +269,9 @@
       }
     ],
     "parameters": {
-      "Left": []
+      "Left": [
+        "Int4"
+      ]
     },
     "nullable": [
       false,
@@ -266,6 +279,7 @@
       false,
       false,
       true,
+      false,
       false,
       false,
       false,
@@ -284,5 +298,5 @@
       true
     ]
   },
-  "hash": "b3055ac803751cd2ede822152bdad4385769440abb6ec9f380a617bdc91d39d5"
+  "hash": "634a0df66a71ced6aa3c7e98e28e4812b27e8fa9fcbcd1ba7e72813efea4a51b"
 }

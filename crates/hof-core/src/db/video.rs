@@ -319,7 +319,12 @@ pub async fn list_videos_with_context(
         .map_err(DbError::from)
 }
 
-/// List videos with optional status/title filters and pagination.
+/// List videos with optional status/search filters and pagination.
+///
+/// The search term matches the video title as well as the name of any source
+/// the video belongs to (custom name, channel title, or URL). The source match
+/// uses `EXISTS` rather than a join so a video linked to several sources is
+/// still returned exactly once.
 ///
 /// # Errors
 ///
@@ -338,10 +343,20 @@ pub async fn list_videos_paginated(
                duration_secs, published_at, thumbnail_url, status, attempts,
                next_retry, last_error, file_path, file_size_bytes,
                downloaded_at, created_at, updated_at
-        FROM videos
-        WHERE ($1::video_status IS NULL OR status = $1)
-          AND ($2::text IS NULL OR title ILIKE '%' || $2 || '%')
-        ORDER BY created_at DESC
+        FROM videos v
+        WHERE ($1::video_status IS NULL OR v.status = $1)
+          AND ($2::text IS NULL
+               OR v.title ILIKE '%' || $2 || '%'
+               OR EXISTS (
+                   SELECT 1
+                   FROM source_videos sv
+                   INNER JOIN sources s ON s.id = sv.source_id
+                   WHERE sv.video_id = v.id
+                     AND (s.custom_name ILIKE '%' || $2 || '%'
+                          OR s.channel_title ILIKE '%' || $2 || '%'
+                          OR s.url ILIKE '%' || $2 || '%')
+               ))
+        ORDER BY v.created_at DESC
         LIMIT $3 OFFSET $4
         ",
     )
@@ -358,7 +373,10 @@ pub async fn list_videos_paginated(
         .map_err(DbError::from)
 }
 
-/// Count videos with optional status/title filters.
+/// Count videos with optional status/search filters.
+///
+/// Must apply exactly the same predicate as [`list_videos_paginated`], or the
+/// pagination controls will disagree with the rows actually returned.
 ///
 /// # Errors
 ///
@@ -372,9 +390,19 @@ pub async fn count_videos(
     let row: (i64,) = sqlx::query_as(
         r"
         SELECT COUNT(*)
-        FROM videos
-        WHERE ($1::video_status IS NULL OR status = $1)
-          AND ($2::text IS NULL OR title ILIKE '%' || $2 || '%')
+        FROM videos v
+        WHERE ($1::video_status IS NULL OR v.status = $1)
+          AND ($2::text IS NULL
+               OR v.title ILIKE '%' || $2 || '%'
+               OR EXISTS (
+                   SELECT 1
+                   FROM source_videos sv
+                   INNER JOIN sources s ON s.id = sv.source_id
+                   WHERE sv.video_id = v.id
+                     AND (s.custom_name ILIKE '%' || $2 || '%'
+                          OR s.channel_title ILIKE '%' || $2 || '%'
+                          OR s.url ILIKE '%' || $2 || '%')
+               ))
         ",
     )
     .bind(status_filter)
@@ -501,6 +529,11 @@ pub async fn list_videos_past_retention(
     // Complex query: video is past retention when ALL sources referencing it
     // have an effective retention that has expired.
     // Effective retention: source.retention_days ?? profile.retention_days ?? global
+    //
+    // The second NOT EXISTS is a hard veto, deliberately separate from the
+    // retention window: a video linked to *any* source marked
+    // `exclude_from_cleanup` is never collected, no matter how old it is or
+    // what the other sources' retention says.
     let rows = sqlx::query_as::<_, VideoRow>(
         r"
         SELECT v.id, v.platform, v.platform_video_id, v.title, v.description,
@@ -516,6 +549,12 @@ pub async fn list_videos_past_retention(
             INNER JOIN profiles p ON p.id = s.profile_id
             WHERE sv.video_id = v.id
               AND v.downloaded_at + make_interval(days => COALESCE(s.retention_days, p.retention_days, $1)) > NOW()
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM source_videos sv
+            INNER JOIN sources s ON s.id = sv.source_id
+            WHERE sv.video_id = v.id
+              AND s.exclude_from_cleanup
           )
         ORDER BY v.downloaded_at ASC
         ",
@@ -660,6 +699,77 @@ pub async fn update_video(
     .ok_or(DbError::NotFound)?;
 
     Ok(Video::try_from(row)?)
+}
+
+/// List videos by id, preserving nothing about the input order.
+///
+/// Used by bulk actions to load a selection in one round trip so each video's
+/// current status can be checked for eligibility before acting on it.
+///
+/// # Errors
+///
+/// Returns an error if the database operation fails.
+#[instrument(skip(pool, ids), fields(otel.kind = "client", db.system = "postgresql"))]
+pub async fn list_videos_by_ids(pool: &PgPool, ids: &[Ulid]) -> Result<Vec<Video>, DbError> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let id_strings: Vec<String> = ids.iter().map(ToString::to_string).collect();
+    let rows = sqlx::query_as::<_, VideoRow>(
+        r"
+        SELECT id, platform, platform_video_id, title, description,
+               duration_secs, published_at, thumbnail_url, status, attempts,
+               next_retry, last_error, file_path, file_size_bytes,
+               downloaded_at, created_at, updated_at
+        FROM videos
+        WHERE id = ANY($1)
+        ",
+    )
+    .bind(&id_strings)
+    .fetch_all(pool)
+    .await?;
+
+    rows.into_iter()
+        .map(Video::try_from)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(DbError::from)
+}
+
+/// Set the status of many videos in a single statement.
+///
+/// Returns the number of rows actually updated. Unlike
+/// [`update_video_status`], a missing id is not an error — bulk callers have
+/// already filtered by eligibility, and a row deleted concurrently should not
+/// fail the whole batch.
+///
+/// # Errors
+///
+/// Returns an error if the database operation fails.
+#[instrument(skip(pool, ids), fields(otel.kind = "client", db.system = "postgresql"))]
+pub async fn update_videos_status(
+    pool: &PgPool,
+    ids: &[Ulid],
+    status: VideoStatus,
+) -> Result<u64, DbError> {
+    if ids.is_empty() {
+        return Ok(0);
+    }
+
+    let id_strings: Vec<String> = ids.iter().map(ToString::to_string).collect();
+    let result = sqlx::query(
+        r"
+        UPDATE videos
+        SET status = $2
+        WHERE id = ANY($1)
+        ",
+    )
+    .bind(&id_strings)
+    .bind(&status)
+    .execute(pool)
+    .await?;
+
+    Ok(result.rows_affected())
 }
 
 /// Update video status (convenience function for common status transitions).

@@ -50,6 +50,16 @@ use crate::auth::AuthUser;
 #[folder = "assets/"]
 struct Assets;
 
+/// Characters that must be escaped inside a query-string value.
+///
+/// Beyond the standard non-ASCII/control set, `&` and `#` would terminate the
+/// value and `+`/space would be decoded as a space by form parsers.
+const QUERY_VALUE_ENCODE_SET: &percent_encoding::AsciiSet = &percent_encoding::NON_ALPHANUMERIC
+    .remove(b'-')
+    .remove(b'_')
+    .remove(b'.')
+    .remove(b'~');
+
 // ============================================================================
 // SSE Utilities
 // ============================================================================
@@ -260,6 +270,15 @@ struct DownloadsQuery {
     per_page: Option<i64>,
 }
 
+/// Free-text filter for the sources and schedule pages.
+///
+/// Both pages already load every source to render, so the term is applied
+/// in-memory rather than pushed into SQL.
+#[derive(Debug, Clone, Deserialize)]
+struct SourcesQuery {
+    search: Option<String>,
+}
+
 pub fn router(state: AppState, oidc_enabled: bool) -> Router {
     Router::new()
         // Auth routes (no session required)
@@ -280,6 +299,10 @@ pub fn router(state: AppState, oidc_enabled: bool) -> Router {
         .route("/sources/{id}", get(source_detail_page).post(update_source))
         .route("/sources/{id}/delete", post(delete_source))
         .route("/sources/{id}/toggle", post(toggle_source_enabled))
+        .route(
+            "/sources/{id}/toggle-cleanup-exclusion",
+            post(toggle_source_cleanup_exclusion),
+        )
         .route("/sources/{id}/index", post(trigger_index))
         .route("/sources/{id}/metadata", post(trigger_metadata))
         .route("/web/sources/events", get(sources_events_sse))
@@ -288,6 +311,7 @@ pub fn router(state: AppState, oidc_enabled: bool) -> Router {
         .route("/downloads/{id}/retry", post(retry_download))
         .route("/downloads/{id}/cancel", post(cancel_download))
         .route("/downloads/{id}/delete", post(delete_download))
+        .route("/downloads/bulk", post(bulk_download_action))
         .route("/web/downloads/list", get(downloads_list_partial))
         .route("/web/downloads/events", get(downloads_events_sse))
         .route("/web/system-banner", get(system_banner))
@@ -979,10 +1003,14 @@ async fn activity_events_sse(
         let pool = state.pool.clone();
         let query = query.clone();
         async move {
-            let page_num = query.page.unwrap_or(1).max(1);
-            let per_page = parse_activity_page_size(query.per_page);
-            let offset = (page_num - 1) * per_page;
-            let severity_filter = parse_activity_severity(query.severity.as_deref());
+            let params = ActivityParams::from_query(&query);
+            let ActivityParams {
+                page_num,
+                per_page,
+                offset,
+                ref severity_filter,
+                ..
+            } = params;
 
             let (events_result, count_result) = tokio::join!(
                 db::list_activity_events(
@@ -991,9 +1019,16 @@ async fn activity_events_sse(
                     offset,
                     severity_filter.clone(),
                     None,
-                    None
+                    params.source_id,
+                    params.search.as_deref(),
                 ),
-                db::count_activity_events(&pool, severity_filter, None, None)
+                db::count_activity_events(
+                    &pool,
+                    severity_filter.clone(),
+                    None,
+                    params.source_id,
+                    params.search.as_deref(),
+                )
             );
 
             let events = match events_result {
@@ -1013,16 +1048,16 @@ async fn activity_events_sse(
             } else {
                 (total + per_page - 1) / per_page
             };
-            let current_severity = normalized_activity_severity(query.severity.as_deref());
-
             let fragment = activity_content_markup(
                 &events,
                 &source_names,
                 &video_source_names,
                 page_num,
                 total_pages,
-                current_severity,
+                &params.severity_label,
                 per_page,
+                params.search.as_deref(),
+                params.source.as_deref(),
             )
             .into_string();
 
@@ -1057,7 +1092,7 @@ async fn sources_events_sse(
                 .collect();
             sources.sort_by_key(|s| s.display_name().to_lowercase());
 
-            let fragment = sources_list_markup(&sources).into_string();
+            let fragment = sources_list_markup(&sources, None).into_string();
             Some(Ok(Event::default().event("sources-update").data(fragment)))
         }
     });
@@ -1349,12 +1384,61 @@ async fn delete_profile(
     }
 }
 
+/// Plain GET search form shared by the sources and schedule pages.
+///
+/// Both filter the same `Source` set in-memory, so neither needs htmx here —
+/// a full navigation keeps the URL shareable and the back button meaningful.
+fn source_search_form(action: &str, placeholder: &str, search: Option<&str>) -> Markup {
+    html! {
+        form method="get" action=(action) class="flex gap-2" {
+            input
+                type="text"
+                name="search"
+                placeholder=(placeholder)
+                value=(search.unwrap_or(""))
+                class="rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 px-3 py-1.5 text-sm text-slate-900 dark:text-slate-100";
+            button type="submit"
+                class="rounded-lg bg-slate-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-slate-700"
+            { "Search" }
+            @if search.is_some() {
+                a href=(action)
+                    class="rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 px-3 py-1.5 text-sm font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-600"
+                { "Clear" }
+            }
+        }
+    }
+}
+
+/// Case-insensitive match of a source against a search term.
+///
+/// Covers every name a source can be known by — the user's custom label, the
+/// platform channel/playlist title, and the URL — because which one is
+/// populated varies by source type and indexing state.
+fn source_matches_search(source: &Source, needle: &str) -> bool {
+    let needle = needle.to_lowercase();
+    let haystacks = [
+        source.custom_name.as_deref(),
+        source.channel_title.as_deref(),
+        Some(source.url.as_str()),
+    ];
+    haystacks
+        .into_iter()
+        .flatten()
+        .any(|value| value.to_lowercase().contains(&needle))
+}
+
 async fn sources_page(
     auth: AuthUser,
     State(state): State<AppState>,
     session: Session,
+    axum::extract::Query(query): axum::extract::Query<SourcesQuery>,
 ) -> impl IntoResponse {
     let flash = take_flash(&session).await;
+    let search = query
+        .search
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
     // Get profiles for the current user to populate the dropdown
     let profiles = match db::list_profiles_for_user(&state.pool, auth.user_id).await {
         Ok(data) => data,
@@ -1384,6 +1468,10 @@ async fn sources_page(
             );
         }
     };
+
+    if let Some(needle) = search {
+        sources.retain(|source| source_matches_search(source, needle));
+    }
 
     // Sort sources alphabetically by display name
     sources.sort_by_key(|s| s.display_name().to_lowercase());
@@ -1430,10 +1518,21 @@ async fn sources_page(
             }
 
             section class="mt-8 rounded-2xl border border-slate-200 dark:border-slate-700 bg-white/80 dark:bg-slate-800/80 p-6 shadow-sm" {
-                h2 class="text-lg font-semibold text-slate-900 dark:text-slate-100" { "Existing Sources" }
-                div hx-ext="sse" sse-connect="/web/sources/events" {
-                    div id="sources-list" sse-swap="sources-update" hx-swap="innerHTML" {
-                        (sources_list_markup(&sources))
+                div class="flex flex-wrap items-center justify-between gap-3" {
+                    h2 class="text-lg font-semibold text-slate-900 dark:text-slate-100" { "Existing Sources" }
+                    (source_search_form("/sources", "Search name, channel or URL...", search))
+                }
+                // No SSE here: a live refresh would re-render the unfiltered
+                // list and silently discard the user's search.
+                @if search.is_some() {
+                    div id="sources-list" {
+                        (sources_list_markup(&sources, search))
+                    }
+                } @else {
+                    div hx-ext="sse" sse-connect="/web/sources/events" {
+                        div id="sources-list" sse-swap="sources-update" hx-swap="innerHTML show:none" {
+                            (sources_list_markup(&sources, search))
+                        }
                     }
                 }
             }
@@ -1687,6 +1786,74 @@ async fn toggle_source_enabled(
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 error_page("Failed to toggle source"),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// Toggle whether a source's videos are exempt from automatic cleanup.
+async fn toggle_source_cleanup_exclusion(
+    _auth: AuthUser,
+    State(state): State<AppState>,
+    session: Session,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let Ok(source_id) = Ulid::from_string(id.trim()) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            error_page("Invalid source ID provided"),
+        )
+            .into_response();
+    };
+
+    let source = match db::get_source(&state.pool, source_id).await {
+        Ok(s) => s,
+        Err(db::DbError::NotFound) => {
+            return (StatusCode::NOT_FOUND, error_page("Source not found")).into_response();
+        }
+        Err(error) => {
+            tracing::error!(%error, "failed to get source for cleanup exclusion toggle");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                error_page("Failed to toggle cleanup exclusion"),
+            )
+                .into_response();
+        }
+    };
+
+    let new_excluded = !source.exclude_from_cleanup;
+    match db::set_source_exclude_from_cleanup(&state.pool, source_id, new_excluded).await {
+        Ok(()) => {
+            let status = if new_excluded {
+                "excluded from cleanup"
+            } else {
+                "included in cleanup"
+            };
+            let name = source.display_name();
+            state
+                .broadcaster
+                .log_and_broadcast(
+                    &state.pool,
+                    ActivityEventType::SourceUpdated,
+                    ActivitySeverity::Info,
+                    &format!("Source \"{name}\" {status}"),
+                    Some(source_id),
+                    None,
+                    Some(source.profile_id),
+                )
+                .await;
+            set_flash(&session, "success", &format!("Source {status}")).await;
+            Redirect::to("/sources").into_response()
+        }
+        Err(db::DbError::NotFound) => {
+            (StatusCode::NOT_FOUND, error_page("Source not found")).into_response()
+        }
+        Err(error) => {
+            tracing::error!(%error, "failed to toggle source cleanup exclusion");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                error_page("Failed to toggle cleanup exclusion"),
             )
                 .into_response()
         }
@@ -2522,12 +2689,15 @@ async fn downloads_page(
                         class="flex gap-2"
                         hx-get="/web/downloads/list"
                         hx-target="#downloads-list"
-                        hx-push-url="true"
+                        hx-push-url=(downloads_page_url(query.status.as_deref(), search_query, page_num, per_page))
                     {
                         @if let Some(ref status) = query.status {
                             input type="hidden" name="status" value=(status);
                         }
-                        input type="hidden" name="page" value="1";
+                        // Keep the current page across per_page changes. Editing the
+                        // search term narrows the result set, so `data-reset-page`
+                        // snaps this back to 1 before the form is serialised.
+                        input id="downloads-page-field" type="hidden" name="page" value=(page_num);
                         select
                             name="per_page"
                             class="rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 px-2 py-1.5 text-sm text-slate-900 dark:text-slate-100"
@@ -2539,8 +2709,9 @@ async fn downloads_page(
                         input
                             type="text"
                             name="search"
-                            placeholder="Search by title..."
+                            placeholder="Search title or channel..."
                             value=(search_query.unwrap_or(""))
+                            data-reset-page="downloads-page-field"
                             class="rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 px-3 py-1.5 text-sm text-slate-900 dark:text-slate-100";
                         button type="submit"
                             class="rounded-lg bg-slate-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-slate-700"
@@ -2550,7 +2721,7 @@ async fn downloads_page(
                                 href=(downloads_page_url(None, None, 1, per_page))
                                 hx-get=(downloads_list_url(None, None, 1, per_page))
                                 hx-target="#downloads-list"
-                                hx-push-url="true"
+                                hx-push-url=(downloads_page_url(None, None, 1, per_page))
                                 class="rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 px-3 py-1.5 text-sm font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-600"
                             { "Clear" }
                         }
@@ -2565,7 +2736,9 @@ async fn downloads_page(
                 div
                     id="downloads-list"
                     sse-swap="downloads-update"
-                    hx-swap="innerHTML"
+                    // `show:none` keeps background SSE refreshes from scrolling the
+                    // viewport out from under someone reading mid-list.
+                    hx-swap="innerHTML show:none"
                     hx-get=(list_url)
                     hx-trigger="load"
                     hx-target="this"
@@ -2619,7 +2792,7 @@ async fn downloads_list_partial(
         Ok(data) => data,
         Err(error) => {
             tracing::error!(%error, "failed to load downloads partial");
-            return error_page("Failed to load downloads page").into_response();
+            return error_fragment("Failed to load downloads page").into_response();
         }
     };
 
@@ -2644,12 +2817,245 @@ async fn downloads_list_partial(
     .into_response()
 }
 
+/// A bulk action submitted from the downloads table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BulkAction {
+    Retry,
+    Cancel,
+    Delete,
+}
+
+impl BulkAction {
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "retry" => Some(Self::Retry),
+            "cancel" => Some(Self::Cancel),
+            "delete" => Some(Self::Delete),
+            _ => None,
+        }
+    }
+
+    /// Whether a video in `status` can take this action.
+    ///
+    /// Mirrors the guards in the single-item handlers; keep the two in step.
+    const fn allows(self, status: &VideoStatus) -> bool {
+        match self {
+            Self::Retry => matches!(
+                status,
+                VideoStatus::Failed | VideoStatus::PermanentlyFailed | VideoStatus::Cleaned
+            ),
+            Self::Cancel => matches!(status, VideoStatus::Pending | VideoStatus::Downloading),
+            Self::Delete => matches!(status, VideoStatus::Completed),
+        }
+    }
+
+    const fn past_tense(self) -> &'static str {
+        match self {
+            Self::Retry => "re-queued",
+            Self::Cancel => "cancelled",
+            Self::Delete => "deleted",
+        }
+    }
+}
+
+/// Bulk action form payload.
+///
+/// `ids` is a comma-separated list rather than repeated checkbox fields:
+/// `serde_urlencoded` (what `axum::Form` uses) cannot collect repeated keys
+/// into a `Vec`, and selection already requires JS to drive the toolbar.
+#[derive(Debug, Deserialize)]
+struct BulkDownloadForm {
+    action: String,
+    #[serde(default)]
+    ids: String,
+}
+
+/// Apply retry/cancel/delete to a selected set of downloads.
+///
+/// Ineligible and missing ids are skipped rather than failing the batch, and
+/// the flash message reports both counts so a partial result is never silently
+/// presented as a complete one.
+#[allow(clippy::too_many_lines)]
+async fn bulk_download_action(
+    _auth: AuthUser,
+    State(state): State<AppState>,
+    session: Session,
+    axum::extract::Query(query): axum::extract::Query<DownloadsQuery>,
+    axum::extract::Form(form): axum::extract::Form<BulkDownloadForm>,
+) -> impl IntoResponse {
+    let return_url = downloads_return_url(&query);
+
+    let Some(action) = BulkAction::parse(form.action.trim()) else {
+        set_flash(&session, "error", "Unknown bulk action").await;
+        return Redirect::to(&return_url).into_response();
+    };
+
+    let ids: Vec<Ulid> = form
+        .ids
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .filter_map(|value| Ulid::from_string(value).ok())
+        .collect();
+
+    if ids.is_empty() {
+        set_flash(&session, "error", "No downloads selected").await;
+        return Redirect::to(&return_url).into_response();
+    }
+
+    let videos = match db::list_videos_by_ids(&state.pool, &ids).await {
+        Ok(value) => value,
+        Err(error) => {
+            tracing::error!(%error, "failed to load videos for bulk action");
+            set_flash(&session, "error", "Failed to load selected downloads").await;
+            return Redirect::to(&return_url).into_response();
+        }
+    };
+
+    let requested = ids.len();
+    let (eligible, ineligible): (Vec<_>, Vec<_>) = videos
+        .into_iter()
+        .partition(|video| action.allows(&video.status));
+    // Ids that matched no row at all (deleted since the page rendered).
+    let missing = requested - eligible.len() - ineligible.len();
+
+    let mut succeeded = 0usize;
+    let mut failed = 0usize;
+
+    match action {
+        BulkAction::Retry => {
+            for video in &eligible {
+                if bulk_retry_one(&state, video).await {
+                    succeeded += 1;
+                } else {
+                    failed += 1;
+                }
+            }
+        }
+        BulkAction::Cancel => {
+            for video in &eligible {
+                match state
+                    .supervisor
+                    .ask(CancelDownload { video_id: video.id })
+                    .await
+                {
+                    Ok(()) => succeeded += 1,
+                    Err(error) => {
+                        tracing::error!(%error, video_id = %video.id, "bulk cancel failed");
+                        failed += 1;
+                    }
+                }
+            }
+        }
+        BulkAction::Delete => {
+            for video in &eligible {
+                if bulk_delete_one(&state, video).await {
+                    succeeded += 1;
+                } else {
+                    failed += 1;
+                }
+            }
+        }
+    }
+
+    if succeeded > 0 {
+        state.broadcaster.invalidate();
+    }
+
+    let mut parts = vec![format!("{succeeded} {}", action.past_tense())];
+    if !ineligible.is_empty() {
+        parts.push(format!("{} not eligible", ineligible.len()));
+    }
+    if missing > 0 {
+        parts.push(format!("{missing} no longer exist"));
+    }
+    if failed > 0 {
+        parts.push(format!("{failed} failed"));
+    }
+    let level = if failed > 0 || succeeded == 0 {
+        "error"
+    } else {
+        "success"
+    };
+    set_flash(&session, level, &parts.join(", ")).await;
+
+    Redirect::to(&return_url).into_response()
+}
+
+/// Reset one video to pending and re-enqueue it. Returns whether it worked.
+async fn bulk_retry_one(state: &AppState, video: &hof_core::domain::video::Video) -> bool {
+    if let Err(error) = db::update_video_status(&state.pool, video.id, VideoStatus::Pending).await {
+        tracing::error!(%error, video_id = %video.id, "bulk retry: status reset failed");
+        return false;
+    }
+
+    let Ok(source_ids) = db::get_sources_for_video(&state.pool, video.id).await else {
+        tracing::error!(video_id = %video.id, "bulk retry: source lookup failed");
+        return false;
+    };
+    let Some(source_id) = source_ids.first() else {
+        tracing::warn!(video_id = %video.id, "bulk retry: video has no linked source");
+        return false;
+    };
+    let Ok(source) = db::get_source(&state.pool, *source_id).await else {
+        tracing::error!(video_id = %video.id, "bulk retry: source load failed");
+        return false;
+    };
+    let Ok(profile) = db::get_profile(&state.pool, source.profile_id).await else {
+        tracing::error!(video_id = %video.id, "bulk retry: profile load failed");
+        return false;
+    };
+    // Re-read so the enqueued copy carries the pending status just written.
+    let Ok(refreshed) = db::get_video(&state.pool, video.id).await else {
+        tracing::error!(video_id = %video.id, "bulk retry: video reload failed");
+        return false;
+    };
+
+    match state
+        .supervisor
+        .tell(EnqueueDownload {
+            video: refreshed,
+            profile,
+            source,
+        })
+        .await
+    {
+        Ok(()) => true,
+        Err(error) => {
+            tracing::error!(%error, video_id = %video.id, "bulk retry: enqueue failed");
+            false
+        }
+    }
+}
+
+/// Remove one completed video's file and mark it cleaned.
+async fn bulk_delete_one(state: &AppState, video: &hof_core::domain::video::Video) -> bool {
+    if let Some(path) = video.file_path.as_ref() {
+        // A file already gone from disk should still let the row be cleaned.
+        if let Err(error) = tokio::fs::remove_file(path).await
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            tracing::error!(%error, video_id = %video.id, "bulk delete: file removal failed");
+            return false;
+        }
+    }
+
+    match db::update_video_status(&state.pool, video.id, VideoStatus::Cleaned).await {
+        Ok(()) => true,
+        Err(error) => {
+            tracing::error!(%error, video_id = %video.id, "bulk delete: status update failed");
+            false
+        }
+    }
+}
+
 #[allow(clippy::too_many_lines)]
 async fn retry_download(
     _auth: AuthUser,
     State(state): State<AppState>,
     session: Session,
     Path(id): Path<String>,
+    axum::extract::Query(query): axum::extract::Query<DownloadsQuery>,
 ) -> impl IntoResponse {
     let Ok(video_id) = Ulid::from_string(id.trim()) else {
         return (
@@ -2762,7 +3168,7 @@ async fn retry_download(
         Ok(()) => {
             state.broadcaster.invalidate();
             set_flash(&session, "info", "Download re-queued").await;
-            Redirect::to("/downloads").into_response()
+            Redirect::to(&downloads_return_url(&query)).into_response()
         }
         Err(error) => {
             tracing::error!(%error, "failed to enqueue retry download");
@@ -2780,6 +3186,7 @@ async fn cancel_download(
     State(state): State<AppState>,
     session: Session,
     Path(id): Path<String>,
+    axum::extract::Query(query): axum::extract::Query<DownloadsQuery>,
 ) -> impl IntoResponse {
     let Ok(video_id) = Ulid::from_string(id.trim()) else {
         return (
@@ -2821,7 +3228,7 @@ async fn cancel_download(
         Ok(()) => {
             state.broadcaster.invalidate();
             set_flash(&session, "info", "Download cancelled").await;
-            Redirect::to("/downloads").into_response()
+            Redirect::to(&downloads_return_url(&query)).into_response()
         }
         Err(error) => {
             tracing::error!(%error, "failed to cancel download");
@@ -2839,6 +3246,7 @@ async fn delete_download(
     State(state): State<AppState>,
     session: Session,
     Path(id): Path<String>,
+    axum::extract::Query(query): axum::extract::Query<DownloadsQuery>,
 ) -> impl IntoResponse {
     let Ok(video_id) = Ulid::from_string(id.trim()) else {
         return (
@@ -2918,7 +3326,7 @@ async fn delete_download(
         &format!("\"{title}\" deleted ({size_mb:.1} MB freed)"),
     )
     .await;
-    Redirect::to("/downloads").into_response()
+    Redirect::to(&downloads_return_url(&query)).into_response()
 }
 
 /// Returns an HTML fragment for the system issues banner.
@@ -2978,8 +3386,74 @@ async fn system_banner(State(state): State<AppState>) -> impl IntoResponse {
 #[derive(Debug, Clone, Deserialize)]
 struct ActivityQuery {
     severity: Option<String>,
+    search: Option<String>,
+    /// Restrict to one source; set by clicking a source pill on an event row.
+    source: Option<String>,
     page: Option<i64>,
     per_page: Option<i64>,
+}
+
+/// Request-scoped activity filter state, normalized once.
+///
+/// The page, list partial and SSE stream all need the same derived values;
+/// deriving them in one place keeps the three views from drifting apart.
+struct ActivityParams {
+    page_num: i64,
+    per_page: i64,
+    offset: i64,
+    severity_filter: Option<ActivitySeverity>,
+    severity_label: String,
+    search: Option<String>,
+    source_id: Option<Ulid>,
+    source: Option<String>,
+}
+
+impl ActivityParams {
+    fn from_query(query: &ActivityQuery) -> Self {
+        let page_num = query.page.unwrap_or(1).max(1);
+        let per_page = parse_activity_page_size(query.per_page);
+        let search = query
+            .search
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned);
+        // Only keep a source filter we can actually parse; a malformed id would
+        // otherwise silently match nothing while still showing an active pill.
+        let source_id = query
+            .source
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .and_then(|value| Ulid::from_string(value).ok());
+
+        Self {
+            page_num,
+            per_page,
+            offset: (page_num - 1) * per_page,
+            severity_filter: parse_activity_severity(query.severity.as_deref()),
+            severity_label: normalized_activity_severity(query.severity.as_deref()).to_owned(),
+            search,
+            source_id,
+            source: source_id.map(|id| id.to_string()),
+        }
+    }
+
+    fn severity_param(&self) -> Option<&str> {
+        if self.severity_label == "all" {
+            None
+        } else {
+            Some(&self.severity_label)
+        }
+    }
+
+    fn filter(&self) -> ActivityFilter<'_> {
+        ActivityFilter {
+            severity: self.severity_param(),
+            search: self.search.as_deref(),
+            source: self.source.as_deref(),
+        }
+    }
 }
 
 async fn activity_page(
@@ -2987,11 +3461,14 @@ async fn activity_page(
     State(state): State<AppState>,
     axum::extract::Query(query): axum::extract::Query<ActivityQuery>,
 ) -> impl IntoResponse {
-    let page_num = query.page.unwrap_or(1).max(1);
-    let per_page = parse_activity_page_size(query.per_page);
-    let offset = (page_num - 1) * per_page;
-
-    let severity_filter = parse_activity_severity(query.severity.as_deref());
+    let params = ActivityParams::from_query(&query);
+    let ActivityParams {
+        page_num,
+        per_page,
+        offset,
+        ref severity_filter,
+        ..
+    } = params;
 
     let (events_result, count_result) = tokio::join!(
         db::list_activity_events(
@@ -3000,9 +3477,16 @@ async fn activity_page(
             offset,
             severity_filter.clone(),
             None,
-            None
+            params.source_id,
+            params.search.as_deref(),
         ),
-        db::count_activity_events(&state.pool, severity_filter.clone(), None, None)
+        db::count_activity_events(
+            &state.pool,
+            severity_filter.clone(),
+            None,
+            params.source_id,
+            params.search.as_deref(),
+        )
     );
 
     let events = match events_result {
@@ -3024,9 +3508,9 @@ async fn activity_page(
     let total = count_result.unwrap_or(0);
     let total_pages = (total + per_page - 1) / per_page;
 
-    let current_severity = normalized_activity_severity(query.severity.as_deref());
-    let list_url = activity_list_url(query.severity.as_deref(), page_num, per_page);
-    let events_url = activity_events_url(query.severity.as_deref(), page_num, per_page);
+    let current_severity = params.severity_label.as_str();
+    let list_url = activity_list_url(params.filter(), page_num, per_page);
+    let events_url = activity_events_url(params.filter(), page_num, per_page);
 
     let page = layout(
         "Activity",
@@ -3038,7 +3522,9 @@ async fn activity_page(
                     div
                         id="activity-content"
                         sse-swap="activity-update"
-                        hx-swap="innerHTML"
+                        // `show:none` keeps background SSE refreshes from scrolling the
+                        // viewport out from under someone reading mid-list.
+                        hx-swap="innerHTML show:none"
                         hx-get=(list_url)
                         hx-trigger="load"
                         hx-target="this"
@@ -3051,6 +3537,8 @@ async fn activity_page(
                             total_pages,
                             current_severity,
                             per_page,
+                            params.search.as_deref(),
+                            params.source.as_deref(),
                         ))
                     }
                 }
@@ -3066,10 +3554,14 @@ async fn activity_list_partial(
     State(state): State<AppState>,
     axum::extract::Query(query): axum::extract::Query<ActivityQuery>,
 ) -> impl IntoResponse {
-    let page_num = query.page.unwrap_or(1).max(1);
-    let per_page = parse_activity_page_size(query.per_page);
-    let offset = (page_num - 1) * per_page;
-    let severity_filter = parse_activity_severity(query.severity.as_deref());
+    let params = ActivityParams::from_query(&query);
+    let ActivityParams {
+        page_num,
+        per_page,
+        offset,
+        ref severity_filter,
+        ..
+    } = params;
 
     let (events_result, count_result) = tokio::join!(
         db::list_activity_events(
@@ -3078,16 +3570,23 @@ async fn activity_list_partial(
             offset,
             severity_filter.clone(),
             None,
-            None
+            params.source_id,
+            params.search.as_deref(),
         ),
-        db::count_activity_events(&state.pool, severity_filter, None, None)
+        db::count_activity_events(
+            &state.pool,
+            severity_filter.clone(),
+            None,
+            params.source_id,
+            params.search.as_deref(),
+        )
     );
 
     let events = match events_result {
         Ok(data) => data,
         Err(error) => {
             tracing::error!(%error, "failed to load activity partial");
-            return error_page("Failed to load activity log").into_response();
+            return error_fragment("Failed to load activity log").into_response();
         }
     };
 
@@ -3102,16 +3601,16 @@ async fn activity_list_partial(
     } else {
         (total + per_page - 1) / per_page
     };
-    let current_severity = normalized_activity_severity(query.severity.as_deref());
-
     activity_content_markup(
         &events,
         &source_names,
         &video_source_names,
         page_num,
         total_pages,
-        current_severity,
+        &params.severity_label,
         per_page,
+        params.search.as_deref(),
+        params.source.as_deref(),
     )
     .into_response()
 }
@@ -3157,14 +3656,21 @@ fn download_status_filter_link(
             href=(href)
             hx-get=(hx_get)
             hx-target="#downloads-list"
-            hx-push-url="true"
+            hx-push-url=(href)
         {
             (label)
         }
     }
 }
 
-fn severity_filter_link(value: &str, label: &str, current: &str, per_page: i64) -> Markup {
+fn severity_filter_link(
+    value: &str,
+    label: &str,
+    current: &str,
+    per_page: i64,
+    search: Option<&str>,
+    source: Option<&str>,
+) -> Markup {
     let active = value == current;
     let classes = if active {
         "rounded-full bg-slate-900 dark:bg-slate-100 px-3 py-1 text-xs font-medium text-white dark:text-slate-900"
@@ -3172,8 +3678,13 @@ fn severity_filter_link(value: &str, label: &str, current: &str, per_page: i64) 
         "rounded-full bg-slate-100 dark:bg-slate-700 px-3 py-1 text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-600"
     };
     let severity = if value == "all" { None } else { Some(value) };
-    let href = activity_page_url(severity, 1, per_page);
-    let hx_get = activity_list_url(severity, 1, per_page);
+    let filter = ActivityFilter {
+        severity,
+        search,
+        source,
+    };
+    let href = activity_page_url(filter, 1, per_page);
+    let hx_get = activity_list_url(filter, 1, per_page);
 
     html! {
         a
@@ -3181,22 +3692,33 @@ fn severity_filter_link(value: &str, label: &str, current: &str, per_page: i64) 
             href=(href)
             hx-get=(hx_get)
             hx-target="#activity-content"
-            hx-push-url="true"
+            hx-push-url=(href)
         {
             (label)
         }
     }
 }
 
-fn activity_page_size_link(size: i64, current_size: i64, severity: Option<&str>) -> Markup {
+fn activity_page_size_link(
+    size: i64,
+    current_size: i64,
+    severity: Option<&str>,
+    search: Option<&str>,
+    source: Option<&str>,
+) -> Markup {
     let active = size == current_size;
     let classes = if active {
         "rounded-full bg-slate-900 dark:bg-slate-100 px-2.5 py-1 text-xs font-medium text-white dark:text-slate-900"
     } else {
         "rounded-full bg-slate-100 dark:bg-slate-700 px-2.5 py-1 text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-600"
     };
-    let href = activity_page_url(severity, 1, size);
-    let hx_get = activity_list_url(severity, 1, size);
+    let filter = ActivityFilter {
+        severity,
+        search,
+        source,
+    };
+    let href = activity_page_url(filter, 1, size);
+    let hx_get = activity_list_url(filter, 1, size);
 
     html! {
         a
@@ -3204,7 +3726,7 @@ fn activity_page_size_link(size: i64, current_size: i64, severity: Option<&str>)
             href=(href)
             hx-get=(hx_get)
             hx-target="#activity-content"
-            hx-push-url="true"
+            hx-push-url=(href)
         {
             (size)
         }
@@ -3234,6 +3756,22 @@ const fn parse_activity_page_size(value: Option<i64>) -> i64 {
     match value {
         Some(size) if matches!(size, 25 | 50 | 100) => size,
         _ => 50,
+    }
+}
+
+/// The canonical slug for a status, matching [`parse_download_status`].
+///
+/// Rendered into `data-status` so the bulk toolbar can decide client-side
+/// which actions apply to the current selection.
+const fn download_status_slug(status: &VideoStatus) -> &'static str {
+    match status {
+        VideoStatus::Pending => "pending",
+        VideoStatus::Downloading => "downloading",
+        VideoStatus::Completed => "completed",
+        VideoStatus::Failed => "failed",
+        VideoStatus::Skipped => "skipped",
+        VideoStatus::Cleaned => "cleaned",
+        VideoStatus::PermanentlyFailed => "permanently_failed",
     }
 }
 
@@ -3304,6 +3842,31 @@ fn downloads_events_url(
     downloads_url("/web/downloads/events", status, search, page, per_page)
 }
 
+/// Percent-encode a value for use in a query string.
+///
+/// Search terms are user-supplied and routinely contain spaces and `&`, which
+/// would otherwise truncate the URL or inject a spurious parameter.
+fn encode_query_value(value: &str) -> String {
+    percent_encoding::utf8_percent_encode(value, QUERY_VALUE_ENCODE_SET).to_string()
+}
+
+/// Rebuild the `/downloads` URL a mutating action should return to.
+///
+/// Retry/cancel/delete carry the list state (status, search, page, `per_page`) as
+/// query params on their form action, so the post-redirect lands back on the row
+/// the user acted from instead of resetting to page 1 with no filters.
+fn downloads_return_url(query: &DownloadsQuery) -> String {
+    let page = query.page.unwrap_or(1).max(1);
+    let per_page = parse_downloads_page_size(query.per_page);
+    let search = query
+        .search
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+
+    downloads_page_url(query.status.as_deref(), search, page, per_page)
+}
+
 fn downloads_url(
     base: &str,
     status: Option<&str>,
@@ -3317,7 +3880,7 @@ fn downloads_url(
         params.push(format!("status={value}"));
     }
     if let Some(value) = search.filter(|value| !value.is_empty()) {
-        params.push(format!("search={value}"));
+        params.push(format!("search={}", encode_query_value(value)));
     }
     if page > 1 {
         params.push(format!("page={page}"));
@@ -3333,23 +3896,41 @@ fn downloads_url(
     }
 }
 
-fn activity_page_url(severity: Option<&str>, page: i64, per_page: i64) -> String {
-    activity_url("/activity", severity, page, per_page)
+/// The filter state shared by every activity URL variant.
+///
+/// Grouped into a struct because these four values must travel together through
+/// the page, the list partial, the SSE stream and every filter link — passing
+/// them positionally invited dropping one and silently resetting the view.
+#[derive(Debug, Clone, Copy, Default)]
+struct ActivityFilter<'a> {
+    severity: Option<&'a str>,
+    search: Option<&'a str>,
+    source: Option<&'a str>,
 }
 
-fn activity_list_url(severity: Option<&str>, page: i64, per_page: i64) -> String {
-    activity_url("/web/activity/list", severity, page, per_page)
+fn activity_page_url(filter: ActivityFilter<'_>, page: i64, per_page: i64) -> String {
+    activity_url("/activity", filter, page, per_page)
 }
 
-fn activity_events_url(severity: Option<&str>, page: i64, per_page: i64) -> String {
-    activity_url("/web/activity/events", severity, page, per_page)
+fn activity_list_url(filter: ActivityFilter<'_>, page: i64, per_page: i64) -> String {
+    activity_url("/web/activity/list", filter, page, per_page)
 }
 
-fn activity_url(base: &str, severity: Option<&str>, page: i64, per_page: i64) -> String {
+fn activity_events_url(filter: ActivityFilter<'_>, page: i64, per_page: i64) -> String {
+    activity_url("/web/activity/events", filter, page, per_page)
+}
+
+fn activity_url(base: &str, filter: ActivityFilter<'_>, page: i64, per_page: i64) -> String {
     let mut params = Vec::new();
 
-    if let Some(value) = severity.filter(|value| *value != "all") {
+    if let Some(value) = filter.severity.filter(|value| *value != "all") {
         params.push(format!("severity={value}"));
+    }
+    if let Some(value) = filter.search.filter(|value| !value.is_empty()) {
+        params.push(format!("search={}", encode_query_value(value)));
+    }
+    if let Some(value) = filter.source.filter(|value| !value.is_empty()) {
+        params.push(format!("source={}", encode_query_value(value)));
     }
     if page > 1 {
         params.push(format!("page={page}"));
@@ -3367,6 +3948,149 @@ fn activity_url(base: &str, severity: Option<&str>, page: i64, per_page: i64) ->
 
 #[allow(clippy::too_many_arguments)]
 #[allow(clippy::too_many_lines)]
+/// Toolbar for acting on the current checkbox selection.
+///
+/// Hidden until something is selected. The buttons stay disabled unless the
+/// selection contains at least one video eligible for that action, so the
+/// affordance matches what the server will actually do.
+fn bulk_action_bar(
+    status: Option<&str>,
+    search: Option<&str>,
+    page_num: i64,
+    per_page: i64,
+) -> Markup {
+    let action_url = downloads_url("/downloads/bulk", status, search, page_num, per_page);
+
+    html! {
+        form
+            method="post"
+            action=(action_url)
+            data-bulk-form="1"
+            hidden
+            class="mt-4 flex flex-wrap items-center gap-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 px-4 py-3"
+        {
+            input type="hidden" name="ids" data-bulk-ids="1" value="";
+            input type="hidden" name="action" data-bulk-action="1" value="";
+            span class="text-sm font-medium text-slate-700 dark:text-slate-300" {
+                span data-bulk-count="1" { "0" }
+                " selected"
+            }
+            button
+                type="submit"
+                value="retry"
+                data-bulk-button="retry"
+                class="rounded-lg border border-sky-200 dark:border-sky-800 bg-sky-50 dark:bg-sky-900/50 px-3 py-1.5 text-xs font-medium text-sky-700 dark:text-sky-300 hover:bg-sky-100 dark:hover:bg-sky-900 disabled:opacity-40"
+            { "Retry selected" }
+            button
+                type="submit"
+                value="cancel"
+                data-bulk-button="cancel"
+                data-confirm="Cancel the selected downloads?"
+                class="rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/50 px-3 py-1.5 text-xs font-medium text-amber-700 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-900 disabled:opacity-40"
+            { "Cancel selected" }
+            button
+                type="submit"
+                value="delete"
+                data-bulk-button="delete"
+                data-confirm="Delete the selected videos? Their files will be removed from disk."
+                class="rounded-lg border border-rose-200 dark:border-rose-800 bg-rose-50 dark:bg-rose-900/50 px-3 py-1.5 text-xs font-medium text-rose-700 dark:text-rose-300 hover:bg-rose-100 dark:hover:bg-rose-900 disabled:opacity-40"
+            { "Delete selected" }
+            button
+                type="button"
+                data-bulk-clear="1"
+                class="rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 px-3 py-1.5 text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-600"
+            { "Clear selection" }
+        }
+    }
+}
+
+/// One download row, including its per-item action buttons.
+///
+/// The action forms carry the current list state so the post-redirect returns
+/// to the same page and filters rather than resetting to the top.
+#[allow(clippy::too_many_arguments)]
+fn downloads_row(
+    video: &Video,
+    source_names: &HashMap<Ulid, String>,
+    status_param: Option<&str>,
+    search: Option<&str>,
+    page_num: i64,
+    per_page: i64,
+) -> Markup {
+    let action_url = |verb: &str| {
+        downloads_url(
+            &format!("/downloads/{}/{verb}", video.id),
+            status_param,
+            search,
+            page_num,
+            per_page,
+        )
+    };
+
+    html! {
+        tr id=(format!("video-{}", video.id)) {
+            td class="px-3 py-2" {
+                input
+                    type="checkbox"
+                    data-bulk-select=(video.id.to_string())
+                    data-status=(download_status_slug(&video.status))
+                    aria-label=(format!("Select {}", video.title))
+                    class="h-4 w-4 rounded border-slate-300 dark:border-slate-600";
+            }
+            td class="max-w-lg px-3 py-2 text-slate-900 dark:text-slate-100" {
+                p class="truncate font-medium" { (video.title) }
+                p class="truncate text-xs text-slate-500 dark:text-slate-400" { (video.id.to_string()) }
+            }
+            td class="max-w-xs px-3 py-2 text-slate-600 dark:text-slate-400" {
+                p class="truncate" {
+                    @if let Some(name) = source_names.get(&video.id) {
+                        (name)
+                    } @else {
+                        span class="text-slate-400 dark:text-slate-500 italic" { "—" }
+                    }
+                }
+            }
+            td class="px-3 py-2 text-slate-600 dark:text-slate-400" { (video.platform) }
+            td class="px-3 py-2" { (status_badge(&video.status)) }
+            td class="px-3 py-2 text-slate-600 dark:text-slate-400" { (video.attempts) }
+            td class="px-3 py-2" {
+                div class="flex gap-2" {
+                    @if BulkAction::Retry.allows(&video.status) {
+                        form method="post" action=(action_url("retry")) {
+                            button class="rounded-lg border border-sky-200 dark:border-sky-800 bg-sky-50 dark:bg-sky-900/50 px-3 py-1.5 text-xs font-medium text-sky-700 dark:text-sky-300 hover:bg-sky-100 dark:hover:bg-sky-900" type="submit" {
+                                "Retry"
+                            }
+                        }
+                    }
+                    @if BulkAction::Cancel.allows(&video.status) {
+                        form method="post" action=(action_url("cancel")) {
+                            button
+                                class="rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/50 px-3 py-1.5 text-xs font-medium text-amber-700 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-900"
+                                type="submit"
+                                onclick="return confirm('Cancel this download?')"
+                            {
+                                "Cancel"
+                            }
+                        }
+                    }
+                    @if BulkAction::Delete.allows(&video.status) {
+                        form method="post" action=(action_url("delete")) {
+                            button
+                                class="rounded-lg border border-rose-200 dark:border-rose-800 bg-rose-50 dark:bg-rose-900/50 px-3 py-1.5 text-xs font-medium text-rose-700 dark:text-rose-300 hover:bg-rose-100 dark:hover:bg-rose-900"
+                                type="submit"
+                                onclick="return confirm('Delete this video? The file will be removed from disk.')"
+                            {
+                                "Delete"
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn downloads_list_markup(
     videos: &[Video],
     source_names: &HashMap<Ulid, String>,
@@ -3395,10 +4119,18 @@ fn downloads_list_markup(
             @if videos.is_empty() {
                 p class="mt-3 text-sm text-slate-500 dark:text-slate-400" { "No downloads match your filters." }
             } @else {
+                (bulk_action_bar(status_param, search, page_num, per_page))
                 div class="mt-4 overflow-x-auto" {
-                    table class="min-w-full divide-y divide-slate-200 text-sm" {
+                    table class="min-w-full divide-y divide-slate-200 text-sm" data-bulk-table="1" {
                         thead class="bg-slate-50 dark:bg-slate-800" {
                             tr {
+                                th class="w-8 px-3 py-2 text-left" {
+                                    input
+                                        type="checkbox"
+                                        data-bulk-select-all="1"
+                                        aria-label="Select all downloads on this page"
+                                        class="h-4 w-4 rounded border-slate-300 dark:border-slate-600";
+                                }
                                 th class="px-3 py-2 text-left font-semibold text-slate-700 dark:text-slate-300" { "Title" }
                                 th class="px-3 py-2 text-left font-semibold text-slate-700 dark:text-slate-300" { "Source" }
                                 th class="px-3 py-2 text-left font-semibold text-slate-700 dark:text-slate-300" { "Platform" }
@@ -3409,57 +4141,7 @@ fn downloads_list_markup(
                         }
                         tbody class="divide-y divide-slate-100 dark:divide-slate-700 bg-white dark:bg-slate-900" {
                             @for video in videos {
-                                tr {
-                                    td class="max-w-lg px-3 py-2 text-slate-900 dark:text-slate-100" {
-                                        p class="truncate font-medium" { (video.title) }
-                                        p class="truncate text-xs text-slate-500 dark:text-slate-400" { (video.id.to_string()) }
-                                    }
-                                    td class="max-w-xs px-3 py-2 text-slate-600 dark:text-slate-400" {
-                                        p class="truncate" {
-                                            @if let Some(name) = source_names.get(&video.id) {
-                                                (name)
-                                            } @else {
-                                                span class="text-slate-400 dark:text-slate-500 italic" { "—" }
-                                            }
-                                        }
-                                    }
-                                    td class="px-3 py-2 text-slate-600 dark:text-slate-400" { (video.platform) }
-                                    td class="px-3 py-2" { (status_badge(&video.status)) }
-                                    td class="px-3 py-2 text-slate-600 dark:text-slate-400" { (video.attempts) }
-                                    td class="px-3 py-2" {
-                                        div class="flex gap-2" {
-                                            @if matches!(video.status, VideoStatus::Failed | VideoStatus::PermanentlyFailed | VideoStatus::Cleaned) {
-                                                form method="post" action=(format!("/downloads/{}/retry", video.id)) {
-                                                    button class="rounded-lg border border-sky-200 dark:border-sky-800 bg-sky-50 dark:bg-sky-900/50 px-3 py-1.5 text-xs font-medium text-sky-700 dark:text-sky-300 hover:bg-sky-100 dark:hover:bg-sky-900" type="submit" {
-                                                        "Retry"
-                                                    }
-                                                }
-                                            }
-                                            @if matches!(video.status, VideoStatus::Pending | VideoStatus::Downloading) {
-                                                form method="post" action=(format!("/downloads/{}/cancel", video.id)) {
-                                                    button
-                                                        class="rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/50 px-3 py-1.5 text-xs font-medium text-amber-700 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-900"
-                                                        type="submit"
-                                                        onclick="return confirm('Cancel this download?')"
-                                                    {
-                                                        "Cancel"
-                                                    }
-                                                }
-                                            }
-                                            @if video.status == VideoStatus::Completed {
-                                                form method="post" action=(format!("/downloads/{}/delete", video.id)) {
-                                                    button
-                                                        class="rounded-lg border border-rose-200 dark:border-rose-800 bg-rose-50 dark:bg-rose-900/50 px-3 py-1.5 text-xs font-medium text-rose-700 dark:text-rose-300 hover:bg-rose-100 dark:hover:bg-rose-900"
-                                                        type="submit"
-                                                        onclick="return confirm('Delete this video? The file will be removed from disk.')"
-                                                    {
-                                                        "Delete"
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
+                                (downloads_row(video, source_names, status_param, search, page_num, per_page))
                             }
                         }
                     }
@@ -3474,7 +4156,7 @@ fn downloads_list_markup(
                             href=(downloads_page_url(status_param, search, page_num - 1, per_page))
                             hx-get=(downloads_list_url(status_param, search, page_num - 1, per_page))
                             hx-target="#downloads-list"
-                            hx-push-url="true"
+                            hx-push-url=(downloads_page_url(status_param, search, page_num - 1, per_page))
                         {
                             "Previous"
                         }
@@ -3488,7 +4170,7 @@ fn downloads_list_markup(
                             href=(downloads_page_url(status_param, search, page_num + 1, per_page))
                             hx-get=(downloads_list_url(status_param, search, page_num + 1, per_page))
                             hx-target="#downloads-list"
-                            hx-push-url="true"
+                            hx-push-url=(downloads_page_url(status_param, search, page_num + 1, per_page))
                         {
                             "Next"
                         }
@@ -3499,6 +4181,103 @@ fn downloads_list_markup(
     }
 }
 
+/// Severity pills, page-size pills, and the message search box.
+fn activity_filter_bar(
+    filter: ActivityFilter<'_>,
+    current_severity: &str,
+    page_num: i64,
+    per_page: i64,
+) -> Markup {
+    let ActivityFilter {
+        severity,
+        search,
+        source,
+    } = filter;
+
+    html! {
+        div class="mt-3 flex flex-wrap items-center gap-3" {
+            nav class="flex gap-1" {
+                (severity_filter_link("all", "All", current_severity, per_page, search, source))
+                (severity_filter_link("info", "Info", current_severity, per_page, search, source))
+                (severity_filter_link("success", "Success", current_severity, per_page, search, source))
+                (severity_filter_link("warning", "Warning", current_severity, per_page, search, source))
+                (severity_filter_link("error", "Error", current_severity, per_page, search, source))
+            }
+            nav class="flex items-center gap-1" {
+                span class="px-2 text-xs font-medium text-slate-500 dark:text-slate-400" { "Rows" }
+                (activity_page_size_link(25, per_page, severity, search, source))
+                (activity_page_size_link(50, per_page, severity, search, source))
+                (activity_page_size_link(100, per_page, severity, search, source))
+            }
+            form
+                method="get"
+                action="/activity"
+                class="flex gap-2"
+                hx-get="/web/activity/list"
+                hx-target="#activity-content"
+                hx-push-url=(activity_page_url(filter, page_num, per_page))
+            {
+                // Severity and source live outside this form as pills, so they
+                // ride along as hidden fields to survive a search submit.
+                @if let Some(value) = severity {
+                    input type="hidden" name="severity" value=(value);
+                }
+                @if let Some(value) = source {
+                    input type="hidden" name="source" value=(value);
+                }
+                input type="hidden" name="per_page" value=(per_page);
+                input id="activity-page-field" type="hidden" name="page" value=(page_num);
+                input
+                    type="text"
+                    name="search"
+                    placeholder="Search messages..."
+                    value=(search.unwrap_or(""))
+                    data-reset-page="activity-page-field"
+                    class="rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 px-3 py-1.5 text-sm text-slate-900 dark:text-slate-100";
+                button type="submit"
+                    class="rounded-lg bg-slate-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-slate-700"
+                { "Search" }
+            }
+        }
+    }
+}
+
+/// The active source filter, rendered as a pill with a clear affordance.
+///
+/// `display_name` is `None` for a source that has since been deleted; the raw
+/// id is shown instead so the filter is still identifiable and clearable.
+fn activity_source_pill(
+    filter: ActivityFilter<'_>,
+    display_name: Option<&str>,
+    per_page: i64,
+) -> Markup {
+    let Some(source_id) = filter.source else {
+        return html! {};
+    };
+    let cleared = ActivityFilter {
+        source: None,
+        ..filter
+    };
+
+    html! {
+        div class="mt-3 flex flex-wrap items-center gap-2" {
+            span class="text-xs font-medium text-slate-500 dark:text-slate-400" { "Filtered to source" }
+            span class="inline-flex items-center gap-2 rounded-full bg-slate-900 dark:bg-slate-100 px-3 py-1 text-xs font-medium text-white dark:text-slate-900" {
+                (display_name.unwrap_or(source_id))
+                a
+                    href=(activity_page_url(cleared, 1, per_page))
+                    hx-get=(activity_list_url(cleared, 1, per_page))
+                    hx-target="#activity-content"
+                    hx-push-url=(activity_page_url(cleared, 1, per_page))
+                    class="text-slate-300 dark:text-slate-600 hover:text-white dark:hover:text-slate-900"
+                    aria-label="Clear source filter"
+                { "\u{00d7}" }
+            }
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn activity_content_markup(
     events: &[hof_core::domain::activity::ActivityEvent],
     source_names: &HashMap<Ulid, String>,
@@ -3507,38 +4286,43 @@ fn activity_content_markup(
     total_pages: i64,
     current_severity: &str,
     per_page: i64,
+    search: Option<&str>,
+    source: Option<&str>,
 ) -> Markup {
     let severity_param = if current_severity == "all" {
         None
     } else {
         Some(current_severity)
     };
+    let filter = ActivityFilter {
+        severity: severity_param,
+        search,
+        source,
+    };
+    let has_filters = search.is_some() || source.is_some() || severity_param.is_some();
+    // The pill shows the source's display name when we can resolve it, falling
+    // back to the raw id for a source that has since been deleted.
+    let active_source_name = source
+        .and_then(|id| Ulid::from_string(id).ok())
+        .and_then(|id| source_names.get(&id))
+        .map(String::as_str);
 
     html! {
-        div class="mt-3 flex flex-wrap items-center gap-3" {
-            nav class="flex gap-1" {
-                (severity_filter_link("all", "All", current_severity, per_page))
-                (severity_filter_link("info", "Info", current_severity, per_page))
-                (severity_filter_link("success", "Success", current_severity, per_page))
-                (severity_filter_link("warning", "Warning", current_severity, per_page))
-                (severity_filter_link("error", "Error", current_severity, per_page))
-            }
-            nav class="flex items-center gap-1" {
-                span class="px-2 text-xs font-medium text-slate-500 dark:text-slate-400" { "Rows" }
-                (activity_page_size_link(25, per_page, severity_param))
-                (activity_page_size_link(50, per_page, severity_param))
-                (activity_page_size_link(100, per_page, severity_param))
-            }
-        }
+        (activity_filter_bar(filter, current_severity, page_num, per_page))
+        (activity_source_pill(filter, active_source_name, per_page))
 
         @if events.is_empty() {
             p class="mt-4 rounded-lg border border-dashed border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-800 px-4 py-8 text-center text-sm text-slate-500 dark:text-slate-400" {
-                "No activity events recorded yet."
+                @if has_filters {
+                    "No activity events match your filters."
+                } @else {
+                    "No activity events recorded yet."
+                }
             }
         } @else {
             div class="mt-4 space-y-2" {
                 @for event in events {
-                    (activity_event_row(event, source_names, video_source_names))
+                    (activity_event_row(event, source_names, video_source_names, filter, per_page))
                 }
             }
 
@@ -3547,10 +4331,10 @@ fn activity_content_markup(
                     @if page_num > 1 {
                         a
                             class="rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 px-3 py-1.5 text-sm text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-600"
-                            href=(activity_page_url(severity_param, page_num - 1, per_page))
-                            hx-get=(activity_list_url(severity_param, page_num - 1, per_page))
+                            href=(activity_page_url(filter, page_num - 1, per_page))
+                            hx-get=(activity_list_url(filter, page_num - 1, per_page))
                             hx-target="#activity-content"
-                            hx-push-url="true"
+                            hx-push-url=(activity_page_url(filter, page_num - 1, per_page))
                         {
                             "Previous"
                         }
@@ -3561,10 +4345,10 @@ fn activity_content_markup(
                     @if page_num < total_pages {
                         a
                             class="rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 px-3 py-1.5 text-sm text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-600"
-                            href=(activity_page_url(severity_param, page_num + 1, per_page))
-                            hx-get=(activity_list_url(severity_param, page_num + 1, per_page))
+                            href=(activity_page_url(filter, page_num + 1, per_page))
+                            hx-get=(activity_list_url(filter, page_num + 1, per_page))
                             hx-target="#activity-content"
-                            hx-push-url="true"
+                            hx-push-url=(activity_page_url(filter, page_num + 1, per_page))
                         {
                             "Next"
                         }
@@ -3588,6 +4372,8 @@ fn activity_event_row(
     event: &hof_core::domain::activity::ActivityEvent,
     source_names: &HashMap<Ulid, String>,
     video_source_names: &HashMap<Ulid, String>,
+    filter: ActivityFilter<'_>,
+    per_page: i64,
 ) -> Markup {
     let (icon, border_color) = match event.severity {
         ActivitySeverity::Info => ("i", "border-l-sky-400"),
@@ -3638,9 +4424,12 @@ fn activity_event_row(
         .source_id
         .and_then(|id| source_names.get(&id))
         .or_else(|| event.video_id.and_then(|id| video_source_names.get(&id)));
+    // Only events carrying a source id can be turned into a filter link; names
+    // resolved via `video_source_names` have no id to filter on.
+    let pill_source_id = event.source_id.filter(|id| source_names.contains_key(id));
 
     html! {
-        div class=(format!("flex items-start gap-3 rounded-lg border border-slate-200 dark:border-slate-700 border-l-4 {} bg-white dark:bg-slate-800 p-3", border_color)) {
+        div id=(format!("activity-{}", event.id)) class=(format!("flex items-start gap-3 rounded-lg border border-slate-200 dark:border-slate-700 border-l-4 {} bg-white dark:bg-slate-800 p-3", border_color)) {
             span class="mt-0.5 flex h-6 w-6 items-center justify-center rounded-full bg-slate-100 dark:bg-slate-700 text-xs font-bold text-slate-600 dark:text-slate-300" {
                 (icon)
             }
@@ -3651,8 +4440,26 @@ fn activity_event_row(
                     }
                     span class="text-xs font-medium text-slate-500 dark:text-slate-400" { (event_label) }
                     @if let Some(name) = source_name {
-                        span class="inline-flex rounded-full bg-slate-100 dark:bg-slate-700 px-2 py-0.5 text-xs font-medium text-slate-600 dark:text-slate-300" {
-                            (name)
+                        @if let Some(source_id) = pill_source_id {
+                            @let pill_filter = ActivityFilter {
+                                severity: filter.severity,
+                                search: filter.search,
+                                source: Some(&source_id.to_string()),
+                            };
+                            a
+                                href=(activity_page_url(pill_filter, 1, per_page))
+                                hx-get=(activity_list_url(pill_filter, 1, per_page))
+                                hx-target="#activity-content"
+                                hx-push-url=(activity_page_url(pill_filter, 1, per_page))
+                                title=(format!("Show only activity from {name}"))
+                                class="inline-flex rounded-full bg-slate-100 dark:bg-slate-700 px-2 py-0.5 text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-600"
+                            {
+                                (name)
+                            }
+                        } @else {
+                            span class="inline-flex rounded-full bg-slate-100 dark:bg-slate-700 px-2 py-0.5 text-xs font-medium text-slate-600 dark:text-slate-300" {
+                                (name)
+                            }
                         }
                     }
                     span class="text-xs text-slate-400 dark:text-slate-500" title=(event.created_at.to_rfc3339()) { (time_ago) }
@@ -3678,7 +4485,9 @@ fn activity_event_row(
 
 #[cfg(test)]
 mod activity_event_row_tests {
-    use super::{ActivityEventType, ActivitySeverity, HashMap, Ulid, activity_event_row};
+    use super::{
+        ActivityEventType, ActivityFilter, ActivitySeverity, HashMap, Ulid, activity_event_row,
+    };
     use hof_core::domain::activity::ActivityEvent;
 
     fn base_event(event_type: ActivityEventType, video_id: Option<Ulid>) -> ActivityEvent {
@@ -3692,6 +4501,11 @@ mod activity_event_row_tests {
             profile_id: None,
             created_at: chrono::Utc::now(),
         }
+    }
+
+    /// Default (unfiltered) view state for rendering a row under test.
+    fn filter() -> ActivityFilter<'static> {
+        ActivityFilter::default()
     }
 
     /// Download activity rows never carry a `source_id` (it's only set for
@@ -3711,7 +4525,8 @@ mod activity_event_row_tests {
         let mut video_source_names: HashMap<Ulid, String> = HashMap::new();
         video_source_names.insert(video_id, "Kobosil 300G".to_string());
 
-        let markup = activity_event_row(&event, &source_names, &video_source_names).into_string();
+        let markup = activity_event_row(&event, &source_names, &video_source_names, filter(), 50)
+            .into_string();
 
         assert!(
             markup.contains("Kobosil 300G"),
@@ -3730,7 +4545,8 @@ mod activity_event_row_tests {
         let source_names: HashMap<Ulid, String> = HashMap::new();
         let video_source_names: HashMap<Ulid, String> = HashMap::new();
 
-        let markup = activity_event_row(&event, &source_names, &video_source_names).into_string();
+        let markup = activity_event_row(&event, &source_names, &video_source_names, filter(), 50)
+            .into_string();
 
         assert!(
             !markup.contains("inline-flex rounded-full bg-slate-100 dark:bg-slate-700 px-2 py-0.5 text-xs font-medium text-slate-600 dark:text-slate-300"),
@@ -3754,7 +4570,8 @@ mod activity_event_row_tests {
         let source_names: HashMap<Ulid, String> = HashMap::new();
         let video_source_names: HashMap<Ulid, String> = HashMap::new();
 
-        let markup = activity_event_row(&event, &source_names, &video_source_names).into_string();
+        let markup = activity_event_row(&event, &source_names, &video_source_names, filter(), 50)
+            .into_string();
 
         assert!(
             markup.contains("break-words wrap-anywhere"),
@@ -3779,12 +4596,18 @@ async fn schedule_page(
     _auth: AuthUser,
     State(state): State<AppState>,
     session: Session,
+    axum::extract::Query(query): axum::extract::Query<SourcesQuery>,
 ) -> impl IntoResponse {
     let flash = take_flash(&session).await;
+    let search = query
+        .search
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
     let (sources_result, profiles_result, recent_activity_result, cleanup_status) = tokio::join!(
         db::list_sources(&state.pool),
         db::list_profiles(&state.pool),
-        db::list_activity_events(&state.pool, 20, 0, None, None, None),
+        db::list_activity_events(&state.pool, 20, 0, None, None, None, None),
         state.cleanup.ask(GetCleanupStatus)
     );
 
@@ -3821,9 +4644,11 @@ async fn schedule_page(
 
     let now = Utc::now();
 
-    // Build schedule entries
+    // Build schedule entries. The name lookup above is built from the full set
+    // so recent runs still resolve names for sources filtered out of the table.
     let mut entries: Vec<ScheduleEntry> = sources
         .into_iter()
+        .filter(|source| search.is_none_or(|needle| source_matches_search(source, needle)))
         .map(|source| {
             let profile_name = profiles
                 .iter()
@@ -3865,10 +4690,17 @@ async fn schedule_page(
             (cleanup_status_section(cleanup_status.ok().as_ref(), now))
 
             section class="mt-8 rounded-2xl border border-slate-200 dark:border-slate-700 bg-white/80 dark:bg-slate-800/80 p-6 shadow-sm" {
-                h2 class="text-lg font-semibold text-slate-900 dark:text-slate-100" { "Upcoming Indexing" }
+                div class="flex flex-wrap items-center justify-between gap-3" {
+                    h2 class="text-lg font-semibold text-slate-900 dark:text-slate-100" { "Upcoming Indexing" }
+                    (source_search_form("/schedule", "Search channel name...", search))
+                }
                 @if entries.is_empty() {
                     p class="mt-4 rounded-lg border border-dashed border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-800 px-4 py-8 text-center text-sm text-slate-500 dark:text-slate-400" {
-                        "No sources configured yet. Add sources to start scheduling."
+                        @if search.is_some() {
+                            "No sources match your search."
+                        } @else {
+                            "No sources configured yet. Add sources to start scheduling."
+                        }
                     }
                 } @else {
                     div class="mt-4 space-y-2" {
@@ -4380,6 +5212,64 @@ fn profile_editor(profile: &Profile) -> Markup {
     }
 }
 
+/// The action buttons under a source's edit form.
+///
+/// All of these submit the surrounding form, overriding its target with
+/// `formaction`, so field edits are not lost when triggering a side action.
+fn source_editor_actions(source: &Source) -> Markup {
+    let action = |verb: &str| format!("/sources/{}/{verb}", source.id);
+
+    html! {
+        div class="md:col-span-2 flex flex-wrap gap-2" {
+            button class="rounded-lg bg-slate-900 dark:bg-slate-100 px-4 py-2 text-sm font-medium text-white dark:text-slate-900 hover:bg-slate-700 dark:hover:bg-slate-200" type="submit" {
+                "Save Source"
+            }
+            @if source.enabled {
+                button class="rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/50 px-4 py-2 text-sm font-medium text-amber-700 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-900" type="submit" formaction=(action("toggle")) {
+                    "Disable"
+                }
+            } @else {
+                button class="rounded-lg border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-900/50 px-4 py-2 text-sm font-medium text-emerald-700 dark:text-emerald-300 hover:bg-emerald-100 dark:hover:bg-emerald-900" type="submit" formaction=(action("toggle")) {
+                    "Enable"
+                }
+            }
+            @if source.exclude_from_cleanup {
+                button
+                    class="rounded-lg border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-900/50 px-4 py-2 text-sm font-medium text-emerald-700 dark:text-emerald-300 hover:bg-emerald-100 dark:hover:bg-emerald-900"
+                    type="submit"
+                    title="Videos from this source are currently kept forever"
+                    formaction=(action("toggle-cleanup-exclusion"))
+                {
+                    "Include in Cleanup"
+                }
+            } @else {
+                button
+                    class="rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 px-4 py-2 text-sm font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-600"
+                    type="submit"
+                    title="Keep this source's videos forever, ignoring retention and quota"
+                    formaction=(action("toggle-cleanup-exclusion"))
+                {
+                    "Exclude from Cleanup"
+                }
+            }
+            button class="rounded-lg border border-sky-200 dark:border-sky-800 bg-sky-50 dark:bg-sky-900/50 px-4 py-2 text-sm font-medium text-sky-700 dark:text-sky-300 hover:bg-sky-100 dark:hover:bg-sky-900" type="submit" formaction=(action("index")) {
+                "Trigger Index"
+            }
+            button class="rounded-lg border border-violet-200 dark:border-violet-800 bg-violet-50 dark:bg-violet-900/50 px-4 py-2 text-sm font-medium text-violet-700 dark:text-violet-300 hover:bg-violet-100 dark:hover:bg-violet-900" type="submit" formaction=(action("metadata")) {
+                "Trigger Image Download"
+            }
+            button
+                class="rounded-lg border border-rose-200 dark:border-rose-800 bg-rose-50 dark:bg-rose-900/50 px-4 py-2 text-sm font-medium text-rose-700 dark:text-rose-300 hover:bg-rose-100 dark:hover:bg-rose-900"
+                type="submit"
+                formaction=(action("delete"))
+                onclick="return confirm('Delete this source? This cannot be undone.')"
+            {
+                "Delete"
+            }
+        }
+    }
+}
+
 fn source_editor(source: &Source) -> Markup {
     // Determine border color based on enabled and error state
     let border_class = if !source.enabled {
@@ -4408,6 +5298,9 @@ fn source_editor(source: &Source) -> Markup {
                         }
                         @if !source.enabled {
                             (status_chip("Disabled", "amber"))
+                        }
+                        @if source.exclude_from_cleanup {
+                            (status_chip("Cleanup exempt", "emerald"))
                         }
                         @if source.last_error.is_some() {
                             (status_chip(&format!("Error ({})", source.index_error_count), "rose"))
@@ -4441,43 +5334,22 @@ fn source_editor(source: &Source) -> Markup {
                 (input_index_frequency("Index Frequency", "index_frequency_secs", source.index_frequency_secs))
                 (input_cutoff_date("Cutoff Date", "cutoff_date", &source.cutoff_date.to_string()))
                 (input_number("Retention Days", "retention_days", "Optional", false, &source.retention_days.map_or_else(String::new, |days| days.to_string())))
-                div class="md:col-span-2 flex flex-wrap gap-2" {
-                    button class="rounded-lg bg-slate-900 dark:bg-slate-100 px-4 py-2 text-sm font-medium text-white dark:text-slate-900 hover:bg-slate-700 dark:hover:bg-slate-200" type="submit" {
-                        "Save Source"
-                    }
-                    @if source.enabled {
-                        button class="rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/50 px-4 py-2 text-sm font-medium text-amber-700 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-900" type="submit" formaction={(format!("/sources/{}/toggle", source.id))} {
-                            "Disable"
-                        }
-                    } @else {
-                        button class="rounded-lg border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-900/50 px-4 py-2 text-sm font-medium text-emerald-700 dark:text-emerald-300 hover:bg-emerald-100 dark:hover:bg-emerald-900" type="submit" formaction={(format!("/sources/{}/toggle", source.id))} {
-                            "Enable"
-                        }
-                    }
-                    button class="rounded-lg border border-sky-200 dark:border-sky-800 bg-sky-50 dark:bg-sky-900/50 px-4 py-2 text-sm font-medium text-sky-700 dark:text-sky-300 hover:bg-sky-100 dark:hover:bg-sky-900" type="submit" formaction={(format!("/sources/{}/index", source.id))} {
-                        "Trigger Index"
-                    }
-                    button class="rounded-lg border border-violet-200 dark:border-violet-800 bg-violet-50 dark:bg-violet-900/50 px-4 py-2 text-sm font-medium text-violet-700 dark:text-violet-300 hover:bg-violet-100 dark:hover:bg-violet-900" type="submit" formaction={(format!("/sources/{}/metadata", source.id))} {
-                        "Trigger Image Download"
-                    }
-                    button
-                        class="rounded-lg border border-rose-200 dark:border-rose-800 bg-rose-50 dark:bg-rose-900/50 px-4 py-2 text-sm font-medium text-rose-700 dark:text-rose-300 hover:bg-rose-100 dark:hover:bg-rose-900"
-                        type="submit"
-                        formaction={(format!("/sources/{}/delete", source.id))}
-                        onclick="return confirm('Delete this source? This cannot be undone.')"
-                    {
-                        "Delete"
-                    }
-                }
+                (source_editor_actions(source))
             }
         }
     }
 }
 
-fn sources_list_markup(sources: &[Source]) -> Markup {
+fn sources_list_markup(sources: &[Source], search: Option<&str>) -> Markup {
     html! {
         @if sources.is_empty() {
-            p class="mt-3 text-sm text-slate-500 dark:text-slate-400" { "No sources yet." }
+            p class="mt-3 text-sm text-slate-500 dark:text-slate-400" {
+                @if search.is_some() {
+                    "No sources match your search."
+                } @else {
+                    "No sources yet."
+                }
+            }
         } @else {
             div class="mt-4 space-y-4" {
                 @for source in sources {
@@ -4773,6 +5645,7 @@ fn status_chip(label: &str, tone: &str) -> Markup {
         "sky" => "bg-sky-100 dark:bg-sky-900/50 text-sky-900 dark:text-sky-100",
         "slate" => "bg-slate-200 dark:bg-slate-700 text-slate-900 dark:text-slate-100",
         "rose" => "bg-rose-100 dark:bg-rose-900/50 text-rose-900 dark:text-rose-100",
+        "emerald" => "bg-emerald-100 dark:bg-emerald-900/50 text-emerald-900 dark:text-emerald-100",
         _ => "bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-300",
     };
 
@@ -4983,6 +5856,21 @@ fn error_page(message: &str) -> Markup {
     )
 }
 
+/// Error markup for htmx partial endpoints.
+///
+/// Partials are swapped into an existing element with `innerHTML`, so they must
+/// never return a full document. Returning [`error_page`] here nests a
+/// `<!DOCTYPE><html><head>` inside a `<div>`, which browsers reparent — dropping
+/// the stylesheet link and leaving the page unstyled.
+fn error_fragment(message: &str) -> Markup {
+    html! {
+        section class="rounded-2xl border border-rose-200 dark:border-rose-800 bg-rose-50 dark:bg-rose-900/30 p-6 shadow-sm" {
+            h2 class="text-lg font-semibold text-rose-900 dark:text-rose-100" { "Something went wrong" }
+            p class="mt-2 text-sm text-rose-800 dark:text-rose-200 break-words wrap-anywhere" { (message) }
+        }
+    }
+}
+
 /// Handler for 404 Not Found responses.
 async fn not_found() -> impl IntoResponse {
     (StatusCode::NOT_FOUND, not_found_page())
@@ -5126,16 +6014,119 @@ fn layout_with_flash(
                       }
                     })();
 
-                    // Loading state on form submit
+                    // Loading state on form submit. Skips a submit already
+                    // cancelled (e.g. a declined confirm), which would otherwise
+                    // leave the button stuck disabled on a form that never went.
                     document.addEventListener('submit', function(e) {
                       var form = e.target;
                       if (form.tagName !== 'FORM') return;
+                      if (e.defaultPrevented) return;
                       var btn = e.submitter;
                       if (!btn || btn.disabled) return;
                       btn.disabled = true;
                       btn.dataset.originalText = btn.textContent;
                       btn.textContent = 'Working\u2026';
                     });
+
+                    // A changed search term invalidates the current page offset,
+                    // so snap the companion page field back to 1. Delegated so it
+                    // survives htmx swaps replacing the filter bar.
+                    document.addEventListener('input', function(e) {
+                      var el = e.target;
+                      if (!el || !el.dataset || !el.dataset.resetPage) return;
+                      var field = document.getElementById(el.dataset.resetPage);
+                      if (field) field.value = '1';
+                    });
+
+                    // ---- Bulk selection on the downloads table ----
+                    // All handlers are delegated from document: the table is
+                    // replaced wholesale by htmx and SSE, so anything bound to
+                    // the elements themselves would be lost on the next swap.
+                    // Selection deliberately resets on swap, since the rows (and
+                    // their statuses) may no longer be the ones that were picked.
+                    var BULK_ELIGIBLE = {
+                      retry: ['failed', 'permanently_failed', 'cleaned'],
+                      cancel: ['pending', 'downloading'],
+                      delete: ['completed']
+                    };
+
+                    function bulkBoxes() {
+                      return Array.prototype.slice.call(
+                        document.querySelectorAll('[data-bulk-select]'));
+                    }
+
+                    function bulkRefresh() {
+                      var form = document.querySelector('[data-bulk-form]');
+                      if (!form) return;
+                      var selected = bulkBoxes().filter(function(b) { return b.checked; });
+                      var ids = selected.map(function(b) { return b.dataset.bulkSelect; });
+                      var statuses = selected.map(function(b) { return b.dataset.status; });
+
+                      form.hidden = ids.length === 0;
+                      var idField = form.querySelector('[data-bulk-ids]');
+                      if (idField) idField.value = ids.join(',');
+                      var count = form.querySelector('[data-bulk-count]');
+                      if (count) count.textContent = String(ids.length);
+
+                      Object.keys(BULK_ELIGIBLE).forEach(function(action) {
+                        var btn = form.querySelector('[data-bulk-button=' + action + ']');
+                        if (!btn) return;
+                        var ok = statuses.some(function(s) {
+                          return BULK_ELIGIBLE[action].indexOf(s) !== -1;
+                        });
+                        btn.disabled = !ok;
+                        btn.title = ok ? '' : 'No selected download is eligible';
+                      });
+
+                      var all = document.querySelector('[data-bulk-select-all]');
+                      if (all) {
+                        var boxes = bulkBoxes();
+                        all.checked = boxes.length > 0 && selected.length === boxes.length;
+                        all.indeterminate = selected.length > 0 && selected.length < boxes.length;
+                      }
+                    }
+
+                    document.addEventListener('change', function(e) {
+                      var el = e.target;
+                      if (!el || !el.dataset) return;
+                      if (el.dataset.bulkSelectAll !== undefined) {
+                        bulkBoxes().forEach(function(b) { b.checked = el.checked; });
+                        bulkRefresh();
+                      } else if (el.dataset.bulkSelect !== undefined) {
+                        bulkRefresh();
+                      }
+                    });
+
+                    document.addEventListener('click', function(e) {
+                      var el = e.target.closest ? e.target.closest('[data-bulk-clear]') : null;
+                      if (!el) return;
+                      e.preventDefault();
+                      bulkBoxes().forEach(function(b) { b.checked = false; });
+                      var all = document.querySelector('[data-bulk-select-all]');
+                      if (all) { all.checked = false; all.indeterminate = false; }
+                      bulkRefresh();
+                    });
+
+                    // Record which button submitted, and confirm destructive ones.
+                    // `submitter.value` is not sent for us because the action is
+                    // carried in a hidden field the server reads.
+                    // Capture phase so this runs before the loading-state handler
+                    // above and can cancel the submit cleanly.
+                    document.addEventListener('submit', function(e) {
+                      var form = e.target;
+                      if (!form.dataset || form.dataset.bulkForm === undefined) return;
+                      var btn = e.submitter;
+                      if (!btn) return;
+                      if (btn.dataset.confirm && !confirm(btn.dataset.confirm)) {
+                        e.preventDefault();
+                        return;
+                      }
+                      var field = form.querySelector('[data-bulk-action]');
+                      if (field) field.value = btn.value;
+                    }, true);
+
+                    document.body.addEventListener('htmx:afterSwap', bulkRefresh);
+                    bulkRefresh();
                     </script>"))
             }
         }
@@ -5151,5 +6142,392 @@ fn nav_link(href: &str, label: &str, selected: bool) -> Markup {
 
     html! {
         a class=(classes) href=(href) { (label) }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ------------------------------------------------------------------
+    // Query-value encoding
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn encode_query_value_escapes_ampersand_and_space() {
+        assert_eq!(encode_query_value("rust & go"), "rust%20%26%20go");
+    }
+
+    #[test]
+    fn encode_query_value_escapes_fragment_and_equals() {
+        assert_eq!(encode_query_value("a#b=c"), "a%23b%3Dc");
+    }
+
+    #[test]
+    fn encode_query_value_leaves_unreserved_characters_alone() {
+        assert_eq!(encode_query_value("a-b_c.d~e9"), "a-b_c.d~e9");
+    }
+
+    // ------------------------------------------------------------------
+    // Downloads URL construction
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn downloads_url_omits_defaults() {
+        assert_eq!(downloads_page_url(None, None, 1, 25), "/downloads");
+    }
+
+    #[test]
+    fn downloads_url_includes_non_default_params() {
+        assert_eq!(
+            downloads_page_url(Some("failed"), Some("cats"), 3, 50),
+            "/downloads?status=failed&search=cats&page=3&per_page=50"
+        );
+    }
+
+    #[test]
+    fn downloads_url_treats_all_status_as_unfiltered() {
+        assert_eq!(downloads_page_url(Some("all"), None, 1, 25), "/downloads");
+    }
+
+    #[test]
+    fn downloads_url_percent_encodes_search() {
+        assert_eq!(
+            downloads_page_url(None, Some("a&b"), 1, 25),
+            "/downloads?search=a%26b"
+        );
+    }
+
+    /// A search term containing `&` must not smuggle in an extra parameter.
+    #[test]
+    fn downloads_url_search_cannot_inject_parameters() {
+        let url = downloads_page_url(None, Some("x&status=completed"), 1, 25);
+        assert_eq!(url, "/downloads?search=x%26status%3Dcompleted");
+        assert!(!url.contains("&status=completed"));
+    }
+
+    // ------------------------------------------------------------------
+    // Regression: the pushed URL must be the navigable page, never the
+    // partial endpoint. Pushing `/web/downloads/list` meant a reload served
+    // a bare fragment with no <head>, leaving the page unstyled.
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn page_urls_and_partial_urls_are_distinct() {
+        let page = downloads_page_url(Some("failed"), None, 2, 25);
+        let list = downloads_list_url(Some("failed"), None, 2, 25);
+        let events = downloads_events_url(Some("failed"), None, 2, 25);
+
+        assert!(page.starts_with("/downloads"));
+        assert!(list.starts_with("/web/downloads/list"));
+        assert!(events.starts_with("/web/downloads/events"));
+        assert_ne!(page, list);
+    }
+
+    #[test]
+    fn pushed_download_urls_are_never_partial_endpoints() {
+        for page in [1, 2, 7] {
+            for status in [None, Some("failed"), Some("all")] {
+                let pushed = downloads_page_url(status, Some("q"), page, 25);
+                assert!(
+                    !pushed.starts_with("/web/"),
+                    "pushed URL must be navigable, got {pushed}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn pushed_activity_urls_are_never_partial_endpoints() {
+        for page in [1, 4] {
+            for severity in [None, Some("error"), Some("all")] {
+                let filter = ActivityFilter {
+                    severity,
+                    search: Some("q"),
+                    source: Some("01ARZ3NDEKTSV4RRFFQ69G5FAV"),
+                };
+                let pushed = activity_page_url(filter, page, 50);
+                assert!(
+                    !pushed.starts_with("/web/"),
+                    "pushed URL must be navigable, got {pushed}"
+                );
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Activity URL construction
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn activity_url_omits_defaults() {
+        assert_eq!(
+            activity_page_url(ActivityFilter::default(), 1, 50),
+            "/activity"
+        );
+    }
+
+    #[test]
+    fn activity_url_includes_non_default_params() {
+        let filter = ActivityFilter {
+            severity: Some("error"),
+            ..ActivityFilter::default()
+        };
+        assert_eq!(
+            activity_page_url(filter, 2, 100),
+            "/activity?severity=error&page=2&per_page=100"
+        );
+    }
+
+    #[test]
+    fn activity_url_carries_search_and_source() {
+        let filter = ActivityFilter {
+            severity: Some("error"),
+            search: Some("disk full"),
+            source: Some("01ARZ3NDEKTSV4RRFFQ69G5FAV"),
+        };
+        assert_eq!(
+            activity_page_url(filter, 1, 50),
+            "/activity?severity=error&search=disk%20full&source=01ARZ3NDEKTSV4RRFFQ69G5FAV"
+        );
+    }
+
+    #[test]
+    fn activity_url_treats_all_severity_as_unfiltered() {
+        let filter = ActivityFilter {
+            severity: Some("all"),
+            ..ActivityFilter::default()
+        };
+        assert_eq!(activity_page_url(filter, 1, 50), "/activity");
+    }
+
+    #[test]
+    fn activity_url_search_cannot_inject_parameters() {
+        let filter = ActivityFilter {
+            search: Some("x&severity=error"),
+            ..ActivityFilter::default()
+        };
+        let url = activity_page_url(filter, 1, 50);
+        assert_eq!(url, "/activity?search=x%26severity%3Derror");
+        assert!(!url.contains("&severity=error"));
+    }
+
+    // ------------------------------------------------------------------
+    // Post-action redirect target preserves list state
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn downloads_return_url_preserves_page_and_filters() {
+        let query = DownloadsQuery {
+            status: Some("failed".to_owned()),
+            search: Some("cats".to_owned()),
+            page: Some(4),
+            per_page: Some(50),
+        };
+        assert_eq!(
+            downloads_return_url(&query),
+            "/downloads?status=failed&search=cats&page=4&per_page=50"
+        );
+    }
+
+    #[test]
+    fn downloads_return_url_defaults_to_bare_path() {
+        let query = DownloadsQuery {
+            status: None,
+            search: None,
+            page: None,
+            per_page: None,
+        };
+        assert_eq!(downloads_return_url(&query), "/downloads");
+    }
+
+    #[test]
+    fn downloads_return_url_ignores_blank_search() {
+        let query = DownloadsQuery {
+            status: None,
+            search: Some("   ".to_owned()),
+            page: Some(2),
+            per_page: None,
+        };
+        assert_eq!(downloads_return_url(&query), "/downloads?page=2");
+    }
+
+    // ------------------------------------------------------------------
+    // Bulk action eligibility
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn bulk_action_parses_known_verbs() {
+        assert_eq!(BulkAction::parse("retry"), Some(BulkAction::Retry));
+        assert_eq!(BulkAction::parse("cancel"), Some(BulkAction::Cancel));
+        assert_eq!(BulkAction::parse("delete"), Some(BulkAction::Delete));
+    }
+
+    #[test]
+    fn bulk_action_rejects_unknown_verbs() {
+        assert_eq!(BulkAction::parse("purge"), None);
+        assert_eq!(BulkAction::parse(""), None);
+        assert_eq!(BulkAction::parse("RETRY"), None);
+    }
+
+    /// These must stay in step with the guards in the single-item handlers,
+    /// or a bulk action would accept work the individual button refuses.
+    #[test]
+    fn bulk_retry_matches_single_retry_eligibility() {
+        for status in [
+            VideoStatus::Failed,
+            VideoStatus::PermanentlyFailed,
+            VideoStatus::Cleaned,
+        ] {
+            assert!(BulkAction::Retry.allows(&status));
+        }
+        for status in [
+            VideoStatus::Pending,
+            VideoStatus::Downloading,
+            VideoStatus::Completed,
+            VideoStatus::Skipped,
+        ] {
+            assert!(!BulkAction::Retry.allows(&status));
+        }
+    }
+
+    #[test]
+    fn bulk_cancel_matches_single_cancel_eligibility() {
+        for status in [VideoStatus::Pending, VideoStatus::Downloading] {
+            assert!(BulkAction::Cancel.allows(&status));
+        }
+        for status in [
+            VideoStatus::Completed,
+            VideoStatus::Failed,
+            VideoStatus::Cleaned,
+            VideoStatus::PermanentlyFailed,
+            VideoStatus::Skipped,
+        ] {
+            assert!(!BulkAction::Cancel.allows(&status));
+        }
+    }
+
+    #[test]
+    fn bulk_delete_only_accepts_completed() {
+        assert!(BulkAction::Delete.allows(&VideoStatus::Completed));
+        for status in [
+            VideoStatus::Pending,
+            VideoStatus::Downloading,
+            VideoStatus::Failed,
+            VideoStatus::Cleaned,
+            VideoStatus::PermanentlyFailed,
+            VideoStatus::Skipped,
+        ] {
+            assert!(!BulkAction::Delete.allows(&status));
+        }
+    }
+
+    /// The slug is rendered into `data-status` and parsed back by the status
+    /// filter links, so the two directions must agree exactly.
+    #[test]
+    fn download_status_slug_round_trips_through_parse() {
+        for status in [
+            VideoStatus::Pending,
+            VideoStatus::Downloading,
+            VideoStatus::Completed,
+            VideoStatus::Failed,
+            VideoStatus::Skipped,
+            VideoStatus::Cleaned,
+            VideoStatus::PermanentlyFailed,
+        ] {
+            let slug = download_status_slug(&status);
+            assert_eq!(
+                parse_download_status(Some(slug)),
+                Some(status.clone()),
+                "slug {slug} did not round-trip"
+            );
+        }
+    }
+
+    #[test]
+    fn bulk_action_url_carries_list_state() {
+        let url = downloads_url("/downloads/bulk", Some("failed"), Some("cats"), 3, 50);
+        assert_eq!(
+            url,
+            "/downloads/bulk?status=failed&search=cats&page=3&per_page=50"
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // Source search predicate (sources + schedule pages)
+    // ------------------------------------------------------------------
+
+    fn test_source(custom_name: Option<&str>, channel_title: Option<&str>, url: &str) -> Source {
+        Source {
+            id: Ulid::from_string("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("valid ulid literal"),
+            profile_id: Ulid::from_string("01BX5ZZKBKACTAV9WEVGEMMVRZ")
+                .expect("valid ulid literal"),
+            url: url.to_owned(),
+            source_type: hof_core::domain::source::SourceType::Channel,
+            custom_name: custom_name.map(ToOwned::to_owned),
+            enabled: true,
+            exclude_from_cleanup: false,
+            index_frequency_secs: 43200,
+            cutoff_date: chrono::NaiveDate::from_ymd_opt(2026, 1, 1).expect("valid date literal"),
+            retention_days: None,
+            entry_order: hof_core::domain::source::EntryOrder::Unknown,
+            entry_order_detected_at: None,
+            last_indexed_at: None,
+            last_error: None,
+            index_error_count: 0,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            channel_id: None,
+            channel_title: channel_title.map(ToOwned::to_owned),
+            channel_description: None,
+            channel_thumbnail_url: None,
+            jellyfin_metadata_at: None,
+        }
+    }
+
+    #[test]
+    fn source_search_matches_custom_name_case_insensitively() {
+        let source = test_source(Some("My Cooking Channel"), None, "https://example.com/x");
+        assert!(source_matches_search(&source, "cooking"));
+        assert!(source_matches_search(&source, "COOKING"));
+    }
+
+    #[test]
+    fn source_search_matches_channel_title() {
+        let source = test_source(None, Some("Veritasium"), "https://example.com/x");
+        assert!(source_matches_search(&source, "veritas"));
+    }
+
+    #[test]
+    fn source_search_matches_url() {
+        let source = test_source(None, None, "https://youtube.com/@somechannel");
+        assert!(source_matches_search(&source, "somechannel"));
+    }
+
+    /// A custom name must not mask a channel-title match, and vice versa —
+    /// which field is populated varies by source type and indexing state.
+    #[test]
+    fn source_search_checks_every_name_field() {
+        let source = test_source(Some("Label"), Some("Channel"), "https://example.com/slug");
+        assert!(source_matches_search(&source, "Label"));
+        assert!(source_matches_search(&source, "Channel"));
+        assert!(source_matches_search(&source, "slug"));
+    }
+
+    #[test]
+    fn source_search_rejects_non_matches() {
+        let source = test_source(Some("Cooking"), Some("Food"), "https://example.com/x");
+        assert!(!source_matches_search(&source, "astronomy"));
+    }
+
+    #[test]
+    fn downloads_return_url_clamps_non_positive_page() {
+        let query = DownloadsQuery {
+            status: None,
+            search: None,
+            page: Some(0),
+            per_page: None,
+        };
+        assert_eq!(downloads_return_url(&query), "/downloads");
     }
 }

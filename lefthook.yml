@@ -64,7 +64,10 @@ pre-push:
       glob: "patches/**/*.rs"
       root: "patches/yt-dlp-patched/"
       run: cargo check --all-targets --all-features
+    # Scoped to the files in the push. Bare `sqruff lint` re-lints all 35 SQL
+    # files, including migrations applied long ago -- reformatting those would
+    # change their sqlx checksum and break `migrate run` against every existing
+    # database, so linting them on every push can only ever block it.
     - name: sqruff
       glob: "**/*.sql"
-      run: sqruff lint
-      stage_fixed: true
+      run: sqruff lint {push_files}
