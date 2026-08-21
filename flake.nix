@@ -28,7 +28,23 @@
       pkgs = import nixpkgsSource {
         inherit system;
         config.allowUnfree = true;
-        overlays = [rust-overlay.overlays.default];
+        overlays = [
+          rust-overlay.overlays.default
+          # nixos-unstable lags upstream yt-dlp releases (which ship almost
+          # daily to patch broken site extractors); pin to the latest
+          # released version until nixpkgs catches up.
+          (final: prev: {
+            yt-dlp = prev.yt-dlp.overrideAttrs (_: {
+              version = "2026.08.19";
+              src = final.fetchFromGitHub {
+                owner = "yt-dlp";
+                repo = "yt-dlp";
+                tag = "2026.08.19";
+                hash = "sha256-BM5ZeGTmHq+1xH6G/zsuCtjLgYgfRA11ya0zIHK5p4g=";
+              };
+            });
+          })
+        ];
       };
 
       ociImageVersion = builtins.getEnv "OCI_IMAGE_VERSION";
