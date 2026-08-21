@@ -161,7 +161,8 @@ seed-cache: clear
 attic-push attr: clear
     nix build --no-link --print-out-paths {{ attr }} | xargs attic push {{ attic_cache }}
 
-trivy: clear build-oci
+trivy: clear
+    nix build .#container
     trivy image --input result --scanners vuln
 
 # No version/tag safety checks — use ./push_harbor.sh for versioned releases.
