@@ -15,7 +15,7 @@ default:
     @just --list
 
 clear:
-    clear
+    clear || true
 
 # Podman commands
 # Short-circuits when postgres is already reporting healthy so dependent
