@@ -13,12 +13,28 @@ default:
     @just --list
 
 clear:
-    clear
+    clear || true
 
 # Podman commands
+# Short-circuits when the database is already accepting connections, so recipes
+# that depend on this one (mig-run, test, dev, ...) don't pay for compose.
 up: clear
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if pg_isready -d "${DATABASE_URL:?DATABASE_URL not set}" -t 2 -q; then
+        echo "database already available, skipping podman-compose"
+        exit 0
+    fi
     podman-compose -f containers/compose.dev.yml up -d --build --remove-orphans
-    sleep 1
+    # Wait until postgres actually answers (compose returns before readiness)
+    for _ in $(seq 1 30); do
+        if pg_isready -d "$DATABASE_URL" -t 1 -q; then
+            exit 0
+        fi
+        sleep 1
+    done
+    echo "database did not become ready within 30s" >&2
+    exit 1
 
 down: clear
     podman-compose -f containers/compose.dev.yml down
