@@ -18,9 +18,19 @@ clear:
     clear
 
 # Podman commands
+# Short-circuits when postgres is already reporting healthy so dependent
+
+# recipes (`mig-run`, `test`, `dev`, ...) don't rebuild/restart the stack.
 up: clear
-    podman-compose -f containers/compose.dev.yml up -d --build --remove-orphans
-    sleep 1
+    #!/usr/bin/env bash
+    set -euo pipefail
+    health="$(podman inspect --format '{{{{.State.Health.Status}}' postgres 2>/dev/null || true)"
+    if [[ "$health" == "healthy" ]]; then
+        echo "postgres already healthy - skipping compose up"
+    else
+        podman-compose -f containers/compose.dev.yml up -d --build --remove-orphans
+        sleep 1
+    fi
 
 down: clear
     podman-compose -f containers/compose.dev.yml down
