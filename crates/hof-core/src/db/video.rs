@@ -529,6 +529,8 @@ pub async fn list_videos_past_retention(
     // Complex query: video is past retention when ALL sources referencing it
     // have an effective retention that has expired.
     // Effective retention: source.retention_days ?? profile.retention_days ?? global
+    // A NULL effective retention means "keep forever" for that source, so it
+    // is never treated as expired regardless of downloaded_at.
     //
     // The second NOT EXISTS is a hard veto, deliberately separate from the
     // retention window: a video linked to *any* source marked
@@ -548,7 +550,10 @@ pub async fn list_videos_past_retention(
             INNER JOIN sources s ON s.id = sv.source_id
             INNER JOIN profiles p ON p.id = s.profile_id
             WHERE sv.video_id = v.id
-              AND v.downloaded_at + make_interval(days => COALESCE(s.retention_days, p.retention_days, $1)) > NOW()
+              AND (
+                COALESCE(s.retention_days, p.retention_days, $1) IS NULL
+                OR v.downloaded_at + make_interval(days => COALESCE(s.retention_days, p.retention_days, $1)) > NOW()
+              )
           )
           AND NOT EXISTS (
             SELECT 1 FROM source_videos sv
