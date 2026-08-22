@@ -254,13 +254,13 @@ mod cleanup_tests {
     use std::path::Path;
     use std::time::Duration;
 
-    /// Default cleanup interval (15 minutes)
-    const DEFAULT_CLEANUP_INTERVAL_SECS: u64 = 60 * 15;
+    /// Default cleanup interval (3 hours)
+    const DEFAULT_CLEANUP_INTERVAL_SECS: u64 = 60 * 60 * 3;
 
     #[test]
     fn test_cleanup_interval_duration() {
         let interval = Duration::from_secs(DEFAULT_CLEANUP_INTERVAL_SECS);
-        assert_eq!(interval.as_secs(), 900); // 15 minutes
+        assert_eq!(interval.as_secs(), 10_800); // 3 hours
     }
 
     #[test]
