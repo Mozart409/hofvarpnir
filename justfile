@@ -4,9 +4,11 @@ set unstable
 set dotenv-load
 
 # Cachix binary cache name
+
 cachix_cache := "hofvarpnir"
 
 # Attic binary cache name
+
 attic_cache := "homelab"
 
 default:
@@ -16,9 +18,20 @@ clear:
     clear
 
 # Podman commands
+# Short-circuits when postgres is already reporting healthy so dependent
+
+# recipes (`mig-run`, `test`, `dev`, ...) don't rebuild/restart the stack.
 up: clear
-    podman-compose -f containers/compose.dev.yml up -d --build --remove-orphans
-    sleep 1
+    #!/usr/bin/env bash
+    set -euo pipefail
+    state="$(podman inspect --format '{{{{.State.Status}}' postgres 2>/dev/null || true)"
+    health="$(podman inspect --format '{{{{.State.Health.Status}}' postgres 2>/dev/null || true)"
+    if [[ "$state" == "running" && "$health" == "healthy" ]]; then
+        echo "postgres already healthy - skipping compose up"
+    else
+        podman-compose -f containers/compose.dev.yml up -d --build --remove-orphans
+        sleep 1
+    fi
 
 down: clear
     podman-compose -f containers/compose.dev.yml down
@@ -59,6 +72,7 @@ db-setup: clear up
 
 # SQLx offline mode - run after schema changes
 # Uses --workspace, so a single merged .sqlx/ is written to the repo root
+
 # (covers query! macros in every crate, not just hof-core).
 [working-directory('crates/hof-core')]
 prepare: clear mig-run
@@ -104,6 +118,7 @@ e2e: clear mig-run
 
 # Same as `e2e`, but against an already-running, already-migrated database.
 # Skips `up`, so it still works when an unrelated container in the compose
+
 # stack (e.g. grafana) is failing to start.
 e2e-only: clear
     cargo test --package hof-api --test e2e --all-features -- --test-threads=4
@@ -128,6 +143,7 @@ build-oci: clear
 # `cachix push` uploads the out-path's full closure, so this works even when
 # the build is already realized locally (unlike `watch-exec`, which only
 # catches paths built during the wrapped command).
+
 # Build the x86 container and push it to Cachix.
 cachix: clear
     nix build --no-link --print-out-paths .#container | cachix push {{ cachix_cache }}
@@ -139,6 +155,7 @@ cachix-push attr: clear
 # aarch64 is realized locally via binfmt/qemu, so this needs
 # `extra-platforms = aarch64-linux` in your Nix config (set by NixOS
 # `boot.binfmt.emulatedSystems`; verify: nix config show extra-platforms).
+
 # Warm Cachix for both arches (the CI devshells cache-check-{x86,arm} verify).
 cache-warm: clear
     nix build --no-link --print-out-paths \
@@ -148,6 +165,7 @@ cache-warm: clear
 
 # Seed the Attic cache: builds the dev shells, the package, and the container,
 # then pushes each closure with `attic push`. x86_64 only (aarch64 goes to
+
 # Cachix via cache-warm). Builds a lot the first time.
 seed-cache: clear
     nix build --no-link --print-out-paths \
@@ -161,11 +179,21 @@ seed-cache: clear
 attic-push attr: clear
     nix build --no-link --print-out-paths {{ attr }} | xargs attic push {{ attic_cache }}
 
+# Github (origin) is the primary remote; mirror it to the Forgejo remote.
+sync-remotes: clear
+    git fetch origin --prune
+    git push origin --all
+    git push origin --tags
+    git push forgejo --all
+    git push forgejo --tags
+    git fetch forgejo --prune
+
 trivy: clear build-oci
     trivy image --input result --scanners vuln
 
 # No version/tag safety checks — use ./push_harbor.sh for versioned releases.
 # Compile the release binary, wrap it in the x86 OCI image via
+
 # `.#containerFromBinary`, and push to Harbor as :dev (fast dev push).
 push-oci: clear
     #!/usr/bin/env bash
