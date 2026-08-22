@@ -1,0 +1,25 @@
+vulnerabilities:
+  # All four findings below live inside the `deno` binary bundled by yt-dlp's
+  # yt_dlp_ejs extractor (used to run sandboxed JS for site challenge-solving).
+  # Deno is invoked locally by yt-dlp, not exposed as a network-facing DNS
+  # resolver or QUIC endpoint in this container, so the affected code paths
+  # (hickory-proto DNS validation, quinn-proto QUIC transport, rand logger
+  # unsoundness) are not reachable in our usage.
+  #
+  # nixpkgs (nixos-unstable, matching flake.lock) ships deno 2.9.4. Upstream's
+  # latest release (2.9.5, checked 2026-08-22) only partially fixes this set
+  # (quinn-proto -> 0.11.16) and nixpkgs hasn't picked it up yet. Re-check
+  # after the next `chore(flake): update inputs` and drop entries that are
+  # actually fixed.
+  - id: GHSA-3v94-mw7p-v465 # hickory-proto: NSEC3 unbounded loop, no fix available upstream yet
+    statement: "Deno DNS resolver, not exposed as a network service in this container; used only for local sandboxed JS execution by yt-dlp"
+    expired_at: 2026-11-20
+  - id: GHSA-q2qq-hmj6-3wpp # hickory-proto: O(n^2) CPU exhaustion encoding, fixed 0.26.1
+    statement: "Same unreachable code path as GHSA-3v94-mw7p-v465; fix not yet in nixpkgs's deno"
+    expired_at: 2026-11-20
+  - id: GHSA-4w2j-m93h-cj5j # quinn-proto: remote memory exhaustion, fixed 0.11.15 (deno 2.9.5, not yet in nixpkgs)
+    statement: "Deno's QUIC client is not used as a network-facing server in this container"
+    expired_at: 2026-11-20
+  - id: GHSA-cq8v-f236-94qc # rand: unsound with custom logger using rand::rng(), fixed 0.8.6/0.9.3/0.10.1
+    statement: "Requires a custom logger hooking rand::rng(), not applicable to Deno's bundled usage here"
+    expired_at: 2026-11-20
