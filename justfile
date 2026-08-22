@@ -189,7 +189,7 @@ sync-remotes: clear
 
 trivy: clear build-oci
     nix build .#container
-    trivy image --input result --scanners vuln
+    trivy image --input result --scanners vuln --ignorefile .trivyignore.yaml
 
 # No version/tag safety checks — use ./push_harbor.sh for versioned releases.
 # Compile the release binary, wrap it in the x86 OCI image via
