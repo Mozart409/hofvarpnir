@@ -2,6 +2,19 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.6.1 - 2026-08-22
+#### Bug Fixes
+- (**cleanup**) treat unset retention as keep-forever, not expired - (3f1eedd) - macbook-pro
+- (**tools**) check also if container is running - (2d4cd74) - macbook-pro
+#### Miscellaneous Chores
+- (**cleanup**) default cleanup interval to 3h instead of 15m - (21b805a) - macbook-pro
+- (**deps**) upgrade deps - (69caeb0) - macbook-pro
+- (**just**) skip compose up if postgres already healthy - (cc2f5fc) - macbook-pro
+- (**tools**) add darwin toolchain - (ddc6573) - macbook-pro
+- (**tools**) add sync-remotes script - (7d1428f) - macbook-pro
+
+- - -
+
 ## v0.6.0 - 2026-08-07
 #### Features
 - (**activity**) add message search and source filter pill - (0ed7501) - developmentbot
