@@ -1,7 +1,7 @@
 # https://just.systems
 
-set unstable := true
-set dotenv-load := true
+set unstable
+set dotenv-load
 
 # Cachix binary cache name
 
@@ -24,8 +24,9 @@ clear:
 up: clear
     #!/usr/bin/env bash
     set -euo pipefail
+    state="$(podman inspect --format '{{{{.State.Status}}' postgres 2>/dev/null || true)"
     health="$(podman inspect --format '{{{{.State.Health.Status}}' postgres 2>/dev/null || true)"
-    if [[ "$health" == "healthy" ]]; then
+    if [[ "$state" == "running" && "$health" == "healthy" ]]; then
         echo "postgres already healthy - skipping compose up"
     else
         podman-compose -f containers/compose.dev.yml up -d --build --remove-orphans
