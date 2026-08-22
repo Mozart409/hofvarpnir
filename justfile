@@ -115,7 +115,7 @@ css-build:
 
 # Run all tests (--test-threads=4 avoids a #[sqlx::test] parallelism race on many-core machines)
 test: clear up
-    cargo test --all-features -- --include-ignored --test-threads=4
+    cargo test --all-features -- --include-ignored --test-threads=8
 
 # E2E API tests
 e2e: clear mig-run
