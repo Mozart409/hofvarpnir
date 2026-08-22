@@ -3,6 +3,10 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    # nixos-unstable dropped x86_64-darwin support; use the last release
+    # branch that still supports it (security fixes through end of 2026)
+    # for that one system only, so Linux stays on nixos-unstable.
+    nixpkgs-darwin.url = "github:NixOS/nixpkgs/nixpkgs-26.05-darwin";
     flake-utils.url = "github:numtide/flake-utils";
     rust-overlay.url = "github:oxalica/rust-overlay";
     crane.url = "github:ipetkov/crane";
@@ -11,12 +15,17 @@
   outputs = {
     self,
     nixpkgs,
+    nixpkgs-darwin,
     flake-utils,
     rust-overlay,
     crane,
   }:
     flake-utils.lib.eachSystem ["x86_64-linux" "aarch64-linux" "x86_64-darwin"] (system: let
-      pkgs = import nixpkgs {
+      nixpkgsSource =
+        if system == "x86_64-darwin"
+        then nixpkgs-darwin
+        else nixpkgs;
+      pkgs = import nixpkgsSource {
         inherit system;
         config.allowUnfree = true;
         overlays = [rust-overlay.overlays.default];
@@ -180,6 +189,7 @@
 
       darwinDevPackages = with pkgs; [
         actionlint
+        podman
       ];
     in {
       # Rust package
