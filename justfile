@@ -1,7 +1,7 @@
 # https://just.systems
 
-set unstable := true
-set dotenv-load := true
+set unstable
+set dotenv-load
 
 # Cachix binary cache name
 
