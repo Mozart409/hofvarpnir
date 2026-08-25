@@ -38,6 +38,7 @@ up: clear
     echo "database did not become ready within 30s" >&2
     exit 1
 
+
 down: clear
     podman-compose -f containers/compose.dev.yml down
 
@@ -142,7 +143,6 @@ cache-check-arm: clear
     nix build .#devShells.aarch64-linux.ci --dry-run
 
 build-oci: clear
-    nix flake update
     nix build .#container
 
 # `cachix push` uploads the out-path's full closure, so this works even when
@@ -192,8 +192,8 @@ sync-remotes: clear
     git push forgejo --tags
     git fetch forgejo --prune
 
-trivy: clear
-    nix build .#container
+
+trivy: clear build-oci
     trivy image --input result --scanners vuln --ignorefile .trivyignore.yaml
 
 # No version/tag safety checks — use ./push_harbor.sh for versioned releases.
