@@ -2,6 +2,16 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.7.0 - 2026-08-25
+#### Features
+- (**test**) add dedicated lean postgres-test service for test suite - (07b3965) - Amadeus Mader
+#### Bug Fixes
+- (**ytdlp**) stop codec preference capping resolution below profile quality - (df442ef) - Amadeus Mader
+#### Miscellaneous Chores
+- (**css**) update css build - (3b740a3) - Amadeus Mader
+
+- - -
+
 ## v0.6.2 - 2026-08-25
 #### Bug Fixes
 - (**actors**) stop periodic tickers dying on transient mailbox-full - (59a3c69) - Amadeus Mader
