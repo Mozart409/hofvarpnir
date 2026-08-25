@@ -310,6 +310,8 @@ pub async fn list_videos(State(state): State<AppState>) -> Result<impl IntoRespo
 
 In development you can use this connection string to connect to the database. DATABASE_URL=postgresql://postgres:postgres@localhost:5432/hofvarpnir_dev
 
+The test entry points (`just test`, `e2e`, `e2e-only`, `ci`, and the bacon `test`/`nextest` jobs) do not use the dev database: they override `DATABASE_URL` to a dedicated, ephemeral Postgres (`postgres-test` service in `containers/compose.dev.yml`, localhost:5433, no monitoring extensions, durability disabled). Override with `TEST_DATABASE_URL` (just) if needed. The bacon `run`/`serve`/`tui` jobs still use the dev database, as does `just dev`.
+
 You can use flake.nix psql client.
 
 ### Dependency Policy
@@ -353,8 +355,8 @@ This repository now includes profile-level output preset behavior for download f
 
 - **Profile output preset** (`OutputPreset`):
   - `Auto` -> keep broad compatibility behavior (`mkv`, any codecs)
-  - `Browser` -> direct-play preference (`mp4`, AVC/H.264 + AAC)
-  - `Tv` -> direct-play preference (`mp4`, HEVC + AAC)
+  - `Browser` -> direct-play preference (`mp4`, AVC/H.264 then AV1, + AAC)
+  - `Tv` -> direct-play preference (`mp4`, HEVC then AVC/H.264 then AV1, + AAC)
 - `output_preset` is persisted in PostgreSQL (`profiles.output_preset`) and exposed through API + web profile forms.
 
 ### Download policy model
@@ -366,6 +368,39 @@ This repository now includes profile-level output preset behavior for download f
   3. any muxable codec pair
   4. then quality is relaxed until exhausted
 - On exhaustion, download returns a structured format-unavailable error.
+
+#### Codec preference is ordered, not absolute
+
+**Resolution outranks codec.** Video codec preferences are expressed as
+`VideoCodecPreference::Ranked(..)`, and selection takes the first entry that can
+actually reach the requested height. This matters because YouTube publishes no
+AVC/H.264 above 1080p — a bare `AVC1` preference silently caps a 1440p profile at
+1080p, reporting success the whole way.
+
+Rules when touching this area:
+
+- A codec that only exists *below* the target height is skipped, not honored.
+- If no ranked codec reaches the target, the **codec guarantee wins** and the
+  resolution drops. Presets name codecs because the playback device can decode
+  them; returning an undecodable stream at the right resolution is worse.
+- Only when no ranked codec matches anything at all does selection widen to all
+  formats.
+- **VP9 is deliberately excluded from the `Browser` and `Tv` ladders.** Both force
+  an `mp4` container, and VP9 outside `webm` is poorly supported by browsers.
+
+Selection lives in `patches/yt-dlp-patched/src/client/streams/selection.rs`
+(`select_video_format`); the ladders are built in `FormatPolicy::from`.
+
+### Delivered quality is recorded, not assumed
+
+A profile's `quality` is a *request*. What the platform served is persisted
+separately on `videos.video_height` / `videos.video_codec`, sourced from
+`DownloadBuilder::execute_detailed` -> `DownloadResult` -> `db::DeliveredVideo`.
+
+- When a download under-delivers against the profile's requested height, the
+  worker logs a `warn!` — the download still succeeds, so this is the only signal.
+- The web UI surfaces it via `delivered_quality_badge` in `crates/hof-web/src/pages.rs`.
+- Do not infer delivered resolution from the profile's `quality`; they diverge.
 
 ### Output path/extension behavior
 
@@ -391,6 +426,10 @@ API download responses expose parsed `last_error_code` when available.
 ```bash
 cargo test -p hof-core ytdlp::tests::test_fallback_
 cargo test -p hof-api download_tests::test_video_response_
+
+# Codec-ladder selection (resolution outranks codec)
+cargo test -p hof-core ytdlp::tests::test_browser_preset_
+cd patches/yt-dlp-patched && cargo test --test unit selection::ranked
 ```
 
 ## CI Requirements

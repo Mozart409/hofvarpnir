@@ -11,6 +11,11 @@ cachix_cache := "hofvarpnir"
 
 attic_cache := "homelab"
 
+# Lean, ephemeral Postgres used exclusively by `just test` (postgres-test service
+# in containers/compose.dev.yml). Override with TEST_DATABASE_URL to point the
+# suite elsewhere.
+test_database_url := env_var_or_default("TEST_DATABASE_URL", "postgresql://postgres:postgres@localhost:5433/postgres")
+
 default:
     @just --list
 
@@ -23,21 +28,22 @@ clear:
 up: clear
     #!/usr/bin/env bash
     set -euo pipefail
-    if pg_isready -d "${DATABASE_URL:?DATABASE_URL not set}" -t 2 -q; then
-        echo "database already available, skipping podman-compose"
+    if pg_isready -d "${DATABASE_URL:?DATABASE_URL not set}" -t 2 -q \
+        && pg_isready -d "{{ test_database_url }}" -t 2 -q; then
+        echo "databases already available, skipping podman-compose"
         exit 0
     fi
     podman-compose -f containers/compose.dev.yml up -d --build --remove-orphans
     # Wait until postgres actually answers (compose returns before readiness)
     for _ in $(seq 1 30); do
-        if pg_isready -d "$DATABASE_URL" -t 1 -q; then
+        if pg_isready -d "$DATABASE_URL" -t 1 -q \
+            && pg_isready -d "{{ test_database_url }}" -t 1 -q; then
             exit 0
         fi
         sleep 1
     done
-    echo "database did not become ready within 30s" >&2
+    echo "databases did not become ready within 30s" >&2
     exit 1
-
 
 down: clear
     podman-compose -f containers/compose.dev.yml down
@@ -114,25 +120,26 @@ css-watch:
 css-build:
     tailwindcss -i input.css -o app.css --minify
 
-# Run all tests (--test-threads=4 avoids a #[sqlx::test] parallelism race on many-core machines)
+# Run all tests against the lean postgres-test instance
+# (--test-threads=4 avoids a #[sqlx::test] parallelism race on many-core machines)
 test: clear up
-    cargo test --all-features -- --include-ignored --test-threads=8
+    DATABASE_URL={{ test_database_url }} cargo test --all-features -- --include-ignored --test-threads=4
 
-# E2E API tests
-e2e: clear mig-run
-    cargo test --package hof-api --test e2e --all-features -- --test-threads=4
+# E2E API tests against the lean postgres-test instance.
+# (#[sqlx::test] migrates each test database itself, so this only needs `up`)
+e2e: clear up
+    DATABASE_URL={{ test_database_url }} cargo test --package hof-api --test e2e --all-features -- --test-threads=4
 
-# Same as `e2e`, but against an already-running, already-migrated database.
-# Skips `up`, so it still works when an unrelated container in the compose
-
-# stack (e.g. grafana) is failing to start.
+# Same as `e2e`, but skips `up` — works when an unrelated container in the
+# compose stack (e.g. grafana) is failing to start. Requires postgres-test
+# to already be running.
 e2e-only: clear
-    cargo test --package hof-api --test e2e --all-features -- --test-threads=4
+    DATABASE_URL={{ test_database_url }} cargo test --package hof-api --test e2e --all-features -- --test-threads=4
 
-# CI simulation (requires database)
-ci: clear mig-run
+# CI simulation (requires database; tests run against the lean postgres-test instance)
+ci: clear up
     SQLX_OFFLINE=true cargo build --release
-    cargo test --all-features -- --include-ignored --test-threads=4
+    DATABASE_URL={{ test_database_url }} cargo test --all-features -- --include-ignored --test-threads=4
     cargo clippy --all-targets --all-features -- -D warnings
 
 # Check Nix cache availability
@@ -191,7 +198,6 @@ sync-remotes: clear
     git push forgejo --all
     git push forgejo --tags
     git fetch forgejo --prune
-
 
 trivy: clear build-oci
     trivy image --input result --scanners vuln --ignorefile .trivyignore.yaml

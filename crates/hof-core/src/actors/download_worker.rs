@@ -206,7 +206,9 @@ impl DownloadWorker {
             progress_tx: Some(self.progress_tx.clone()),
         });
 
-        let result = tokio::time::timeout(self.config.timeout, download_future).await;
+        // Boxed because the download future carries the full request plus the
+        // delivered-format details and would otherwise bloat this frame.
+        let result = Box::pin(tokio::time::timeout(self.config.timeout, download_future)).await;
 
         match result {
             Ok(Ok(download_result)) => self.handle_success(download_result).await,
@@ -296,14 +298,20 @@ impl DownloadWorker {
         info!(
             file_path = %file_path_str,
             file_size = result.file_size_bytes,
+            video_height = ?result.video_height,
+            video_codec = ?result.video_codec,
+            video_fps = ?result.video_fps,
             "Download completed successfully"
         );
 
         // Update database
-        if let Err(e) =
-            db::mark_video_completed(&self.pool, video_id, &file_path_str, result.file_size_bytes)
-                .await
-        {
+        let delivered = db::DeliveredVideo {
+            file_path: &file_path_str,
+            file_size_bytes: result.file_size_bytes,
+            video_height: result.video_height,
+            video_codec: result.video_codec.as_deref(),
+        };
+        if let Err(e) = db::mark_video_completed(&self.pool, video_id, delivered).await {
             error!(error = %e, "Failed to mark video as completed");
             // Still return success since the file was downloaded
         }

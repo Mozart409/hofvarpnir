@@ -849,3 +849,124 @@ fn select_video_format_fallback_when_no_exact_height() {
     // No 1080p, should get the highest available since nothing is >= 1080
     assert_eq!(selected.format_id, "v2");
 }
+
+// ================== Ranked codec preference (resolution outranks codec) ==================
+
+/// Mirrors YouTube's real format shape: AVC1 stops at 1080p, while VP9 and AV1
+/// continue to 1440p and beyond.
+fn make_youtube_shaped_video() -> Video {
+    make_test_video(vec![
+        make_video_format("avc-720", "avc1.4d401f", 720, 30.0, 2500.0, 7.0),
+        make_video_format("avc-1080", "avc1.640028", 1080, 30.0, 5000.0, 9.0),
+        make_video_format("vp9-1440", "vp09.00.50.08", 1440, 30.0, 9000.0, 10.0),
+        make_video_format("av1-1440", "av01.0.12M.08", 1440, 30.0, 7000.0, 10.0),
+        make_video_format("vp9-2160", "vp09.00.50.08", 2160, 30.0, 16000.0, 11.0),
+        make_video_format("av1-2160", "av01.0.13M.08", 2160, 30.0, 12000.0, 11.0),
+    ])
+}
+
+#[test]
+fn ranked_codec_skips_codec_that_cannot_reach_target() {
+    let video = make_youtube_shaped_video();
+
+    // AVC1 tops out at 1080p on YouTube, so a 1440p request must fall through to
+    // AV1 rather than silently capping at 1080p.
+    let selected = video
+        .select_video_format(
+            VideoQuality::CustomHeight(1440),
+            VideoCodecPreference::Ranked(vec![VideoCodecPreference::AVC1, VideoCodecPreference::AV1]),
+        )
+        .unwrap();
+
+    assert_eq!(selected.format_id, "av1-1440");
+}
+
+#[test]
+fn ranked_codec_prefers_first_entry_when_it_reaches_target() {
+    let video = make_youtube_shaped_video();
+
+    // At 1080p AVC1 is available, so the most compatible codec must win.
+    let selected = video
+        .select_video_format(
+            VideoQuality::CustomHeight(1080),
+            VideoCodecPreference::Ranked(vec![VideoCodecPreference::AVC1, VideoCodecPreference::AV1]),
+        )
+        .unwrap();
+
+    assert_eq!(selected.format_id, "avc-1080");
+}
+
+#[test]
+fn ranked_codec_never_selects_a_codec_outside_the_ladder() {
+    let video = make_test_video(vec![
+        make_video_format("avc-1080", "avc1.640028", 1080, 30.0, 5000.0, 9.0),
+        make_video_format("vp9-1440", "vp09.00.50.08", 1440, 30.0, 9000.0, 10.0),
+    ]);
+
+    // No ladder entry reaches 1440p and VP9 is deliberately excluded, so the
+    // codec guarantee wins and resolution drops instead.
+    let selected = video
+        .select_video_format(
+            VideoQuality::CustomHeight(1440),
+            VideoCodecPreference::Ranked(vec![VideoCodecPreference::AVC1, VideoCodecPreference::AV1]),
+        )
+        .unwrap();
+
+    assert_eq!(selected.format_id, "avc-1080");
+}
+
+#[test]
+fn ranked_codec_widens_when_no_entry_matches_anything() {
+    let video = make_test_video(vec![make_video_format("vp9-1440", "vp09.00.50.08", 1440, 30.0, 9000.0, 10.0)]);
+
+    // Nothing in the ladder exists at all, so selection widens rather than
+    // failing the download outright.
+    let selected = video
+        .select_video_format(
+            VideoQuality::CustomHeight(1440),
+            VideoCodecPreference::Ranked(vec![VideoCodecPreference::AVC1, VideoCodecPreference::AV1]),
+        )
+        .unwrap();
+
+    assert_eq!(selected.format_id, "vp9-1440");
+}
+
+#[test]
+fn ranked_codec_best_quality_skips_codec_capped_below_maximum() {
+    let video = make_youtube_shaped_video();
+
+    // "Best" targets the tallest format on offer, so a codec that cannot reach
+    // it is skipped just like an explicit height target.
+    let selected = video
+        .select_video_format(
+            VideoQuality::Best,
+            VideoCodecPreference::Ranked(vec![VideoCodecPreference::AVC1, VideoCodecPreference::AV1]),
+        )
+        .unwrap();
+
+    assert_eq!(selected.format_id, "av1-2160");
+}
+
+#[test]
+fn single_codec_preference_still_caps_resolution_when_it_is_the_only_ask() {
+    let video = make_youtube_shaped_video();
+
+    // A bare (non-ranked) preference keeps its existing meaning: honour the
+    // codec, lower the resolution.
+    let selected = video
+        .select_video_format(VideoQuality::CustomHeight(1440), VideoCodecPreference::AVC1)
+        .unwrap();
+
+    assert_eq!(selected.format_id, "avc-1080");
+}
+
+#[test]
+fn any_codec_preference_is_unaffected_by_the_ladder() {
+    let video = make_youtube_shaped_video();
+
+    let selected = video
+        .select_video_format(VideoQuality::CustomHeight(1440), VideoCodecPreference::Any)
+        .unwrap();
+
+    assert_eq!(selected.video_resolution.height, Some(1440));
+}

@@ -119,6 +119,14 @@ pub struct VideoResponse {
     pub last_error_code: Option<String>,
     pub file_path: Option<String>,
     pub file_size_bytes: Option<i64>,
+    /// Height of the video stream that was actually delivered, in pixels.
+    ///
+    /// Reflects what the platform served, which can be lower than the
+    /// profile's requested quality. `None` for audio-only downloads and for
+    /// downloads that completed before this was recorded.
+    pub video_height: Option<i32>,
+    /// Codec of the delivered video stream, e.g. `av01.0.12M.08`.
+    pub video_codec: Option<String>,
     pub downloaded_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -170,6 +178,8 @@ impl From<Video> for VideoResponse {
             last_error_code,
             file_path: v.file_path,
             file_size_bytes: v.file_size_bytes,
+            video_height: v.video_height,
+            video_codec: v.video_codec,
             downloaded_at: v.downloaded_at,
             created_at: v.created_at,
             updated_at: v.updated_at,
@@ -225,6 +235,8 @@ impl From<VideoContext> for VideoResponse {
             last_error_code,
             file_path: v.file_path,
             file_size_bytes: v.file_size_bytes,
+            video_height: v.video_height,
+            video_codec: v.video_codec,
             downloaded_at: v.downloaded_at,
             created_at: v.created_at,
             updated_at: v.updated_at,

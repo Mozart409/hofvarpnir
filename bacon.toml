@@ -42,9 +42,12 @@ need_stdout = false
 # - all tests: bacon test
 # - a specific test: bacon test -- config::test_default_files
 # - the tests of a package: bacon test -- -- -p config
+# Tests run against the lean postgres-test instance (see justfile); --test-threads=4
+# avoids the same #[sqlx::test] parallelism race as `just test`.
 [jobs.test]
-command = ["cargo", "test", "--workspace"]
+command = ["cargo", "test", "--workspace", "--", "--test-threads=4"]
 need_stdout = true
+env.DATABASE_URL = "postgresql://postgres:postgres@localhost:5433/postgres"
 
 [jobs.nextest]
 command = [
@@ -54,6 +57,7 @@ command = [
 ]
 need_stdout = true
 analyzer = "nextest"
+env.DATABASE_URL = "postgresql://postgres:postgres@localhost:5433/postgres"
 
 [jobs.doc]
 command = ["cargo", "doc", "--workspace", "--no-deps"]
