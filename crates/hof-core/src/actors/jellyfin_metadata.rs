@@ -19,6 +19,14 @@ use crate::jellyfin::{self, JellyfinMetadata};
 /// Default interval for checking metadata (24 hours).
 const DEFAULT_CHECK_INTERVAL: Duration = Duration::from_hours(24);
 
+/// How long a self-reschedule wait for mailbox space before giving up.
+/// Unlike the scheduler/cleanup actors, this actor has no recurring tick
+/// loop — each cycle reschedules itself with a single message send. A
+/// bare `try_send()` failure here (mailbox momentarily full) used to end
+/// the periodic Jellyfin metadata check permanently, with no recovery
+/// and, for the post-check reschedule, no log at all (`.ok()`).
+const RESCHEDULE_SEND_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// Result of a metadata check cycle.
 #[derive(Debug, Clone, Reply)]
 pub struct MetadataCheckResult {
@@ -130,9 +138,7 @@ impl Message<ScheduleNextCheck> for JellyfinMetadataActor {
 
         tokio::spawn(async move {
             tokio::time::sleep(interval).await;
-            if let Err(e) = actor_ref.tell(RunCheck).try_send() {
-                error!(error = %e, "Failed to trigger metadata check");
-            }
+            send_self_with_retry(&actor_ref, || RunCheck, "RunCheck").await;
         });
     }
 }
@@ -164,8 +170,15 @@ impl Message<RunCheck> for JellyfinMetadataActor {
         self.is_running = false;
         self.last_check_at = Some(Utc::now());
 
-        // Schedule next check
-        ctx.actor_ref().tell(ScheduleNextCheck).try_send().ok();
+        // Schedule next check. This is a self-tell, so it must not block
+        // waiting on the mailbox from inside this handler (the actor can't
+        // drain its own mailbox while stuck in this very handler — a real
+        // deadlock risk, unlike a tick loop on a separate task). Hand off to
+        // a spawned task, which can then safely wait/retry for mailbox space.
+        let actor_ref = ctx.actor_ref().clone();
+        tokio::spawn(async move {
+            send_self_with_retry(&actor_ref, || ScheduleNextCheck, "ScheduleNextCheck").await;
+        });
 
         result
     }
@@ -374,6 +387,48 @@ impl JellyfinMetadataActor {
         );
 
         result
+    }
+}
+
+/// Sends a self-message with a bounded retry if the mailbox is momentarily
+/// full, logging loudly if all attempts are exhausted. Unlike the
+/// scheduler/cleanup actors' recurring tick loops, this actor has no outer
+/// loop to fall back on — a give-up here permanently stops periodic
+/// Jellyfin metadata generation until the process restarts, so it retries
+/// harder before surrendering.
+///
+/// Must only be called from a task that is *not* the actor's own message
+/// handler execution — see the call site in `RunCheck` for why.
+async fn send_self_with_retry<M>(
+    actor_ref: &ActorRef<JellyfinMetadataActor>,
+    mut make_msg: impl FnMut() -> M,
+    message_name: &str,
+) where
+    JellyfinMetadataActor: Message<M>,
+    M: Send + 'static,
+{
+    const MAX_ATTEMPTS: u32 = 3;
+    const SEND_TIMEOUT: Duration = RESCHEDULE_SEND_TIMEOUT;
+
+    for attempt in 1..=MAX_ATTEMPTS {
+        match actor_ref
+            .tell(make_msg())
+            .mailbox_timeout(SEND_TIMEOUT)
+            .send()
+            .await
+        {
+            Ok(()) | Err(SendError::ActorNotRunning(_)) => return,
+            Err(e) if attempt < MAX_ATTEMPTS => {
+                warn!(error = %e, attempt, message = message_name, "Mailbox busy, retrying");
+            }
+            Err(e) => {
+                error!(
+                    error = %e,
+                    message = message_name,
+                    "Failed to send after retries — periodic Jellyfin metadata checks have stopped until restart"
+                );
+            }
+        }
     }
 }
 
