@@ -266,7 +266,8 @@ fn start_scheduler(
         pool,
         ytdlp,
         supervisor,
-        check_interval: None, // Use default
+        check_interval: None,        // Use default
+        max_indexers_per_tick: None, // Use default
         broadcaster,
     };
 

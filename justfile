@@ -18,20 +18,26 @@ clear:
     clear || true
 
 # Podman commands
-# Short-circuits when postgres is already reporting healthy so dependent
-
-# recipes (`mig-run`, `test`, `dev`, ...) don't rebuild/restart the stack.
+# Short-circuits when the database is already accepting connections, so recipes
+# that depend on this one (mig-run, test, dev, ...) don't pay for compose.
 up: clear
     #!/usr/bin/env bash
     set -euo pipefail
-    state="$(podman inspect --format '{{{{.State.Status}}' postgres 2>/dev/null || true)"
-    health="$(podman inspect --format '{{{{.State.Health.Status}}' postgres 2>/dev/null || true)"
-    if [[ "$state" == "running" && "$health" == "healthy" ]]; then
-        echo "postgres already healthy - skipping compose up"
-    else
-        podman-compose -f containers/compose.dev.yml up -d --build --remove-orphans
-        sleep 1
+    if pg_isready -d "${DATABASE_URL:?DATABASE_URL not set}" -t 2 -q; then
+        echo "database already available, skipping podman-compose"
+        exit 0
     fi
+    podman-compose -f containers/compose.dev.yml up -d --build --remove-orphans
+    # Wait until postgres actually answers (compose returns before readiness)
+    for _ in $(seq 1 30); do
+        if pg_isready -d "$DATABASE_URL" -t 1 -q; then
+            exit 0
+        fi
+        sleep 1
+    done
+    echo "database did not become ready within 30s" >&2
+    exit 1
+
 
 down: clear
     podman-compose -f containers/compose.dev.yml down
@@ -137,7 +143,6 @@ cache-check-arm: clear
     nix build .#devShells.aarch64-linux.ci --dry-run
 
 build-oci: clear
-    nix flake update
     nix build .#container
 
 # `cachix push` uploads the out-path's full closure, so this works even when
@@ -187,8 +192,8 @@ sync-remotes: clear
     git push forgejo --tags
     git fetch forgejo --prune
 
+
 trivy: clear build-oci
-    nix build .#container
     trivy image --input result --scanners vuln --ignorefile .trivyignore.yaml
 
 # No version/tag safety checks — use ./push_harbor.sh for versioned releases.

@@ -25,6 +25,12 @@ use crate::domain::video::{Video, VideoStatus};
 /// Default cleanup interval.
 const DEFAULT_CLEANUP_INTERVAL_SECS: u64 = 60 * 60 * 3; // seconds x minutes x hours
 
+/// How long the cleanup loop waits for mailbox space before giving up on a
+/// single tick. Bounded so the loop can never stall indefinitely, but long
+/// enough to ride out a transient mailbox-full burst without dropping the
+/// tick outright. Mirrors `scheduler::TICK_SEND_TIMEOUT`.
+const TICK_SEND_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// The cleanup actor.
 ///
 /// Periodically checks for videos past their retention period and
@@ -145,9 +151,29 @@ impl Message<StartCleanup> for CleanupActor {
                     break;
                 }
 
-                if let Err(e) = actor_ref.tell(RunCleanup).try_send() {
-                    error!(error = %e, "Failed to trigger cleanup");
-                    break;
+                // A single try_send() failure here used to permanently kill this
+                // ticker on any transient mailbox-full condition — the same bug
+                // fixed in scheduler.rs (see TICK_SEND_TIMEOUT there for details).
+                // Wait (bounded) for mailbox space instead: a full mailbox just
+                // skips this tick and retries on the next one; only a truly
+                // stopped actor ends the loop.
+                match actor_ref
+                    .tell(RunCleanup)
+                    .mailbox_timeout(TICK_SEND_TIMEOUT)
+                    .send()
+                    .await
+                {
+                    Ok(()) => {}
+                    Err(SendError::Timeout(_)) => {
+                        warn!(
+                            timeout_secs = TICK_SEND_TIMEOUT.as_secs(),
+                            "Cleanup mailbox still full after wait, skipping this tick"
+                        );
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "Failed to trigger cleanup, actor has stopped");
+                        break;
+                    }
                 }
             }
 
