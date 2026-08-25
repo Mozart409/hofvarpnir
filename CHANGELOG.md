@@ -2,6 +2,37 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.6.2 - 2026-08-25
+#### Bug Fixes
+- (**actors**) stop periodic tickers dying on transient mailbox-full - (59a3c69) - Amadeus Mader
+- (**cleanup**) treat unset retention as keep-forever, not expired - (92c53db) - macbook-pro
+- (**tools**) fix justfile - (d3b9aa1) - Amadeus Mader
+- (**tools**) check also if container is running - (8c93d51) - macbook-pro
+- (**tools**) fix justfile - (108d1b0) - Amadeus Mader
+#### Documentation
+- (**yt-dlp**) add indexing timeout report - (f4eb3ce) - developmentbot
+- (**yt-dlp**) add indexing timeout report - (8cec083) - developmentbot
+#### Miscellaneous Chores
+- (**ci**) bump github/codeql-action/analyze from 4.37.4 to 4.37.7 - (5bb7cf3) - dependabot[bot]
+- (**cleanup**) default cleanup interval to 3h instead of 15m - (08dff0f) - macbook-pro
+- (**deps**) upgrade deps - (9d13ace) - macbook-pro
+- (**flake**) pin yt-dlp to 2026.08.19 - (4bc5fc3) - developmentbot
+- (**flake**) update inputs - (4bebd5b) - developmentbot
+- (**flake**) pin yt-dlp to 2026.08.19 - (16db39e) - developmentbot
+- (**just**) ignore unreachable deno CVEs in trivy scan - (29722b0) - developmentbot
+- (**just**) ignore unreachable deno CVEs in trivy scan - (edb0883) - developmentbot
+- (**just**) drop flake update from trivy recipe - (7f5adc2) - developmentbot
+- (**tools**) increase threads - (345e021) - macbook-pro
+- (**tools**) add darwin toolchain - (e83365d) - macbook-pro
+- (**tools**) add sync-remotes script - (83ec3b0) - macbook-pro
+- (**tools**) add short circuits - (d92ab9c) - developmentbot
+- (**tools**) increase threads - (6bb2113) - macbook-pro
+- (**tools**) add short circuits - (2c0d29d) - developmentbot
+- (**version**) v0.6.1 - (4201d63) - macbook-pro
+- (**version**) v0.6.0 - (58ecb27) - Amadeus Mader
+
+- - -
+
 ## v0.6.1 - 2026-08-22
 #### Bug Fixes
 - (**cleanup**) treat unset retention as keep-forever, not expired - (3f1eedd) - macbook-pro
