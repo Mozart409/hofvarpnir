@@ -17,6 +17,53 @@ use crate::model::selector::{
     AudioCodecPreference, AudioQuality, StoryboardQuality, ThumbnailQuality, VideoCodecPreference, VideoQuality,
 };
 
+/// Describes the stream that selection actually settled on.
+///
+/// Downloads negotiate quality and codec against whatever the extractor offers,
+/// so the requested preferences are not proof of what was delivered. Callers
+/// need the delivered values to report or persist real quality.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SelectedFormat {
+    /// Extractor format identifier (yt-dlp "itag" on YouTube).
+    pub format_id: String,
+    /// Codec string as reported by the extractor, e.g. `av01.0.12M.08`.
+    pub codec: Option<String>,
+    /// Container extension of the stream before muxing.
+    pub ext: Option<String>,
+    /// Frame height in pixels; `None` for audio streams.
+    pub height: Option<u32>,
+    /// Frame width in pixels; `None` for audio streams.
+    pub width: Option<u32>,
+    /// Frames per second, rounded to the nearest whole frame.
+    pub fps: Option<u32>,
+}
+
+impl SelectedFormat {
+    /// Builds a snapshot from a selected format.
+    fn from_format(format: &Format) -> Self {
+        Self {
+            format_id: format.format_id.clone(),
+            codec: format.codec_info.video_codec.clone().or_else(|| format.codec_info.audio_codec.clone()),
+            ext: Some(format.download_info.ext.as_str().to_string()),
+            height: format.video_resolution.height,
+            width: format.video_resolution.width,
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            fps: format.video_resolution.fps.map(|f| f.round() as u32),
+        }
+    }
+}
+
+/// A completed download plus the formats that were actually delivered.
+#[derive(Debug, Clone)]
+pub struct DownloadDetails {
+    /// Path to the finished file.
+    pub path: PathBuf,
+    /// The video stream that was selected.
+    pub video: SelectedFormat,
+    /// The audio stream that was selected.
+    pub audio: SelectedFormat,
+}
+
 /// IDs returned after enqueueing both video and audio downloads.
 struct EnqueuedDownloads {
     video_id: u64,
@@ -278,6 +325,24 @@ impl<'a> DownloadBuilder<'a> {
     ///
     /// Returns the path to the downloaded file.
     pub async fn execute(self) -> Result<PathBuf> {
+        self.execute_detailed().await.map(|details| details.path)
+    }
+
+    /// Executes the download and reports the formats that were actually delivered.
+    ///
+    /// Identical to [`DownloadBuilder::execute`], but also returns the selected
+    /// video and audio streams. Preferences are negotiated against what the
+    /// extractor offers, so this is the only way to know the delivered
+    /// resolution and codec rather than the requested ones.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the download fails or the video cannot be fetched.
+    ///
+    /// # Returns
+    ///
+    /// The output path together with the selected video and audio formats.
+    pub async fn execute_detailed(self) -> Result<DownloadDetails> {
         // Use configured quality/codec or defaults
         let video_quality = self.video_quality.unwrap_or(VideoQuality::Best);
         let audio_quality = self.audio_quality.unwrap_or(AudioQuality::Best);
@@ -309,11 +374,16 @@ impl<'a> DownloadBuilder<'a> {
             .select_audio_format(audio_quality, audio_codec.clone())
             .ok_or_else(|| Self::format_not_available(self.video, FormatType::Audio))?;
 
+        let selected_video = SelectedFormat::from_format(video_format);
+        let selected_audio = SelectedFormat::from_format(audio_format);
+
         tracing::debug!(
             video_format_id = %video_format.format_id,
             audio_format_id = %audio_format.format_id,
             video_ext = ?video_format.download_info.ext,
             audio_ext = ?audio_format.download_info.ext,
+            video_height = ?selected_video.height,
+            video_codec_selected = ?selected_video.codec,
             "📥 Selected video and audio formats"
         );
 
@@ -347,7 +417,11 @@ impl<'a> DownloadBuilder<'a> {
         if let Some(range) = self.partial_range.as_ref()
             && let Some(path) = try_partial_clip(self.downloader, self.video, &streams, range, &self.output).await?
         {
-            return Ok(path);
+            return Ok(DownloadDetails {
+                path,
+                video: selected_video,
+                audio: selected_audio,
+            });
         }
 
         // Create output paths
@@ -435,7 +509,11 @@ impl<'a> DownloadBuilder<'a> {
                         .map_err(|e| crate::error::Error::io_with_path("renaming trimmed output", &combined_path, e))?;
                 }
 
-                Ok(combined_path)
+                Ok(DownloadDetails {
+                    path: combined_path,
+                    video: selected_video,
+                    audio: selected_audio,
+                })
             }
             (Some(DownloadStatus::Failed { reason }), _) => Err(crate::error::Error::download_failed(
                 video_download_id,

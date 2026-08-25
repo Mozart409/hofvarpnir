@@ -47,6 +47,10 @@ pub struct UpdateVideo<'a> {
     pub last_error: Option<Option<&'a str>>,
     pub file_path: Option<Option<&'a str>>,
     pub file_size_bytes: Option<Option<i64>>,
+    /// Delivered video height in pixels, as reported by the extractor.
+    pub video_height: Option<Option<i32>>,
+    /// Delivered video codec string, as reported by the extractor.
+    pub video_codec: Option<Option<&'a str>>,
     pub downloaded_at: Option<Option<DateTime<Utc>>>,
 }
 
@@ -65,7 +69,7 @@ pub async fn create_video(pool: &PgPool, data: CreateVideo<'_>) -> Result<Video,
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
         RETURNING id, platform, platform_video_id, title, description,
                   duration_secs, published_at, thumbnail_url, status, attempts,
-                  next_retry, last_error, file_path, file_size_bytes,
+                  next_retry, last_error, file_path, file_size_bytes, video_height, video_codec,
                   downloaded_at, created_at, updated_at
         ",
     )
@@ -105,7 +109,7 @@ pub async fn upsert_video(pool: &PgPool, data: CreateVideo<'_>) -> Result<Video,
             thumbnail_url = COALESCE(EXCLUDED.thumbnail_url, videos.thumbnail_url)
         RETURNING id, platform, platform_video_id, title, description,
                   duration_secs, published_at, thumbnail_url, status, attempts,
-                  next_retry, last_error, file_path, file_size_bytes,
+                  next_retry, last_error, file_path, file_size_bytes, video_height, video_codec,
                   downloaded_at, created_at, updated_at
         ",
     )
@@ -134,7 +138,7 @@ pub async fn get_video(pool: &PgPool, id: Ulid) -> Result<Video, DbError> {
         r"
         SELECT id, platform, platform_video_id, title, description,
                duration_secs, published_at, thumbnail_url, status, attempts,
-               next_retry, last_error, file_path, file_size_bytes,
+               next_retry, last_error, file_path, file_size_bytes, video_height, video_codec,
                downloaded_at, created_at, updated_at
         FROM videos
         WHERE id = $1
@@ -160,7 +164,7 @@ pub async fn get_video_with_context(pool: &PgPool, id: Ulid) -> Result<VideoCont
         r"
         SELECT v.id, v.platform, v.platform_video_id, v.title, v.description,
                v.duration_secs, v.published_at, v.thumbnail_url, v.status, v.attempts,
-               v.next_retry, v.last_error, v.file_path, v.file_size_bytes,
+               v.next_retry, v.last_error, v.file_path, v.file_size_bytes, v.video_height, v.video_codec,
                v.downloaded_at, v.created_at, v.updated_at,
                sc.source_id, sc.source_url, sc.source_type, sc.source_custom_name,
                sc.source_channel_id, sc.source_channel_title, sc.source_channel_thumbnail_url,
@@ -206,7 +210,7 @@ pub async fn get_video_by_platform_id(
         r"
         SELECT id, platform, platform_video_id, title, description,
                duration_secs, published_at, thumbnail_url, status, attempts,
-               next_retry, last_error, file_path, file_size_bytes,
+               next_retry, last_error, file_path, file_size_bytes, video_height, video_codec,
                downloaded_at, created_at, updated_at
         FROM videos
         WHERE platform = $1 AND platform_video_id = $2
@@ -237,7 +241,7 @@ pub async fn list_videos(
                 r"
                 SELECT id, platform, platform_video_id, title, description,
                        duration_secs, published_at, thumbnail_url, status, attempts,
-                       next_retry, last_error, file_path, file_size_bytes,
+                       next_retry, last_error, file_path, file_size_bytes, video_height, video_codec,
                        downloaded_at, created_at, updated_at
                 FROM videos
                 WHERE status = $1
@@ -253,7 +257,7 @@ pub async fn list_videos(
                 r"
                 SELECT id, platform, platform_video_id, title, description,
                        duration_secs, published_at, thumbnail_url, status, attempts,
-                       next_retry, last_error, file_path, file_size_bytes,
+                       next_retry, last_error, file_path, file_size_bytes, video_height, video_codec,
                        downloaded_at, created_at, updated_at
                 FROM videos
                 ORDER BY created_at DESC
@@ -285,7 +289,7 @@ pub async fn list_videos_with_context(
         r"
         SELECT v.id, v.platform, v.platform_video_id, v.title, v.description,
                v.duration_secs, v.published_at, v.thumbnail_url, v.status, v.attempts,
-               v.next_retry, v.last_error, v.file_path, v.file_size_bytes,
+               v.next_retry, v.last_error, v.file_path, v.file_size_bytes, v.video_height, v.video_codec,
                v.downloaded_at, v.created_at, v.updated_at,
                sc.source_id, sc.source_url, sc.source_type, sc.source_custom_name,
                sc.source_channel_id, sc.source_channel_title, sc.source_channel_thumbnail_url,
@@ -341,7 +345,7 @@ pub async fn list_videos_paginated(
         r"
         SELECT id, platform, platform_video_id, title, description,
                duration_secs, published_at, thumbnail_url, status, attempts,
-               next_retry, last_error, file_path, file_size_bytes,
+               next_retry, last_error, file_path, file_size_bytes, video_height, video_codec,
                downloaded_at, created_at, updated_at
         FROM videos v
         WHERE ($1::video_status IS NULL OR v.status = $1)
@@ -424,7 +428,7 @@ pub async fn list_videos_for_source(pool: &PgPool, source_id: Ulid) -> Result<Ve
         r"
         SELECT v.id, v.platform, v.platform_video_id, v.title, v.description,
                v.duration_secs, v.published_at, v.thumbnail_url, v.status, v.attempts,
-               v.next_retry, v.last_error, v.file_path, v.file_size_bytes,
+               v.next_retry, v.last_error, v.file_path, v.file_size_bytes, v.video_height, v.video_codec,
                v.downloaded_at, v.created_at, v.updated_at
         FROM videos v
         INNER JOIN source_videos sv ON sv.video_id = v.id
@@ -461,7 +465,7 @@ pub async fn list_videos_for_source_with_context(
         r"
         SELECT v.id, v.platform, v.platform_video_id, v.title, v.description,
                v.duration_secs, v.published_at, v.thumbnail_url, v.status, v.attempts,
-               v.next_retry, v.last_error, v.file_path, v.file_size_bytes,
+               v.next_retry, v.last_error, v.file_path, v.file_size_bytes, v.video_height, v.video_codec,
                v.downloaded_at, v.created_at, v.updated_at,
                s.id AS source_id, s.url AS source_url, s.source_type AS source_type,
                s.custom_name AS source_custom_name, s.channel_id AS source_channel_id,
@@ -498,7 +502,7 @@ pub async fn list_videos_ready_for_download(pool: &PgPool) -> Result<Vec<Video>,
         r"
         SELECT id, platform, platform_video_id, title, description,
                duration_secs, published_at, thumbnail_url, status, attempts,
-               next_retry, last_error, file_path, file_size_bytes,
+               next_retry, last_error, file_path, file_size_bytes, video_height, video_codec,
                downloaded_at, created_at, updated_at
         FROM videos
         WHERE status = 'pending'
@@ -540,7 +544,7 @@ pub async fn list_videos_past_retention(
         r"
         SELECT v.id, v.platform, v.platform_video_id, v.title, v.description,
                v.duration_secs, v.published_at, v.thumbnail_url, v.status, v.attempts,
-               v.next_retry, v.last_error, v.file_path, v.file_size_bytes,
+               v.next_retry, v.last_error, v.file_path, v.file_size_bytes, v.video_height, v.video_codec,
                v.downloaded_at, v.created_at, v.updated_at
         FROM videos v
         WHERE v.status = 'completed'
@@ -603,7 +607,7 @@ pub async fn list_videos_pending_deletion(
         r"
         SELECT v.id, v.platform, v.platform_video_id, v.title, v.description,
                v.duration_secs, v.published_at, v.thumbnail_url, v.status, v.attempts,
-               v.next_retry, v.last_error, v.file_path, v.file_size_bytes,
+               v.next_retry, v.last_error, v.file_path, v.file_size_bytes, v.video_height, v.video_codec,
                v.downloaded_at, v.created_at, v.updated_at,
                MAX(v.downloaded_at + make_interval(days => COALESCE(s.retention_days, p.retention_days, $1)))
                    AS scheduled_deletion_at,
@@ -620,7 +624,7 @@ pub async fn list_videos_pending_deletion(
                 WHERE sv2.video_id = v.id AND s2.profile_id = $2))
         GROUP BY v.id, v.platform, v.platform_video_id, v.title, v.description,
                  v.duration_secs, v.published_at, v.thumbnail_url, v.status, v.attempts,
-                 v.next_retry, v.last_error, v.file_path, v.file_size_bytes,
+                 v.next_retry, v.last_error, v.file_path, v.file_size_bytes, v.video_height, v.video_codec,
                  v.downloaded_at, v.created_at, v.updated_at
         HAVING bool_and(COALESCE(s.retention_days, p.retention_days, $1) IS NOT NULL)
            AND ($3::int IS NULL OR
@@ -641,6 +645,21 @@ pub async fn list_videos_pending_deletion(
         .map(VideoPendingDeletion::try_from)
         .collect::<Result<Vec<_>, _>>()
         .map_err(DbError::from)
+}
+
+/// What a finished download actually put on disk.
+///
+/// Grouped into a struct because the delivered resolution and codec are
+/// negotiated at download time and only meaningful alongside the file they
+/// describe.
+#[derive(Debug, Clone, Copy)]
+pub struct DeliveredVideo<'a> {
+    pub file_path: &'a str,
+    pub file_size_bytes: i64,
+    /// Delivered height in pixels; `None` for audio-only downloads.
+    pub video_height: Option<i32>,
+    /// Delivered video codec string; `None` for audio-only downloads.
+    pub video_codec: Option<&'a str>,
 }
 
 /// Update a video.
@@ -669,11 +688,13 @@ pub async fn update_video(
             last_error = CASE WHEN $15 THEN $16 ELSE last_error END,
             file_path = CASE WHEN $17 THEN $18 ELSE file_path END,
             file_size_bytes = CASE WHEN $19 THEN $20 ELSE file_size_bytes END,
-            downloaded_at = CASE WHEN $21 THEN $22 ELSE downloaded_at END
+            downloaded_at = CASE WHEN $21 THEN $22 ELSE downloaded_at END,
+            video_height = CASE WHEN $23 THEN $24 ELSE video_height END,
+            video_codec = CASE WHEN $25 THEN $26 ELSE video_codec END
         WHERE id = $1
         RETURNING id, platform, platform_video_id, title, description,
                   duration_secs, published_at, thumbnail_url, status, attempts,
-                  next_retry, last_error, file_path, file_size_bytes,
+                  next_retry, last_error, file_path, file_size_bytes, video_height, video_codec,
                   downloaded_at, created_at, updated_at
         ",
     )
@@ -699,6 +720,10 @@ pub async fn update_video(
     .bind(data.file_size_bytes.flatten())
     .bind(data.downloaded_at.is_some())
     .bind(data.downloaded_at.flatten())
+    .bind(data.video_height.is_some())
+    .bind(data.video_height.flatten())
+    .bind(data.video_codec.is_some())
+    .bind(data.video_codec.flatten())
     .fetch_optional(pool)
     .await?
     .ok_or(DbError::NotFound)?;
@@ -725,7 +750,7 @@ pub async fn list_videos_by_ids(pool: &PgPool, ids: &[Ulid]) -> Result<Vec<Video
         r"
         SELECT id, platform, platform_video_id, title, description,
                duration_secs, published_at, thumbnail_url, status, attempts,
-               next_retry, last_error, file_path, file_size_bytes,
+               next_retry, last_error, file_path, file_size_bytes, video_height, video_codec,
                downloaded_at, created_at, updated_at
         FROM videos
         WHERE id = ANY($1)
@@ -844,8 +869,7 @@ pub async fn mark_video_downloading(pool: &PgPool, id: Ulid) -> Result<(), DbErr
 pub async fn mark_video_completed(
     pool: &PgPool,
     id: Ulid,
-    file_path: &str,
-    file_size_bytes: i64,
+    delivered: DeliveredVideo<'_>,
 ) -> Result<(), DbError> {
     let result = sqlx::query(
         r"
@@ -853,6 +877,8 @@ pub async fn mark_video_completed(
         SET status = 'completed',
             file_path = $2,
             file_size_bytes = $3,
+            video_height = $4,
+            video_codec = $5,
             downloaded_at = NOW(),
             next_retry = NULL,
             last_error = NULL
@@ -860,8 +886,10 @@ pub async fn mark_video_completed(
         ",
     )
     .bind(id.to_string())
-    .bind(file_path)
-    .bind(file_size_bytes)
+    .bind(delivered.file_path)
+    .bind(delivered.file_size_bytes)
+    .bind(delivered.video_height)
+    .bind(delivered.video_codec)
     .execute(pool)
     .await?;
 

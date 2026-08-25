@@ -80,6 +80,14 @@ pub enum VideoCodecPreference {
     AV1,
     /// Custom codec preference
     Custom(String),
+    /// Ordered codec preference, most preferred first.
+    ///
+    /// Selection walks the list and picks the first entry that can actually
+    /// deliver the requested resolution, so resolution outranks codec. If no
+    /// entry can reach the target, selection falls back to the first entry that
+    /// matches any format at all, which keeps the codec guarantee a preset makes
+    /// instead of silently returning a codec the target device cannot decode.
+    Ranked(Vec<VideoCodecPreference>),
     /// No specific codec preference
     #[default]
     Any,
@@ -92,6 +100,10 @@ impl fmt::Display for VideoCodecPreference {
             VideoCodecPreference::AVC1 => f.write_str("AVC1"),
             VideoCodecPreference::AV1 => f.write_str("AV1"),
             VideoCodecPreference::Custom(c) => write!(f, "Custom(codec={c})"),
+            VideoCodecPreference::Ranked(list) => {
+                let rendered = list.iter().map(ToString::to_string).collect::<Vec<_>>().join(" > ");
+                write!(f, "Ranked({rendered})")
+            }
             VideoCodecPreference::Any => f.write_str("Any"),
         }
     }
@@ -208,6 +220,9 @@ pub fn matches_video_codec(codec: &str, preference: &VideoCodecPreference) -> bo
             contains_ignore_ascii_case(codec, "av1") || contains_ignore_ascii_case(codec, "av01")
         }
         VideoCodecPreference::Custom(custom) => contains_ignore_ascii_case(codec, custom),
+        // A ranked preference is resolved positionally by the selector; matching
+        // against the whole list is only meaningful as "any entry matches".
+        VideoCodecPreference::Ranked(list) => list.iter().any(|pref| matches_video_codec(codec, pref)),
         VideoCodecPreference::Any => true,
     }
 }
