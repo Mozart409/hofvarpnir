@@ -13,9 +13,10 @@ use std::sync::Arc;
 
 use chrono::{DateTime, NaiveDate, TimeZone, Utc};
 use tokio::sync::mpsc;
-use tracing::{debug, info, instrument};
+use tracing::{debug, info, instrument, warn};
 use ulid::Ulid;
 use yt_dlp::Downloader;
+use yt_dlp::client::DownloadDetails;
 use yt_dlp::client::deps::Libraries;
 use yt_dlp::extractor::ExtractorConfig;
 use yt_dlp::extractor::VideoExtractor;
@@ -314,6 +315,16 @@ pub struct DownloadResult {
     pub file_path: PathBuf,
     /// File size in bytes.
     pub file_size_bytes: i64,
+    /// Height of the video stream that was actually delivered.
+    ///
+    /// The requested [`Quality`] is only a preference; the delivered height
+    /// depends on what the platform published. `None` for audio-only downloads
+    /// or when the extractor reported no resolution.
+    pub video_height: Option<i32>,
+    /// Codec of the video stream that was actually delivered, e.g. `av01.0.12M.08`.
+    pub video_codec: Option<String>,
+    /// Frame rate of the video stream that was actually delivered.
+    pub video_fps: Option<i32>,
 }
 
 /// Parameters required to run a single download.
@@ -347,11 +358,30 @@ pub struct FormatPolicy {
 impl FormatPolicy {
     #[must_use]
     pub fn from(quality: &Quality, preset: &OutputPreset) -> Self {
+        // Codec preferences are ordered, not absolute: selection takes the first
+        // entry that can actually reach the requested resolution. This matters
+        // because YouTube publishes no AVC1 above 1080p, so a bare AVC1
+        // preference silently caps a 1440p profile at 1080p.
+        //
+        // VP9 is deliberately absent from the mp4 presets. VP9 outside a webm
+        // container is poorly supported by browsers, and muxing it into mp4
+        // would defeat the direct-play guarantee these presets exist to make.
         let (video_codec, audio_codec, container_ext) = match preset {
             OutputPreset::Auto => (VideoCodecPreference::Any, AudioCodecPreference::Any, "mkv"),
-            OutputPreset::Browser => (VideoCodecPreference::AVC1, AudioCodecPreference::AAC, "mp4"),
+            OutputPreset::Browser => (
+                VideoCodecPreference::Ranked(vec![
+                    VideoCodecPreference::AVC1,
+                    VideoCodecPreference::AV1,
+                ]),
+                AudioCodecPreference::AAC,
+                "mp4",
+            ),
             OutputPreset::Tv => (
-                VideoCodecPreference::Custom("hevc".to_string()),
+                VideoCodecPreference::Ranked(vec![
+                    VideoCodecPreference::Custom("hevc".to_string()),
+                    VideoCodecPreference::AVC1,
+                    VideoCodecPreference::AV1,
+                ]),
                 AudioCodecPreference::AAC,
                 "mp4",
             ),
@@ -567,7 +597,7 @@ impl YtdlpClient {
         }
 
         let attempts = fallback_attempts(request.format_policy);
-        let (result_path, selected_stage) =
+        let (download_details, selected_stage) =
             execute_fallback_attempts(&attempts, request.format_policy, |attempt| {
                 let video_quality = attempt.video_quality;
                 let video_codec = attempt.video_codec.clone();
@@ -581,14 +611,43 @@ impl YtdlpClient {
                         .audio_quality(request.format_policy.audio_quality)
                         .video_codec(video_codec)
                         .audio_codec(audio_codec)
-                        .execute()
+                        .execute_detailed()
                         .await
                         .map_err(|err| err.to_string())
                 }
             })
             .await?;
 
+        let result_path = download_details.path;
+        let delivered_height = download_details
+            .video
+            .height
+            .and_then(|h| i32::try_from(h).ok());
+        let delivered_codec = download_details.video.codec.clone();
+        let delivered_fps = download_details
+            .video
+            .fps
+            .and_then(|f| i32::try_from(f).ok());
+
         debug!(stage = ?selected_stage, "Selected format fallback stage");
+
+        // A download that under-delivers still succeeds, so this is the only
+        // place the shortfall is visible. Log it loudly rather than letting a
+        // 1440p profile quietly return 1080p forever.
+        if let (Some(requested), Some(delivered)) = (
+            requested_height(&request.format_policy.quality),
+            delivered_height,
+        ) && delivered < requested
+        {
+            warn!(
+                video_id = %request.video_id,
+                requested_height = requested,
+                delivered_height = delivered,
+                delivered_codec = ?delivered_codec,
+                preset = ?request.format_policy.preset,
+                "Download delivered lower resolution than the profile requested"
+            );
+        }
 
         // Get file size
         let file_size = tokio::fs::metadata(&result_path)
@@ -616,6 +675,9 @@ impl YtdlpClient {
         Ok(DownloadResult {
             file_path: result_path,
             file_size_bytes: file_size,
+            video_height: delivered_height,
+            video_codec: delivered_codec,
+            video_fps: delivered_fps,
         })
     }
 
@@ -644,7 +706,7 @@ impl YtdlpClient {
                 detail: format!("Failed to create output dir: {e}"),
             })?;
 
-        self.download_video(request).await
+        Box::pin(self.download_video(request)).await
     }
 
     /// Detect the platform from a URL.
@@ -838,10 +900,10 @@ async fn execute_fallback_attempts<F, Fut>(
     attempts: &[FallbackAttempt],
     policy: &FormatPolicy,
     mut execute: F,
-) -> Result<(PathBuf, FallbackStage), YtdlpError>
+) -> Result<(DownloadDetails, FallbackStage), YtdlpError>
 where
     F: FnMut(&FallbackAttempt) -> Fut,
-    Fut: Future<Output = Result<PathBuf, String>>,
+    Fut: Future<Output = Result<DownloadDetails, String>>,
 {
     let mut last_error = None;
     let mut last_stage = None;
@@ -859,7 +921,7 @@ where
         );
 
         match execute(attempt).await {
-            Ok(path) => return Ok((path, attempt.stage)),
+            Ok(details) => return Ok((details, attempt.stage)),
             Err(err) => {
                 last_error = Some(err);
                 debug!(
@@ -878,6 +940,22 @@ where
         last_stage,
         detail,
     })
+}
+
+/// The pixel height a [`Quality`] asks for, if it names one.
+///
+/// `Best` and `AudioOnly` have no fixed target, so a shortfall is not
+/// meaningful for them.
+const fn requested_height(quality: &Quality) -> Option<i32> {
+    match quality {
+        Quality::Q4320p => Some(4320),
+        Quality::Q2160p => Some(2160),
+        Quality::Q1440p => Some(1440),
+        Quality::Q1080p => Some(1080),
+        Quality::Q720p => Some(720),
+        Quality::Q480p => Some(480),
+        Quality::Best | Quality::AudioOnly => None,
+    }
 }
 
 fn quality_fallback_chain(quality: &Quality) -> Vec<VideoQuality> {
@@ -1492,7 +1570,12 @@ mod tests {
         let policy = FormatPolicy::from(&Quality::Q1080p, &OutputPreset::Browser);
 
         assert_eq!(policy.preset, OutputPreset::Browser);
-        assert!(matches!(policy.video_codec, VideoCodecPreference::AVC1));
+        // AVC1 leads the ladder so the most compatible codec wins wherever it
+        // is available; see `test_browser_preset_ranks_avc1_ahead_of_av1`.
+        assert!(matches!(
+            &policy.video_codec,
+            VideoCodecPreference::Ranked(ladder) if ladder.first() == Some(&VideoCodecPreference::AVC1)
+        ));
         assert!(matches!(policy.audio_codec, AudioCodecPreference::AAC));
         assert_eq!(policy.container_ext, "mp4");
     }
@@ -1502,6 +1585,92 @@ mod tests {
         let chain = quality_fallback_chain(&Quality::Q1080p);
         assert_eq!(chain.first(), Some(&VideoQuality::CustomHeight(1080)));
         assert_eq!(chain.last(), Some(&VideoQuality::Worst));
+    }
+
+    fn test_download_details(path: &str, height: Option<u32>) -> DownloadDetails {
+        DownloadDetails {
+            path: PathBuf::from(path),
+            video: yt_dlp::client::SelectedFormat {
+                format_id: "test".to_string(),
+                codec: Some("avc1.640028".to_string()),
+                ext: Some("mp4".to_string()),
+                height,
+                width: None,
+                fps: Some(30),
+            },
+            audio: yt_dlp::client::SelectedFormat::default(),
+        }
+    }
+
+    #[test]
+    fn test_browser_preset_ranks_avc1_ahead_of_av1() {
+        let policy = FormatPolicy::from(&Quality::Q1440p, &OutputPreset::Browser);
+
+        // The ladder must stay ordered: AVC1 is tried first for universal
+        // direct play, with AV1 as the only mp4-native way past 1080p.
+        assert_eq!(
+            policy.video_codec,
+            VideoCodecPreference::Ranked(vec![
+                VideoCodecPreference::AVC1,
+                VideoCodecPreference::AV1
+            ])
+        );
+        assert_eq!(policy.container_ext, "mp4");
+    }
+
+    #[test]
+    fn test_browser_preset_excludes_vp9() {
+        // VP9 outside webm is poorly supported by browsers, and these presets
+        // force an mp4 container, so VP9 must never enter the ladder.
+        let policy = FormatPolicy::from(&Quality::Q2160p, &OutputPreset::Browser);
+        let VideoCodecPreference::Ranked(ladder) = &policy.video_codec else {
+            panic!("browser preset should use a ranked codec ladder");
+        };
+        assert!(!ladder.contains(&VideoCodecPreference::VP9));
+    }
+
+    #[test]
+    fn test_tv_preset_falls_back_to_mp4_native_codecs() {
+        let policy = FormatPolicy::from(&Quality::Q1440p, &OutputPreset::Tv);
+        assert_eq!(
+            policy.video_codec,
+            VideoCodecPreference::Ranked(vec![
+                VideoCodecPreference::Custom("hevc".to_string()),
+                VideoCodecPreference::AVC1,
+                VideoCodecPreference::AV1,
+            ])
+        );
+    }
+
+    #[test]
+    fn test_auto_preset_keeps_any_codec() {
+        let policy = FormatPolicy::from(&Quality::Q1440p, &OutputPreset::Auto);
+        assert_eq!(policy.video_codec, VideoCodecPreference::Any);
+        assert_eq!(policy.container_ext, "mkv");
+    }
+
+    #[test]
+    fn test_requested_height_maps_quality_tiers() {
+        assert_eq!(requested_height(&Quality::Q1440p), Some(1440));
+        assert_eq!(requested_height(&Quality::Q2160p), Some(2160));
+        assert_eq!(requested_height(&Quality::Q480p), Some(480));
+        // Best and AudioOnly name no target, so a shortfall is undefined.
+        assert_eq!(requested_height(&Quality::Best), None);
+        assert_eq!(requested_height(&Quality::AudioOnly), None);
+    }
+
+    #[tokio::test]
+    async fn test_fallback_reports_delivered_height() {
+        let policy = FormatPolicy::from(&Quality::Q1440p, &OutputPreset::Browser);
+        let attempts = fallback_attempts(&policy);
+
+        let (details, _) = execute_fallback_attempts(&attempts, &policy, |_attempt| async {
+            Ok(test_download_details("/tmp/delivered.mp4", Some(1440)))
+        })
+        .await
+        .expect("download should succeed");
+
+        assert_eq!(details.video.height, Some(1440));
     }
 
     #[test]
@@ -1537,7 +1706,10 @@ mod tests {
                 if stage == FallbackStage::PreferredCodecPair {
                     return Err("preferred codec not available".to_string());
                 }
-                Ok(PathBuf::from("/tmp/fallback-success.mp4"))
+                Ok(test_download_details(
+                    "/tmp/fallback-success.mp4",
+                    Some(1080),
+                ))
             }
         })
         .await;

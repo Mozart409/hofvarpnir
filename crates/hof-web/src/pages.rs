@@ -833,6 +833,7 @@ fn dashboard_metrics_markup(
                             @if let Some(source_name) = source_names.get(&video.id) {
                                 span class="shrink-0 truncate max-w-[10rem] text-xs text-slate-600 dark:text-slate-300" title=(source_name) { (source_name) }
                             }
+                            (delivered_quality_badge(video))
                             (status_badge(&video.status))
                         }
                     }
@@ -4039,7 +4040,10 @@ fn downloads_row(
             }
             td class="max-w-lg px-3 py-2 text-slate-900 dark:text-slate-100" {
                 p class="truncate font-medium" { (video.title) }
-                p class="truncate text-xs text-slate-500 dark:text-slate-400" { (video.id.to_string()) }
+                div class="flex items-center gap-2" {
+                    p class="truncate text-xs text-slate-500 dark:text-slate-400" { (video.id.to_string()) }
+                    (delivered_quality_badge(video))
+                }
             }
             td class="max-w-xs px-3 py-2 text-slate-600 dark:text-slate-400" {
                 p class="truncate" {
@@ -5450,8 +5454,11 @@ fn video_table_row(video: &hof_core::domain::video::Video) -> Markup {
             }
             td class="max-w-md px-3 py-2 text-slate-900 dark:text-slate-100" {
                 p class="truncate font-medium" { (video.title) }
-                p class="truncate text-xs text-slate-500 dark:text-slate-400" {
-                    (video.platform_video_id)
+                div class="flex items-center gap-2" {
+                    p class="truncate text-xs text-slate-500 dark:text-slate-400" {
+                        (video.platform_video_id)
+                    }
+                    (delivered_quality_badge(video))
                 }
             }
             td class="px-3 py-2 text-slate-600 dark:text-slate-400" {
@@ -5597,6 +5604,73 @@ const fn entry_order_badge_class(order: EntryOrder) -> &'static str {
         }
         EntryOrder::Unordered => {
             "rounded bg-orange-100 dark:bg-orange-900/50 text-orange-900 dark:text-orange-100 px-2 py-1"
+        }
+    }
+}
+
+/// Maps a delivered pixel height to the resolution tier users recognise.
+///
+/// Platforms occasionally serve off-tier heights (letterboxed or vertical
+/// video), so anything below a known tier is rendered as a raw height.
+fn resolution_label(height: i32) -> String {
+    match height {
+        h if h >= 4320 => "4320p".to_string(),
+        h if h >= 2160 => "2160p".to_string(),
+        h if h >= 1440 => "1440p".to_string(),
+        h if h >= 1080 => "1080p".to_string(),
+        h if h >= 720 => "720p".to_string(),
+        h if h >= 480 => "480p".to_string(),
+        h if h >= 360 => "360p".to_string(),
+        h => format!("{h}p"),
+    }
+}
+
+/// Normalises an extractor codec string into a short display name.
+///
+/// Codec strings carry profile/level detail (`av01.0.12M.08`) that is noise in a
+/// list view; what matters for direct play is the family.
+fn codec_label(codec: &str) -> &'static str {
+    let lower = codec.to_ascii_lowercase();
+    if lower.contains("av01") || lower.starts_with("av1") {
+        "AV1"
+    } else if lower.contains("avc1") || lower.contains("h264") {
+        "H.264"
+    } else if lower.contains("hev1") || lower.contains("hvc1") || lower.contains("hevc") {
+        "HEVC"
+    } else if lower.contains("vp9") || lower.contains("vp09") {
+        "VP9"
+    } else if lower.contains("vp8") {
+        "VP8"
+    } else {
+        "Video"
+    }
+}
+
+/// Badge showing the resolution and codec that were actually delivered.
+///
+/// Renders nothing when no resolution was recorded, which covers audio-only
+/// downloads and anything completed before delivered quality was tracked.
+fn delivered_quality_badge(video: &Video) -> Markup {
+    let Some(height) = video.video_height else {
+        return html! {};
+    };
+
+    let resolution = resolution_label(height);
+    let codec = video.video_codec.as_deref().map(codec_label);
+    let title = video.video_codec.as_deref().map_or_else(
+        || format!("Downloaded at {resolution}"),
+        |raw| format!("Downloaded at {resolution} ({raw})"),
+    );
+
+    html! {
+        span
+            title=(title)
+            class="inline-flex items-center gap-1 rounded-full bg-indigo-100 dark:bg-indigo-900/50 px-2 py-0.5 text-xs font-medium text-indigo-900 dark:text-indigo-100"
+        {
+            (resolution)
+            @if let Some(codec) = codec {
+                span class="text-indigo-700 dark:text-indigo-300 font-normal" { (codec) }
+            }
         }
     }
 }

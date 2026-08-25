@@ -295,43 +295,88 @@ impl VideoSelection for Video {
             return None;
         }
 
-        // Single-pass codec filter; fall back to all video formats if none match
-        let filtered: Vec<&Format>;
-        let active: &[&Format] = if codec == VideoCodecPreference::Any {
-            &video_formats
-        } else {
-            filtered = video_formats
+        // Resolution outranks codec: walk the codec ladder and take the first
+        // entry that can actually reach the requested height. A codec that only
+        // exists below the target (YouTube publishes no AVC1 above 1080p) is
+        // skipped rather than silently capping the resolution.
+        let ladder: Vec<VideoCodecPreference> = match &codec {
+            VideoCodecPreference::Any => Vec::new(),
+            VideoCodecPreference::Ranked(list) => list.clone(),
+            single => vec![single.clone()],
+        };
+
+        let target_height = target_height_for(quality, &video_formats);
+        let mut first_non_empty: Option<Vec<&Format>> = None;
+
+        for preference in &ladder {
+            let subset: Vec<&Format> = video_formats
                 .iter()
                 .copied()
                 .filter(|f| {
                     f.codec_info
                         .video_codec
                         .as_ref()
-                        .is_some_and(|c| matches_video_codec(c, &codec))
+                        .is_some_and(|c| matches_video_codec(c, preference))
                 })
                 .collect();
-            if filtered.is_empty() {
-                tracing::warn!(
-                    video_id = %self.id,
-                    codec = ?codec,
-                    "Requested video codec not available, falling back to all formats"
-                );
-                &video_formats
-            } else {
-                &filtered
-            }
-        };
 
-        // Select based on quality preference
-        match quality {
-            VideoQuality::Best => active.iter().copied().max_by(|a, b| self.compare_video_formats(a, b)),
-            VideoQuality::Worst => active.iter().copied().min_by(|a, b| self.compare_video_formats(a, b)),
-            VideoQuality::High => select_closest_video_height(active.iter().copied(), 1080, self),
-            VideoQuality::Medium => select_closest_video_height(active.iter().copied(), 720, self),
-            VideoQuality::Low => select_closest_video_height(active.iter().copied(), 480, self),
-            VideoQuality::CustomHeight(height) => select_closest_video_height(active.iter().copied(), height, self),
-            VideoQuality::CustomWidth(width) => select_closest_video_width(active.iter().copied(), width, self),
+            if subset.is_empty() {
+                continue;
+            }
+
+            let reachable = target_height.is_none_or(|target| {
+                subset
+                    .iter()
+                    .filter_map(|f| f.video_resolution.height)
+                    .max()
+                    .is_some_and(|max_height| max_height >= target)
+            });
+
+            if reachable {
+                tracing::debug!(
+                    video_id = %self.id,
+                    codec = %preference,
+                    target_height = ?target_height,
+                    "🧩 Codec can reach target resolution"
+                );
+                return select_by_quality(&subset, quality, self);
+            }
+
+            tracing::debug!(
+                video_id = %self.id,
+                codec = %preference,
+                target_height = ?target_height,
+                "🧩 Codec cannot reach target resolution, trying next preference"
+            );
+
+            if first_non_empty.is_none() {
+                first_non_empty = Some(subset);
+            }
         }
+
+        // No preferred codec reaches the target. Honour the codec guarantee over
+        // the resolution: a preset asks for a codec because the playback device
+        // can decode it, so dropping resolution beats returning an undecodable
+        // stream. Only when no preferred codec matches anything do we widen.
+        if let Some(subset) = first_non_empty {
+            tracing::warn!(
+                video_id = %self.id,
+                codec = %codec,
+                target_height = ?target_height,
+                "Requested resolution unavailable in any preferred codec, keeping codec and lowering resolution"
+            );
+            return select_by_quality(&subset, quality, self);
+        }
+
+        if !ladder.is_empty() {
+            tracing::warn!(
+                video_id = %self.id,
+                codec = %codec,
+                "Requested video codec not available, falling back to all formats"
+            );
+        }
+
+        select_by_quality(&video_formats, quality, self)
     }
 
     /// Selects an audio format based on quality preference and codec preference.
@@ -494,6 +539,36 @@ where
         // Compare height then quality
         a_height.cmp(&b_height).then_with(|| video.compare_video_formats(a, b))
     })
+}
+
+/// Resolves the height a quality preference is aiming for, if any.
+///
+/// `Best` targets the tallest format the video actually offers, so a codec that
+/// tops out below it is still treated as "cannot reach the target". `Worst` and
+/// width-based selection have no height ambition and return `None`, which makes
+/// the codec preference authoritative for them.
+fn target_height_for(quality: VideoQuality, formats: &[&Format]) -> Option<u32> {
+    match quality {
+        VideoQuality::Best => formats.iter().filter_map(|f| f.video_resolution.height).max(),
+        VideoQuality::High => Some(1080),
+        VideoQuality::Medium => Some(720),
+        VideoQuality::Low => Some(480),
+        VideoQuality::CustomHeight(height) => Some(height),
+        VideoQuality::Worst | VideoQuality::CustomWidth(_) => None,
+    }
+}
+
+/// Applies a quality preference to an already codec-filtered candidate set.
+fn select_by_quality<'a>(formats: &[&'a Format], quality: VideoQuality, video: &Video) -> Option<&'a Format> {
+    match quality {
+        VideoQuality::Best => formats.iter().copied().max_by(|a, b| video.compare_video_formats(a, b)),
+        VideoQuality::Worst => formats.iter().copied().min_by(|a, b| video.compare_video_formats(a, b)),
+        VideoQuality::High => select_closest_video_height(formats.iter().copied(), 1080, video),
+        VideoQuality::Medium => select_closest_video_height(formats.iter().copied(), 720, video),
+        VideoQuality::Low => select_closest_video_height(formats.iter().copied(), 480, video),
+        VideoQuality::CustomHeight(height) => select_closest_video_height(formats.iter().copied(), height, video),
+        VideoQuality::CustomWidth(width) => select_closest_video_width(formats.iter().copied(), width, video),
+    }
 }
 
 /// Selects the video format with the closest width to the target
