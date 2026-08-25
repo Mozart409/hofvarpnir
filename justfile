@@ -179,7 +179,6 @@ seed-cache: clear
 attic-push attr: clear
     nix build --no-link --print-out-paths {{ attr }} | xargs attic push {{ attic_cache }}
 
-# Github (origin) is the primary remote; mirror it to the Forgejo remote.
 sync-remotes: clear
     git fetch origin --prune
     git push origin --all
@@ -189,6 +188,7 @@ sync-remotes: clear
     git fetch forgejo --prune
 
 trivy: clear build-oci
+    nix build .#container
     trivy image --input result --scanners vuln
 
 # No version/tag safety checks — use ./push_harbor.sh for versioned releases.
