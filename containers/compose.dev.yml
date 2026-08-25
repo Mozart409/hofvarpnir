@@ -25,6 +25,32 @@ services:
       timeout: 5s
       retries: 5
       start_period: 30s
+  # Dedicated database for `just test` (the recipe overrides DATABASE_URL to port
+  # 5433). Deliberately lean: stock image, no contrib extensions, no
+  # pg_stat_statements preload — the #[sqlx::test] suite churns CREATE/DROP
+  # DATABASE per test and the monitoring extensions only add stats-GC contention
+  # here. Durability is disabled (fsync/synchronous_commit/full_page_writes off);
+  # data lives on the container layer and dies with it, which is exactly what a
+  # test database should do.
+  postgres-test:
+    container_name: postgres-test
+    image: docker.io/postgres:17-trixie
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    # max_connections: the parallel `#[sqlx::test]` suite creates a fresh
+    # database + pool per test (same reasoning as the dev service above).
+    command: ["postgres", "-c", "max_connections=300", "-c", "fsync=off", "-c", "synchronous_commit=off", "-c", "full_page_writes=off"]
+    ports:
+      - "5433:5432"
+    networks:
+      - hofvarpnir
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
   postgres_exporter:
     container_name: postgres_exporter
     image: docker.io/prometheuscommunity/postgres-exporter:latest

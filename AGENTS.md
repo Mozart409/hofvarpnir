@@ -310,6 +310,8 @@ pub async fn list_videos(State(state): State<AppState>) -> Result<impl IntoRespo
 
 In development you can use this connection string to connect to the database. DATABASE_URL=postgresql://postgres:postgres@localhost:5432/hofvarpnir_dev
 
+The test entry points (`just test`, `e2e`, `e2e-only`, `ci`, and the bacon `test`/`nextest` jobs) do not use the dev database: they override `DATABASE_URL` to a dedicated, ephemeral Postgres (`postgres-test` service in `containers/compose.dev.yml`, localhost:5433, no monitoring extensions, durability disabled). Override with `TEST_DATABASE_URL` (just) if needed. The bacon `run`/`serve`/`tui` jobs still use the dev database, as does `just dev`.
+
 You can use flake.nix psql client.
 
 ### Dependency Policy
