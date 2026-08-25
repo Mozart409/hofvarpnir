@@ -184,7 +184,6 @@ seed-cache: clear
 attic-push attr: clear
     nix build --no-link --print-out-paths {{ attr }} | xargs attic push {{ attic_cache }}
 
-# Github (origin) is the primary remote; mirror it to the Forgejo remote.
 sync-remotes: clear
     git fetch origin --prune
     git push origin --all
