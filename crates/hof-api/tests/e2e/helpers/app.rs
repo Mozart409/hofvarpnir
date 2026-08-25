@@ -77,6 +77,7 @@ impl TestApp {
             ytdlp,
             supervisor: supervisor.clone(),
             check_interval: None,
+            max_indexers_per_tick: None,
             broadcaster: broadcaster.clone(),
         });
 

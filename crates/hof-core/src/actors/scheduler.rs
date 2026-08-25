@@ -28,6 +28,22 @@ const DEFAULT_CHECK_INTERVAL_SECS: u64 = 60;
 /// Minimum interval between indexing the same source (rate limiting).
 const MIN_INDEX_INTERVAL_SECS: u64 = 300; // 5 minutes
 
+/// How long the scheduling loop waits for mailbox space before giving up on
+/// a single tick. Bounded so the loop can never stall indefinitely, but long
+/// enough to ride out a transient mailbox-full burst (e.g. a wave of
+/// `IndexingCompleted` replies from a large indexing backlog) without
+/// dropping the tick outright.
+const TICK_SEND_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Default cap on how many new indexers a single `CheckSources` tick will
+/// spawn. Without this, a large accumulated backlog (e.g. after downtime)
+/// spawns every due source's indexer concurrently in one tick — dozens or
+/// hundreds of simultaneous yt-dlp processes hitting the platform at once,
+/// which is exactly what triggered the mass-timeout incident this file's
+/// mailbox fix addresses. Staggering across ticks (one batch every
+/// `check_interval`) ramps up gradually instead.
+const DEFAULT_MAX_INDEXERS_PER_TICK: usize = 5;
+
 /// The scheduler actor.
 ///
 /// Manages periodic checks for sources that need indexing and spawns
@@ -41,6 +57,8 @@ pub struct SchedulerActor {
     supervisor: ActorRef<DownloadSupervisor>,
     /// Interval for checking sources.
     check_interval: Duration,
+    /// Maximum number of new indexers spawned per `CheckSources` tick.
+    max_indexers_per_tick: usize,
     /// Track when each source was last indexed (for rate limiting).
     last_indexed: HashMap<Ulid, Instant>,
     /// Active indexing tasks (`source_id` -> actor ref).
@@ -67,6 +85,9 @@ pub struct SchedulerArgs {
     pub supervisor: ActorRef<DownloadSupervisor>,
     /// Optional custom check interval.
     pub check_interval: Option<Duration>,
+    /// Optional cap on new indexers spawned per tick (see
+    /// `DEFAULT_MAX_INDEXERS_PER_TICK`).
+    pub max_indexers_per_tick: Option<usize>,
     pub broadcaster: ActivityBroadcaster,
 }
 
@@ -78,10 +99,13 @@ impl Actor for SchedulerActor {
         let check_interval = args
             .check_interval
             .unwrap_or(Duration::from_secs(DEFAULT_CHECK_INTERVAL_SECS));
+        let max_indexers_per_tick = args
+            .max_indexers_per_tick
+            .unwrap_or(DEFAULT_MAX_INDEXERS_PER_TICK);
 
         info!(
             check_interval_secs = check_interval.as_secs(),
-            "Scheduler actor starting"
+            max_indexers_per_tick, "Scheduler actor starting"
         );
 
         let scheduler = Self {
@@ -89,6 +113,7 @@ impl Actor for SchedulerActor {
             ytdlp: args.ytdlp,
             supervisor: args.supervisor,
             check_interval,
+            max_indexers_per_tick,
             last_indexed: HashMap::new(),
             active_indexers: HashMap::new(),
             running: false,
@@ -159,10 +184,31 @@ impl Message<StartScheduler> for SchedulerActor {
                     break;
                 }
 
-                // Trigger a check
-                if let Err(e) = actor_ref.tell(CheckSources).try_send() {
-                    error!(error = %e, "Failed to send CheckSources message");
-                    break;
+                // Trigger a check. A single try_send() failure here used to
+                // permanently kill this ticker on any transient mailbox-full
+                // condition (e.g. a burst of IndexingCompleted replies from a
+                // large indexing backlog) — the scheduler would then silently
+                // stop indexing forever while still reporting `running: true`.
+                // Wait (bounded) for mailbox space instead: a full mailbox
+                // just skips this tick and retries on the next one; only a
+                // truly stopped actor ends the loop.
+                match actor_ref
+                    .tell(CheckSources)
+                    .mailbox_timeout(TICK_SEND_TIMEOUT)
+                    .send()
+                    .await
+                {
+                    Ok(()) => {}
+                    Err(SendError::Timeout(_)) => {
+                        warn!(
+                            timeout_secs = TICK_SEND_TIMEOUT.as_secs(),
+                            "Scheduler mailbox still full after wait, skipping this tick"
+                        );
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "Failed to send CheckSources, actor has stopped");
+                        break;
+                    }
                 }
             }
 
@@ -211,7 +257,24 @@ impl Message<CheckSources> for SchedulerActor {
         } else {
             info!(count = sources.len(), "Found sources due for indexing");
 
+            let total_due = sources.len();
+            let mut spawned_this_tick = 0usize;
+
             for source in sources {
+                // Stagger a large backlog across ticks instead of spawning
+                // every due source's indexer at once — a burst of dozens of
+                // concurrent yt-dlp processes is what caused every source to
+                // time out simultaneously after an outage.
+                if spawned_this_tick >= self.max_indexers_per_tick {
+                    info!(
+                        spawned_this_tick,
+                        remaining = total_due.saturating_sub(spawned_this_tick),
+                        max_indexers_per_tick = self.max_indexers_per_tick,
+                        "Reached per-tick indexer cap, remaining due sources deferred to next tick"
+                    );
+                    break;
+                }
+
                 // Skip if already being indexed
                 if self.active_indexers.contains_key(&source.id) {
                     debug!(source_id = %source.id, "Source already being indexed");
@@ -238,6 +301,7 @@ impl Message<CheckSources> for SchedulerActor {
                         "Failed to spawn indexer"
                     );
                 }
+                spawned_this_tick += 1;
             }
         }
 
@@ -523,5 +587,13 @@ mod tests {
     fn test_default_check_interval() {
         const _: () = assert!(DEFAULT_CHECK_INTERVAL_SECS >= 30);
         const _: () = assert!(DEFAULT_CHECK_INTERVAL_SECS <= 300);
+    }
+
+    #[test]
+    fn test_default_max_indexers_per_tick() {
+        // Must be small enough to avoid a burst of concurrent yt-dlp
+        // processes, but not so small that a large backlog never drains.
+        const _: () = assert!(DEFAULT_MAX_INDEXERS_PER_TICK >= 1);
+        const _: () = assert!(DEFAULT_MAX_INDEXERS_PER_TICK <= 20);
     }
 }
