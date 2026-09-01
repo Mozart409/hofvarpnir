@@ -20,21 +20,37 @@ need_stdout = false
 
 # Run clippy on the default target
 [jobs.clippy]
-command = ["cargo", "clippy", "--workspace"]
+command = [
+	"cargo", "clippy",
+	"--workspace", "--all-features",
+	"--",
+	"-D", "warnings",
+	"-D", "clippy::pedantic",
+	"-D", "clippy::nursery",
+]
 need_stdout = false
 
 # Run clippy on all targets across the workspace
 [jobs.clippy-all]
-command = ["cargo", "clippy", "--workspace", "--all-targets"]
+command = [
+	"cargo", "clippy",
+	"--workspace", "--all-targets", "--all-features",
+	"--",
+	"-D", "warnings",
+	"-D", "clippy::pedantic",
+	"-D", "clippy::nursery",
+]
 need_stdout = false
 
-# Run clippy in pedantic mode across the workspace
+# Run strict clippy checks across the workspace
 [jobs.pedantic]
 command = [
 	"cargo", "clippy",
-	"--workspace", "--all-targets",
+	"--workspace", "--all-targets", "--all-features",
 	"--",
-	"-W", "clippy::pedantic",
+	"-D", "warnings",
+	"-D", "clippy::pedantic",
+	"-D", "clippy::nursery",
 ]
 need_stdout = false
 
