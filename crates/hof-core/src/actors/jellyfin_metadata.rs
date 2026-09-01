@@ -198,9 +198,14 @@ impl Message<GetStatus> for JellyfinMetadataActor {
         JellyfinMetadataStatus {
             is_running: self.is_running,
             last_check_at: self.last_check_at,
-            next_check_at: self
-                .last_check_at
-                .map(|t| t + chrono::Duration::from_std(self.check_interval).unwrap_or_default()),
+            // `checked_add_signed` avoids a panic on `DateTime` overflow; the
+            // check interval is a small config value, so overflow can only
+            // happen astronomically far in the future, in which case we fall
+            // back to leaving `next_check_at` as the last check time.
+            next_check_at: self.last_check_at.map(|t| {
+                let interval = chrono::Duration::from_std(self.check_interval).unwrap_or_default();
+                t.checked_add_signed(interval).unwrap_or(t)
+            }),
         }
     }
 }
@@ -332,7 +337,7 @@ impl JellyfinMetadataActor {
         };
 
         for source in sources {
-            result.sources_checked += 1;
+            result.sources_checked = result.sources_checked.saturating_add(1);
 
             // Find the profile for this source
             let Some(profile) = profiles.iter().find(|p| p.id == source.profile_id) else {
@@ -351,7 +356,7 @@ impl JellyfinMetadataActor {
             // Check if metadata needs regeneration
             if !jellyfin::needs_regeneration(&output_dir, source.jellyfin_metadata_at, false) {
                 debug!(source_id = %source.id, "Metadata already exists");
-                result.sources_existing += 1;
+                result.sources_existing = result.sources_existing.saturating_add(1);
                 continue;
             }
 
@@ -360,7 +365,7 @@ impl JellyfinMetadataActor {
 
             match jellyfin::generate_metadata(&self.http_client, &metadata, &output_dir).await {
                 Ok(()) => {
-                    result.sources_generated += 1;
+                    result.sources_generated = result.sources_generated.saturating_add(1);
 
                     // Update timestamp
                     if let Err(e) =

@@ -188,6 +188,10 @@ fn init_loki_layer() -> (
 
     let service_name = std::env::var("OTEL_SERVICE_NAME").unwrap_or_else(|_| "hofvarpnir".into());
 
+    // The label key is a hardcoded literal and the value comes from
+    // OTEL_SERVICE_NAME; only a malformed key can fail here, which cannot
+    // happen with a fixed literal.
+    #[allow(clippy::expect_used)]
     let builder = tracing_loki::builder()
         .label("service", service_name)
         .expect("valid label");

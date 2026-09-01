@@ -18,6 +18,11 @@ use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
 pub fn init_metrics() -> PrometheusHandle {
     let recorder = PrometheusBuilder::new().build_recorder();
     let handle = recorder.handle();
+    // Called once at startup, before any other recorder can be installed. A
+    // failure here means the process is misconfigured beyond recovery, and the
+    // panic is documented in this function's `# Panics` section. Propagating
+    // instead would change a public signature used across all three binaries.
+    #[allow(clippy::expect_used)]
     metrics::set_global_recorder(recorder).expect("failed to install Prometheus metrics recorder");
     handle
 }
