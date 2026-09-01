@@ -260,10 +260,13 @@ impl Message<RunCleanup> for CleanupActor {
         }
 
         let total_cleaned = result.retention_cleaned + result.quota_cleaned;
-        counter!(crate::metrics::VIDEOS_CLEANED_TOTAL).increment(total_cleaned as u64);
+        counter!(crate::metrics::VIDEOS_CLEANED_TOTAL)
+            .increment(u64::try_from(total_cleaned).unwrap_or(u64::MAX));
         counter!(crate::metrics::CLEANUP_TEMP_FILES_REMOVED_TOTAL)
-            .increment(result.temp_files_cleaned as u64);
-        #[allow(clippy::cast_precision_loss)]
+            .increment(u64::try_from(result.temp_files_cleaned).unwrap_or(u64::MAX));
+        // `i64` has no lossless conversion to `f64`, but this is a metrics gauge
+        // and the loss is only material above 2^53 bytes (~9 PB).
+        #[allow(clippy::cast_precision_loss, clippy::as_conversions)]
         gauge!(crate::metrics::CLEANUP_BYTES_FREED).set(result.bytes_freed as f64);
 
         info!(
@@ -428,7 +431,8 @@ impl CleanupActor {
         // Update video status to cleaned
         db::update_video_status(&self.pool, video.id, VideoStatus::Cleaned).await?;
 
-        #[allow(clippy::cast_precision_loss)]
+        // Display-only MB figure for a log message; precision loss is irrelevant.
+        #[allow(clippy::cast_precision_loss, clippy::as_conversions)]
         let size_mb = bytes as f64 / 1_048_576.0;
         let message = format!("Cleaned \"{}\" ({size_mb:.1} MB freed)", video.title);
         self.broadcaster

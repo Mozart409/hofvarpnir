@@ -721,7 +721,9 @@ pub async fn retry_download(
         }
     };
 
-    if source_ids.is_empty() {
+    // Take the first source and its profile. `first()` folds the emptiness
+    // check into the binding, so there is no indexing panic path.
+    let Some(&first_source_id) = source_ids.first() else {
         return (
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
@@ -729,10 +731,9 @@ pub async fn retry_download(
             }),
         )
             .into_response();
-    }
+    };
 
-    // Get the first source and its profile
-    let source = match db::get_source(&state.pool, source_ids[0]).await {
+    let source = match db::get_source(&state.pool, first_source_id).await {
         Ok(s) => s,
         Err(e) => {
             tracing::error!(error = %e, "Failed to get source");
@@ -1165,13 +1166,14 @@ pub async fn bulk_retry_downloads(State(state): State<AppState>, auth: Auth) -> 
             }
         };
 
-        if source_ids.is_empty() {
+        // Take the first source and its profile. `first()` folds the emptiness
+        // check into the binding, so there is no indexing panic path.
+        let Some(&first_source_id) = source_ids.first() else {
             tracing::warn!(video_id = %video.id, "Video has no linked sources, skipping");
             continue;
-        }
+        };
 
-        // Get the first source and its profile
-        let source = match db::get_source(&state.pool, source_ids[0]).await {
+        let source = match db::get_source(&state.pool, first_source_id).await {
             Ok(s) => s,
             Err(e) => {
                 tracing::warn!(error = %e, video_id = %video.id, "Failed to get source");

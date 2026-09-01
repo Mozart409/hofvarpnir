@@ -3305,7 +3305,8 @@ async fn delete_download(
             .into_response();
     }
 
-    #[allow(clippy::cast_precision_loss)]
+    // Display-only MB figure; precision loss is immaterial below ~9 PB.
+    #[allow(clippy::cast_precision_loss, clippy::as_conversions)]
     let size_mb = video.file_size_bytes.unwrap_or(0) as f64 / 1_048_576.0;
     let title = &video.title;
     state
@@ -4992,14 +4993,18 @@ fn metric_card(title: &str, value: impl std::fmt::Display, description: &str) ->
 fn format_bytes_human(bytes: i64) -> String {
     const UNITS: [&str; 6] = ["B", "KB", "MB", "GB", "TB", "PB"];
 
-    #[allow(clippy::cast_precision_loss)]
+    // Display-only human-readable size; precision loss is immaterial.
+    #[allow(clippy::cast_precision_loss, clippy::as_conversions)]
     let mut value = bytes.max(0) as f64;
     let mut unit_index = 0usize;
     while value >= 1000.0 && unit_index < UNITS.len() - 1 {
         value /= 1000.0;
         unit_index += 1;
     }
-    format!("{value:.1} {}", UNITS[unit_index])
+    // The loop bounds `unit_index` to `UNITS.len() - 1`, so `get` always
+    // succeeds; the fallback exists only to avoid an indexing panic path.
+    let unit = UNITS.get(unit_index).copied().unwrap_or("B");
+    format!("{value:.1} {unit}")
 }
 
 /// Percentage of quota used, clamped to `0.0..=100.0`.
@@ -5012,7 +5017,8 @@ fn storage_usage_percent(used_bytes: i64, quota_bytes: i64) -> f64 {
         return if used_bytes > 0 { 100.0 } else { 0.0 };
     }
 
-    #[allow(clippy::cast_precision_loss)]
+    // Display-only percentage; precision loss is immaterial at these magnitudes.
+    #[allow(clippy::cast_precision_loss, clippy::as_conversions)]
     let percent = (used_bytes.max(0) as f64 / quota as f64) * 100.0;
     percent.clamp(0.0, 100.0)
 }
@@ -5105,6 +5111,20 @@ mod storage_usage_tests {
     #[test]
     fn format_bytes_human_mb_example() {
         assert_eq!(format_bytes_human(13 * 1000 * 1000), "13.0 MB");
+    }
+
+    #[test]
+    fn format_bytes_human_saturates_at_largest_unit() {
+        // Exercises the upper bound of the unit table: the scaling loop stops at
+        // the last unit (PB) rather than running past the end of `UNITS`.
+        assert_eq!(format_bytes_human(1_000_000_000_000_000), "1.0 PB");
+    }
+
+    #[test]
+    fn format_bytes_human_beyond_largest_unit_stays_in_pb() {
+        // Values larger than the biggest unit must keep scaling the number
+        // instead of advancing the index out of range.
+        assert_eq!(format_bytes_human(i64::MAX), "9223.4 PB");
     }
 
     #[test]

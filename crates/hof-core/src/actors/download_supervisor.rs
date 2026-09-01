@@ -114,10 +114,13 @@ impl Actor for DownloadSupervisor {
             "Download supervisor starting"
         );
 
+        let max_concurrent = usize::try_from(args.config.max_concurrent)
+            .map_err(|e| color_eyre::eyre::eyre!("invalid max_concurrent value: {e}"))?;
+
         let supervisor = Self {
             pool: args.pool,
             ytdlp: args.ytdlp,
-            semaphore: Arc::new(Semaphore::new(args.config.max_concurrent as usize)),
+            semaphore: Arc::new(Semaphore::new(max_concurrent)),
             rate_limit_delay: args.config.rate_limit_delay,
             last_download_start: None,
             rate_limit_backoff_multiplier: 1,
@@ -219,7 +222,9 @@ impl Message<RegisterWorker> for DownloadSupervisor {
 
     async fn handle(&mut self, msg: RegisterWorker, _ctx: &mut Context<Self, Self::Reply>) {
         self.active_downloads.insert(msg.video_id, msg.worker_ref);
-        #[allow(clippy::cast_precision_loss)]
+        // `usize` has no lossless conversion to `f64`; active download counts are
+        // bounded by `max_concurrent` (far below 2^53), so precision loss is moot.
+        #[allow(clippy::cast_precision_loss, clippy::as_conversions)]
         gauge!(crate::metrics::DOWNLOADS_ACTIVE).set(self.active_downloads.len() as f64);
         debug!(
             video_id = %msg.video_id,
@@ -243,7 +248,9 @@ impl Message<DownloadCompleted> for DownloadSupervisor {
         // Release the in-flight dispatch reservation so the video can be
         // dispatched again on a future tick (if still eligible).
         self.dispatching.remove(&msg.video_id);
-        #[allow(clippy::cast_precision_loss)]
+        // See the analogous conversion in `RegisterWorker::handle` above: `usize`
+        // has no lossless conversion to `f64`, and the count is always small.
+        #[allow(clippy::cast_precision_loss, clippy::as_conversions)]
         gauge!(crate::metrics::DOWNLOADS_ACTIVE).set(self.active_downloads.len() as f64);
         debug!(
             video_id = %msg.video_id,
@@ -280,7 +287,10 @@ impl Message<ReportOutcome> for DownloadSupervisor {
                 // Reset rate limit backoff on success
                 self.rate_limit_backoff_multiplier = 1;
 
-                #[allow(clippy::cast_precision_loss)]
+                // `i64` has no lossless conversion to `f64`; this value is only used
+                // for a human-readable MB figure in a log message, so precision loss
+                // (only material above 2^53 bytes) is irrelevant here.
+                #[allow(clippy::cast_precision_loss, clippy::as_conversions)]
                 let size_mb = file_size_bytes as f64 / 1_048_576.0;
                 let message = format!(
                     "Completed \"{}\" ({size_mb:.1} MB)",
@@ -356,13 +366,13 @@ impl Message<ProcessPendingDownloads> for DownloadSupervisor {
                 .await
                 .map_err(|e| e.to_string())?;
 
-            if source_ids.is_empty() {
+            let Some(&first_source_id) = source_ids.first() else {
                 warn!(video_id = %video.id, "Video has no linked sources, skipping");
                 continue;
-            }
+            };
 
             // Get the first source's profile (in a real app, might need better logic)
-            let source = db::get_source(&self.pool, source_ids[0])
+            let source = db::get_source(&self.pool, first_source_id)
                 .await
                 .map_err(|e| e.to_string())?;
 
@@ -470,8 +480,10 @@ impl Message<NotifyRateLimited> for DownloadSupervisor {
 
     async fn handle(&mut self, _msg: NotifyRateLimited, _ctx: &mut Context<Self, Self::Reply>) {
         // Increase backoff multiplier (exponentially)
-        self.rate_limit_backoff_multiplier =
-            (self.rate_limit_backoff_multiplier * 2).min(MAX_RATE_LIMIT_MULTIPLIER);
+        self.rate_limit_backoff_multiplier = self
+            .rate_limit_backoff_multiplier
+            .saturating_mul(2)
+            .min(MAX_RATE_LIMIT_MULTIPLIER);
 
         warn!(
             backoff_multiplier = self.rate_limit_backoff_multiplier,
@@ -655,7 +667,9 @@ impl DownloadSupervisor {
     /// Calculate the effective rate limit delay considering backoff.
     fn effective_rate_limit_delay(&self) -> Duration {
         Duration::from_secs(
-            self.rate_limit_delay.as_secs() * u64::from(self.rate_limit_backoff_multiplier),
+            self.rate_limit_delay
+                .as_secs()
+                .saturating_mul(u64::from(self.rate_limit_backoff_multiplier)),
         )
     }
 
@@ -665,8 +679,10 @@ impl DownloadSupervisor {
     async fn handle_failure(&mut self, video_id: Ulid, failure: FailureContext<'_>) {
         if failure.is_rate_limited {
             // Increase global rate limit backoff
-            self.rate_limit_backoff_multiplier =
-                (self.rate_limit_backoff_multiplier * 2).min(MAX_RATE_LIMIT_MULTIPLIER);
+            self.rate_limit_backoff_multiplier = self
+                .rate_limit_backoff_multiplier
+                .saturating_mul(2)
+                .min(MAX_RATE_LIMIT_MULTIPLIER);
             warn!(
                 backoff_multiplier = self.rate_limit_backoff_multiplier,
                 "Rate limit hit, increasing backoff"
@@ -737,8 +753,14 @@ impl DownloadSupervisor {
             let backoff_secs = BACKOFF_BASE_SECS.saturating_mul(2u64.saturating_pow(attempts_u32));
             let capped_backoff = backoff_secs.min(BACKOFF_MAX_SECS);
             // capped_backoff is at most BACKOFF_MAX_SECS (3840) which fits in i64
+            let backoff_duration =
+                chrono::Duration::seconds(i64::try_from(capped_backoff).unwrap_or(i64::MAX));
+            // `checked_add_signed` avoids a panic on `DateTime` overflow; a
+            // few thousand seconds from now will never overflow in practice,
+            // but falling back to "now" is a safe, harmless degradation.
             let next_retry = Utc::now()
-                + chrono::Duration::seconds(i64::try_from(capped_backoff).unwrap_or(i64::MAX));
+                .checked_add_signed(backoff_duration)
+                .unwrap_or_else(Utc::now);
 
             warn!(
                 video_id = %video_id,

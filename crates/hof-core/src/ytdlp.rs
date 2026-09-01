@@ -250,6 +250,14 @@ impl PlaylistEntry {
                 .clone()
                 .unwrap_or_else(|| UNAVAILABLE_TITLE.to_string()),
             url: url.clone(),
+            // yt-dlp reports duration as fractional seconds; we store whole
+            // seconds. Rust's `as` saturates on overflow and truncates toward
+            // zero, which is the desired behavior for a duration.
+            #[allow(
+                clippy::as_conversions,
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss
+            )]
             duration_secs: entry.duration.map(|d| d as i64),
             thumbnail_url: entry.thumbnail.clone(),
         })
@@ -1113,9 +1121,11 @@ fn render_output_relative_path(
         });
     }
 
-    // SAFETY: segments is guaranteed non-empty - we push a fallback above if it was empty
+    // `segments` is non-empty by construction: a fallback segment is pushed
+    // above whenever the rendered template came out blank. Degrade to an empty
+    // path rather than panicking if that invariant is ever broken.
     let Some(last_segment) = segments.last_mut() else {
-        unreachable!("segments is guaranteed to contain at least one segment")
+        return PathBuf::new();
     };
 
     if force_container_ext {
