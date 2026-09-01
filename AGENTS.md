@@ -31,13 +31,13 @@ cargo fmt --all
 # Check formatting without modifying
 cargo fmt --all -- --check
 
-# Run clippy (strict mode)
-cargo clippy --all-targets --all-features -- -D warnings
+# Run clippy (strict mode; test-only panic helpers are allowed by clippy.toml)
+cargo clippy --workspace --all-targets --all-features -- -D warnings -D clippy::pedantic -D clippy::nursery
 
-# Run clippy with pedantic lints
+# Run strict clippy continuously
 bacon pedantic
 # Or manually:
-cargo clippy --workspace --all-targets -- -W clippy::pedantic
+cargo clippy --workspace --all-targets --all-features -- -D warnings -D clippy::pedantic -D clippy::nursery
 
 # Fix auto-fixable clippy issues
 cargo clippy --fix --allow-dirty --allow-staged --all-targets --all-features
@@ -57,7 +57,7 @@ bacon                    # Default: check
 bacon test               # Run all tests continuously
 bacon test -- <filter>   # Run specific test continuously
 bacon clippy-all         # Run clippy on all targets
-bacon pedantic           # Run pedantic clippy
+bacon pedantic           # Run strict pedantic and nursery clippy
 bacon serve              # Run web server with auto-restart
 bacon tui                # Run TUI binary
 
@@ -437,14 +437,14 @@ cd patches/yt-dlp-patched && cargo test --test unit selection::ranked
 All PRs must pass:
 
 1. `cargo fmt --all -- --check`
-2. `cargo clippy --all-targets --all-features -- -D warnings`
+2. `cargo clippy --workspace --all-targets --all-features -- -D warnings -D clippy::pedantic -D clippy::nursery`
 3. `cargo test --all-features`
 4. `cargo build --all-features --release`
 
-**Important:** Always run clippy with pedantic lints before submitting changes:
+**Important:** Always run strict clippy with pedantic and nursery lints before submitting changes:
 
 ```bash
-cargo clippy --workspace --all-targets -- -W clippy::pedantic
+cargo clippy --workspace --all-targets --all-features -- -D warnings -D clippy::pedantic -D clippy::nursery
 ```
 
 ## Environment Variables

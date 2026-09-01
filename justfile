@@ -105,7 +105,7 @@ fix: clear
     cargo clippy --fix --allow-dirty --allow-staged --all-targets --all-features
 
 lint: clear
-    cargo clippy --all-targets --all-features -- -D warnings -W clippy::pedantic
+    cargo clippy --workspace --all-targets --all-features -- -D warnings -D clippy::pedantic -D clippy::nursery
 
 # Development
 dev: clear up
@@ -140,7 +140,7 @@ e2e-only: clear
 ci: clear up
     SQLX_OFFLINE=true cargo build --release
     DATABASE_URL={{ test_database_url }} cargo test --all-features -- --include-ignored --test-threads=4
-    cargo clippy --all-targets --all-features -- -D warnings
+    cargo clippy --workspace --all-targets --all-features -- -D warnings -D clippy::pedantic -D clippy::nursery
 
 # Check Nix cache availability
 cache-check-x86: clear
