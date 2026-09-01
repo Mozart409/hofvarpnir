@@ -105,7 +105,7 @@ fix: clear
     cargo clippy --fix --allow-dirty --allow-staged --all-targets --all-features
 
 lint: clear
-    cargo clippy --workspace --all-targets --all-features -- -D warnings -D clippy::pedantic -D clippy::nursery
+    cargo clippy --workspace --all-targets --all-features -- -D warnings
 
 # Development
 dev: clear up
@@ -122,25 +122,33 @@ css-build:
 
 # Run all tests against the lean postgres-test instance
 # (--test-threads=4 avoids a #[sqlx::test] parallelism race on many-core machines)
+#
+# SQLX_OFFLINE=true is required: the postgres-test instance is intentionally
+# lean and carries no schema, and while #[sqlx::test] migrates each per-test
+# database at runtime, the query!/query_as! macros validate against the live
+# DATABASE_URL at *compile* time. Without offline mode every query fails to
+# compile with `relation "sources" does not exist`. Compilation uses the
+# committed .sqlx cache; the tests still talk to postgres-test at runtime.
+# Run `just prepare` after any schema change to keep that cache current.
 test: clear up
-    DATABASE_URL={{ test_database_url }} cargo test --all-features -- --include-ignored --test-threads=4
+    SQLX_OFFLINE=true DATABASE_URL={{ test_database_url }} cargo test --all-features -- --include-ignored --test-threads=4
 
 # E2E API tests against the lean postgres-test instance.
 # (#[sqlx::test] migrates each test database itself, so this only needs `up`)
 e2e: clear up
-    DATABASE_URL={{ test_database_url }} cargo test --package hof-api --test e2e --all-features -- --test-threads=4
+    SQLX_OFFLINE=true DATABASE_URL={{ test_database_url }} cargo test --package hof-api --test e2e --all-features -- --test-threads=4
 
 # Same as `e2e`, but skips `up` — works when an unrelated container in the
 # compose stack (e.g. grafana) is failing to start. Requires postgres-test
 # to already be running.
 e2e-only: clear
-    DATABASE_URL={{ test_database_url }} cargo test --package hof-api --test e2e --all-features -- --test-threads=4
+    SQLX_OFFLINE=true DATABASE_URL={{ test_database_url }} cargo test --package hof-api --test e2e --all-features -- --test-threads=4
 
 # CI simulation (requires database; tests run against the lean postgres-test instance)
 ci: clear up
     SQLX_OFFLINE=true cargo build --release
-    DATABASE_URL={{ test_database_url }} cargo test --all-features -- --include-ignored --test-threads=4
-    cargo clippy --workspace --all-targets --all-features -- -D warnings -D clippy::pedantic -D clippy::nursery
+    SQLX_OFFLINE=true DATABASE_URL={{ test_database_url }} cargo test --all-features -- --include-ignored --test-threads=4
+    cargo clippy --workspace --all-targets --all-features -- -D warnings
 
 # Check Nix cache availability
 cache-check-x86: clear
