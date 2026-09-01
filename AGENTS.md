@@ -31,13 +31,18 @@ cargo fmt --all
 # Check formatting without modifying
 cargo fmt --all -- --check
 
-# Run clippy (strict mode; test-only panic helpers are allowed by clippy.toml)
-cargo clippy --workspace --all-targets --all-features -- -D warnings -D clippy::pedantic -D clippy::nursery
+# Run clippy. Lint levels live in Cargo.toml [workspace.lints.clippy] -- do NOT
+# add `-D clippy::pedantic -D clippy::nursery` here. Those flags are applied
+# after the manifest's lint levels and re-deny the whole group, silently
+# defeating the nine selective `allow` entries (option_if_let_else,
+# needless_pass_by_ref_mut, module_name_repetitions, ...). Cargo.toml is the
+# single source of truth. Test-only panic helpers are allowed via clippy.toml.
+cargo clippy --workspace --all-targets --all-features -- -D warnings
 
 # Run strict clippy continuously
 bacon pedantic
 # Or manually:
-cargo clippy --workspace --all-targets --all-features -- -D warnings -D clippy::pedantic -D clippy::nursery
+cargo clippy --workspace --all-targets --all-features -- -D warnings
 
 # Fix auto-fixable clippy issues
 cargo clippy --fix --allow-dirty --allow-staged --all-targets --all-features
@@ -437,14 +442,14 @@ cd patches/yt-dlp-patched && cargo test --test unit selection::ranked
 All PRs must pass:
 
 1. `cargo fmt --all -- --check`
-2. `cargo clippy --workspace --all-targets --all-features -- -D warnings -D clippy::pedantic -D clippy::nursery`
+2. `cargo clippy --workspace --all-targets --all-features -- -D warnings`
 3. `cargo test --all-features`
 4. `cargo build --all-features --release`
 
 **Important:** Always run strict clippy with pedantic and nursery lints before submitting changes:
 
 ```bash
-cargo clippy --workspace --all-targets --all-features -- -D warnings -D clippy::pedantic -D clippy::nursery
+cargo clippy --workspace --all-targets --all-features -- -D warnings
 ```
 
 ## Environment Variables
