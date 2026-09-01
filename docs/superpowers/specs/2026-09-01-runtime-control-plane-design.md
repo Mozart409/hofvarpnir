@@ -330,12 +330,14 @@ wait.
 | Download timeout | `DownloadConfig::timeout` |
 | Indexing / yt-dlp command timeout | `DEFAULT_TIMEOUT` (`patches/yt-dlp-patched/src/client/mod.rs:19`) |
 | Minimum re-index interval per source | `MIN_INDEX_INTERVAL_SECS` |
-| Inter-invocation rate-limit delay | `rate_limit_delay_secs` |
+| Inter-invocation rate-limit delay | `rate_limit_delay_secs` (mutable) |
 
-The last four are read-only today — they are compiled-in or env-derived and are
-not part of the runtime-mutable set — but they are exactly the "what timeouts are
-currently active" that issue #130 item 6 asks for, so they are displayed with a
-`default` or `env` provenance badge like everything else.
+Three of these are **read-only**: the download timeout, the yt-dlp command
+timeout, and the minimum re-index interval are compiled-in or env-derived and are
+not part of the runtime-mutable set. They are displayed anyway, with a `default`
+or `env` provenance badge, because they are exactly the "what timeouts are
+currently active" that issue #130 item 6 asks for. Promoting any of them into the
+mutable set later is additive: a nullable column plus a resolver entry.
 
 Countdowns are rendered client-side from a served absolute timestamp rather than
 re-fetched, so a ticking display costs no requests. The `GET /system/status`
