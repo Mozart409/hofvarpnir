@@ -179,6 +179,14 @@ future value among `indexing_paused_until` and `downloads_paused_until` and
 deadline fires it re-resolves and republishes; the pause has lapsed simply
 because `paused_until <= now()`.
 
+**The deadline must be recomputed after *either* `select!` arm resolves, not only
+after the sleep fires.** If an operator shortens a pause from 7 days to 1 hour,
+the notification arm wakes the loop, and the stale 7-day deadline must be dropped
+and re-armed from the new row. A loop that only re-arms on timer expiry would
+silently ignore the change for six days — the one failure in this design that
+produces no error and no log line, so the implementation must re-arm at the top
+of every iteration.
+
 No database write is involved in expiry. This matters for two reasons: the
 alternative — each actor comparing `paused_until` to `now()` on its own tick —
 would make resume latent by up to a full tick, and `CleanupActor` ticks every 3
@@ -390,8 +398,39 @@ The workspace adopted substantially stricter lints in `dc9598f`
 | `exit = "deny"` | Shutdown must return from `main`, never `std::process::exit`. §5.3 complies. |
 | `arithmetic_side_effects = "deny"` | All deadline and permit-delta math must be checked or saturating. This feature is largely made of such arithmetic. |
 | `unchecked_time_subtraction = "deny"` | Duration computations for `sleep_until` must use checked subtraction. |
-| `as_conversions = "deny"` | Collides with the existing `max_concurrent as usize` at `download_supervisor.rs:120`, which §4.5 touches anyway; use `usize::try_from`. |
+| `as_conversions = "deny"` | Collides with the existing `max_concurrent as usize` at `download_supervisor.rs:120` (verified present and unguarded), which §4.5 touches anyway; use `usize::try_from`. |
 | `unwrap_used` / `expect_used` / `panic` = `deny` | Production paths must propagate errors. `clippy.toml` permits test-only panic helpers. |
+
+`unchecked_time_subtraction` currently produces no hits only because the code
+that would trip it does not exist yet. This feature is the code that will trip
+it; treat it as unvalidated, not as satisfied.
+
+### 10.1 Prerequisite: the tree does not currently pass its own lints
+
+`just lint` **fails on a clean checkout of this branch**, before any feature work.
+As of `dc9598f`, `cargo clippy --workspace --all-targets --all-features` exits
+101 with **80 errors in `hof-core` alone**, and aborts there — `hof-api`,
+`hof-web`, and `hof-tui` are unmeasured, so 80 is a floor, not a total.
+
+Breakdown of the `hof-core` failures:
+
+| Count | Lint |
+|---|---|
+| 46 | `arithmetic_side_effects` |
+| 17 | `string_slice` (indexing into a string may split a UTF-8 char) |
+| 10 | `as_conversions` |
+| 3 | `expect_used` |
+| 3 | `indexing_slicing` |
+| 1 | `unreachable` |
+
+Concentrated in `ytdlp.rs` (22), `cleanup.rs` (16), `source_indexer.rs` (15), and
+`download_supervisor.rs` (9).
+
+This matters disproportionately here because `cleanup.rs`, `download_supervisor.rs`,
+and `scheduler.rs` are exactly the files this feature modifies. Every
+implementation task's verification command is `just lint`; if the baseline is red,
+no task can demonstrate it passed, and reviewers have no clean signal to compare
+against.
 
 Verification per task: `just lint`, `just test`, and `just prepare` after any
 schema change (offline sqlx data must be regenerated and committed).
@@ -403,6 +442,12 @@ schema change (offline sqlx data must be regenerated and committed).
 The dependency order is strict for the first three; item 6's UI depends on
 precedence being settled, since provenance is meaningless before then.
 
+0. **Green the baseline** (§10.1). Fix the pre-existing lint failures so
+   `just lint` passes on the whole workspace, then re-run to surface whatever
+   `hof-api`, `hof-web`, and `hof-tui` were hiding behind the `hof-core` abort.
+   This is a prerequisite, not part of the feature: without it no subsequent task
+   can prove it passes verification. It is also independently valuable and
+   reviewable, and should land as its own commit separate from feature work.
 1. Migration, `EffectiveSettings`, and the resolver (with the precedence tests).
 2. `RuntimeConfig` handle, listener task, expiry deadline, `startup.rs` wiring.
 3. Consumer adoption — the three knob shapes across scheduler, supervisor, cleanup.
