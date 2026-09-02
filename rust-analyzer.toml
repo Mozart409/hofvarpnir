@@ -1,0 +1,14 @@
+# Keep rust-analyzer's cargo invocation aligned with the CLI.
+#
+# `just lint` and `just test` both resolve `--all-features`, while
+# rust-analyzer defaults to the *default* feature set. Sharing one `target/`
+# between two different feature resolutions makes each invalidate the other:
+# in practice the aws-lc-sys -> aws-lc-rs -> rustls chain (the expensive,
+# feature-sensitive TLS stack) was rebuilt on nearly every alternation.
+#
+# `features = "all"` removes the mismatch; `targetDir` additionally keeps
+# rust-analyzer out of the cargo lock so a background `just test` and a live
+# editor session cannot block one another.
+[cargo]
+features = "all"
+targetDir = true

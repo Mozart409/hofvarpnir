@@ -186,6 +186,7 @@
         podman-tui
         postgresql_17
         rust
+        sccache
         sqlx-cli
         sqruff
         tailwindcss_4
@@ -434,6 +435,13 @@
           ++ pkgs.lib.optionals pkgs.stdenv.isDarwin darwinDevPackages;
         shellHook = ''
           export COMPOSE_BAKE=true
+          # sccache caches compiled artifacts across the feature-set and
+          # build-script churn that repeatedly rebuilt the expensive
+          # aws-lc-sys -> aws-lc-rs -> rustls chain. Dependencies are cached;
+          # workspace crates keep cargo's incremental compilation (sccache
+          # declines to cache incremental units, which is the right trade
+          # here). Unset RUSTC_WRAPPER to opt out for a single shell.
+          export RUSTC_WRAPPER=sccache
           export PLAYWRIGHT_BROWSERS_PATH=${pkgs.playwright-driver.browsers}
           export PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS=true
           lefthook install
