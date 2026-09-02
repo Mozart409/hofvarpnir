@@ -287,6 +287,106 @@ impl RuntimeConfig {
     }
 }
 
+/// Process-local drain state. Deliberately NOT persisted (see ADR-0004): a
+/// persisted drain would leave a restarted container refusing all work,
+/// wedged, with no visible cause.
+///
+/// Built on `tokio::sync::watch` rather than `tokio::sync::Notify`:
+/// `Notify::notify_waiters` wakes only waiters already parked and stores no
+/// permit, so draining an already-idle instance — the common case, not a
+/// corner case — fires the "complete" signal before `main`'s select arm is
+/// ever polled and the wakeup is silently dropped, hanging shutdown forever.
+/// `watch::Sender` retains its last value, so a receiver that starts
+/// watching after the fact still observes it.
+#[derive(Debug, Clone)]
+pub struct DrainToken {
+    started: Arc<watch::Sender<Option<DateTime<Utc>>>>,
+    complete: Arc<watch::Sender<bool>>,
+}
+
+impl Default for DrainToken {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl DrainToken {
+    #[must_use]
+    pub fn new() -> Self {
+        let (started, _) = watch::channel(None);
+        let (complete, _) = watch::channel(false);
+        Self {
+            started: Arc::new(started),
+            complete: Arc::new(complete),
+        }
+    }
+
+    /// Begin draining. Idempotent within a process: the first start time
+    /// wins, so a repeated call cannot extend the drain deadline.
+    ///
+    /// `send_if_modified` is infallible (unlike the poisoned-lock recovery
+    /// a `RwLock`-based version would need), so there is nothing here to
+    /// `unwrap`.
+    pub fn begin(&self, now: DateTime<Utc>) {
+        self.started.send_if_modified(|current| {
+            if current.is_some() {
+                false
+            } else {
+                *current = Some(now);
+                true
+            }
+        });
+    }
+
+    #[must_use]
+    pub fn started_at(&self) -> Option<DateTime<Utc>> {
+        *self.started.borrow()
+    }
+
+    #[must_use]
+    pub fn is_draining(&self) -> bool {
+        self.started_at().is_some()
+    }
+
+    /// Absolute deadline after which shutdown proceeds regardless.
+    #[must_use]
+    pub fn deadline(&self, timeout: Duration) -> Option<DateTime<Utc>> {
+        let started = self.started_at()?;
+        let delta = chrono::Duration::from_std(timeout).ok()?;
+        started.checked_add_signed(delta)
+    }
+
+    /// Signal that draining finished; wakes `main`'s shutdown arm.
+    pub fn signal_complete(&self) {
+        self.complete.send_replace(true);
+    }
+
+    /// Await drain completion — this is what `main.rs`'s third select arm uses.
+    pub async fn wait_complete(&self) {
+        // `wait_for` errs only once every sender has dropped; `self.complete`
+        // keeps one alive for as long as this token (or a clone) exists, so
+        // that arm is unreachable here. Nothing meaningful to do with the
+        // error besides not propagating it further.
+        let _ = self
+            .complete
+            .subscribe()
+            .wait_for(|complete| *complete)
+            .await;
+    }
+
+    /// Await drain start. The drain watcher blocks here until an operator
+    /// (or a test) calls [`begin`](Self::begin).
+    pub async fn wait_started(&self) {
+        // See `wait_complete` above for why the `Err` arm is unreachable in
+        // practice but still handled rather than unwrapped.
+        let _ = self
+            .started
+            .subscribe()
+            .wait_for(std::option::Option::is_some)
+            .await;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -532,5 +632,70 @@ mod tests {
         crate::db::patch_runtime_settings(&pool, &cleanup)
             .await
             .expect("Failed to reset runtime settings");
+    }
+
+    #[test]
+    fn drain_token_starts_not_draining() {
+        let t = DrainToken::new();
+        assert!(!t.is_draining());
+        t.begin(Utc::now());
+        assert!(t.is_draining());
+    }
+
+    // See `future_pause_is_paused_and_yields_deadline` above for why this
+    // fixture's plain `DateTime + chrono::Duration` arithmetic is scoped out
+    // rather than removing the file-level deny.
+    #[test]
+    #[allow(clippy::arithmetic_side_effects)]
+    fn drain_begin_keeps_first_start_time() {
+        let t = DrainToken::new();
+        let first = Utc::now();
+        t.begin(first);
+        // A later `begin` call must not push the deadline out.
+        t.begin(first + chrono::Duration::seconds(30));
+        assert_eq!(t.started_at(), Some(first));
+    }
+
+    #[test]
+    fn drain_deadline_is_start_plus_timeout() {
+        let t = DrainToken::new();
+        let now = Utc::now();
+        t.begin(now);
+        let timeout = Duration::from_mins(30);
+        let expected = now
+            .checked_add_signed(chrono::Duration::from_std(timeout).expect("valid duration"))
+            .expect("no overflow");
+        assert_eq!(t.deadline(timeout), Some(expected));
+    }
+
+    #[test]
+    fn drain_deadline_is_none_before_begin() {
+        let t = DrainToken::new();
+        assert_eq!(t.deadline(Duration::from_mins(1)), None);
+    }
+
+    #[tokio::test]
+    async fn drain_wait_complete_resolves_after_signal() {
+        let t = DrainToken::new();
+        let waiter = t.clone();
+        let handle = tokio::spawn(async move { waiter.wait_complete().await });
+        // Give the spawned task a chance to start waiting before signalling —
+        // not required for correctness (a `watch` receiver sees a value set
+        // before it subscribes too), but keeps this test honest about the
+        // "wakes an already-parked waiter" case rather than only the
+        // already-set-before-subscribe case exercised by
+        // `drain_wait_complete_is_immediate_if_already_signalled` below.
+        tokio::task::yield_now().await;
+        t.signal_complete();
+        handle.await.expect("waiter task panicked");
+    }
+
+    #[tokio::test]
+    async fn drain_wait_complete_is_immediate_if_already_signalled() {
+        let t = DrainToken::new();
+        t.signal_complete();
+        // Must not hang: this is exactly the lost-wakeup scenario Ruling A
+        // exists to avoid (draining an already-quiescent/idle instance).
+        t.wait_complete().await;
     }
 }

@@ -22,6 +22,7 @@ use hof_core::actors::scheduler::SchedulerActor;
 use hof_core::db::ActivityBroadcaster;
 use hof_core::domain::system::SystemIssue;
 use hof_core::domain::video::DownloadProgress;
+use hof_core::runtime_config::DrainToken;
 use kameo::actor::ActorRef;
 use sqlx::PgPool;
 use tokio::sync::broadcast;
@@ -95,6 +96,11 @@ pub struct AppState {
     /// Global retention fallback in days (`RETENTION_DAYS`), used to preview
     /// upcoming retention deletions. `None` means no global retention.
     pub global_retention_days: Option<i32>,
+    /// Process-local drain signal (see ADR-0004). Not yet exposed over HTTP
+    /// here — the `POST /api/v1/system/shutdown` endpoint that triggers it
+    /// is a later task — but threaded through so handlers can read
+    /// `drain.is_draining()`.
+    pub drain: DrainToken,
 }
 
 impl AppState {
@@ -111,6 +117,7 @@ impl AppState {
         startup_issues: Vec<SystemIssue>,
         broadcaster: ActivityBroadcaster,
         global_retention_days: Option<i32>,
+        drain: DrainToken,
     ) -> Self {
         Self {
             pool,
@@ -122,6 +129,7 @@ impl AppState {
             startup_issues: startup_issues.into(),
             broadcaster,
             global_retention_days,
+            drain,
         }
     }
 }

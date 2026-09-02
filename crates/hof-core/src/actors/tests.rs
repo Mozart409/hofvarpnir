@@ -69,11 +69,13 @@ mod download_supervisor_tests {
 
         let status = SupervisorStatus {
             active_downloads: 5,
+            dispatching: 1,
             available_permits: 3,
             rate_limit_backoff: 2,
         };
 
         assert_eq!(status.active_downloads, 5);
+        assert_eq!(status.dispatching, 1);
         assert_eq!(status.available_permits, 3);
         assert_eq!(status.rate_limit_backoff, 2);
     }

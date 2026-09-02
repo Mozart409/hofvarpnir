@@ -16,7 +16,7 @@ use hof_core::{
     },
     config::{DownloadConfig, EnvOverrides},
     domain::video::DownloadProgress,
-    runtime_config::RuntimeConfig,
+    runtime_config::{DrainToken, RuntimeConfig},
     ytdlp::YtdlpClient,
 };
 use kameo::actor::{ActorRef, Spawn};
@@ -69,6 +69,11 @@ impl TestApp {
             .await
             .expect("Failed to load runtime settings");
 
+        // Process-local drain signal. Not yet triggerable through this test
+        // app (the HTTP endpoint is a later task); constructed fresh here
+        // purely to satisfy the actors' constructors.
+        let drain = DrainToken::new();
+
         let supervisor = DownloadSupervisor::spawn(DownloadSupervisorArgs {
             pool: pool.clone(),
             ytdlp: ytdlp.clone(),
@@ -76,6 +81,7 @@ impl TestApp {
             progress_tx,
             config_rx: runtime_config.subscribe(),
             broadcaster: broadcaster.clone(),
+            drain: drain.clone(),
         });
 
         let scheduler = SchedulerActor::spawn(SchedulerArgs {
@@ -84,6 +90,7 @@ impl TestApp {
             supervisor: supervisor.clone(),
             config_rx: runtime_config.subscribe(),
             broadcaster: broadcaster.clone(),
+            drain: drain.clone(),
         });
 
         let cleanup = CleanupActor::spawn(CleanupActorArgs {
@@ -112,6 +119,7 @@ impl TestApp {
             vec![],
             broadcaster,
             None,
+            drain,
         );
 
         // Build the API router with docs

@@ -26,7 +26,7 @@ use crate::domain::activity::{ActivityEventType, ActivitySeverity};
 use crate::domain::profile::{OutputPreset, Profile, Quality};
 use crate::domain::source::Source;
 use crate::domain::video::{DownloadProgress, Video, VideoStatus};
-use crate::runtime_config::EffectiveSettings;
+use crate::runtime_config::{DrainToken, EffectiveSettings};
 use crate::ytdlp::FallbackStage;
 use crate::ytdlp::YtdlpClient;
 
@@ -101,6 +101,11 @@ pub struct DownloadSupervisor {
     max_attempts: u32,
     /// Broadcaster for real-time SSE notifications.
     broadcaster: ActivityBroadcaster,
+    /// Process-local drain signal. A second source (alongside the
+    /// `downloads_paused` pause gate) for the same "stop dispatching new
+    /// work" refusal path — see `dispatch_download` and
+    /// `ProcessPendingDownloads`.
+    drain: DrainToken,
 }
 
 impl std::fmt::Debug for DownloadSupervisor {
@@ -122,6 +127,8 @@ pub struct DownloadSupervisorArgs {
     /// pacing/concurrency knobs.
     pub config_rx: watch::Receiver<Arc<EffectiveSettings>>,
     pub broadcaster: ActivityBroadcaster,
+    /// Process-local drain signal, threaded in from `ActorSystem`.
+    pub drain: DrainToken,
 }
 
 impl Actor for DownloadSupervisor {
@@ -153,6 +160,7 @@ impl Actor for DownloadSupervisor {
             download_timeout: args.config.timeout,
             max_attempts: args.config.max_attempts,
             broadcaster: args.broadcaster,
+            drain: args.drain,
         };
 
         // Reactively resize the semaphore whenever the concurrency cap
@@ -443,8 +451,8 @@ impl Message<ProcessPendingDownloads> for DownloadSupervisor {
         // it is redundant, but also do not treat it as sufficient on its
         // own; `EnqueueDownload` reaches `dispatch_download` without ever
         // passing through here.
-        if self.config_rx.borrow().downloads_paused(Utc::now()) {
-            debug!("Downloads paused; leaving videos pending");
+        if self.config_rx.borrow().downloads_paused(Utc::now()) || self.drain.is_draining() {
+            debug!("Downloads paused or draining; leaving videos pending");
             return Ok(0);
         }
 
@@ -513,6 +521,12 @@ pub struct GetSupervisorStatus;
 #[derive(Debug, Clone, Reply)]
 pub struct SupervisorStatus {
     pub active_downloads: usize,
+    /// Videos with an in-flight dispatch reservation that have not yet
+    /// registered a worker (see `dispatching` on `DownloadSupervisor`).
+    /// Quiescence for drain purposes requires this to be zero too, not just
+    /// `active_downloads`: a video can sit reserved-but-not-active while its
+    /// spawned task is still waiting out the rate-limit delay.
+    pub dispatching: usize,
     pub available_permits: usize,
     pub rate_limit_backoff: u32,
 }
@@ -527,6 +541,7 @@ impl Message<GetSupervisorStatus> for DownloadSupervisor {
     ) -> Self::Reply {
         SupervisorStatus {
             active_downloads: self.active_downloads.len(),
+            dispatching: self.dispatching.len(),
             available_permits: self.semaphore.available_permits(),
             rate_limit_backoff: self.rate_limit_backoff_multiplier,
         }
@@ -634,8 +649,8 @@ impl DownloadSupervisor {
         // a deliberate pause is "accepted, not started," not a failure; an
         // `Err` here would make `EnqueueDownload`'s callers (indexer, API,
         // web) log or surface a spurious error for an operator action.
-        if self.config_rx.borrow().downloads_paused(Utc::now()) {
-            debug!(video_id = %video_id, "Downloads paused; leaving video pending");
+        if self.config_rx.borrow().downloads_paused(Utc::now()) || self.drain.is_draining() {
+            debug!(video_id = %video_id, "Downloads paused or draining; leaving video pending");
             return Ok(());
         }
 
@@ -1078,5 +1093,211 @@ mod tests {
         let s = resolve(&row, &EnvOverrides::default());
         assert!(s.downloads_paused(Utc::now()));
         assert!(!s.indexing_paused(Utc::now()));
+    }
+
+    // ========================================================================
+    // Actor-level gate tests (Ruling F).
+    //
+    // `paused_downloads_leave_indexing_running` above (and its Task 4
+    // equivalent) only asserts on `EffectiveSettings`, never on the actor
+    // itself — it would pass unchanged if either gate block in
+    // `dispatch_download`/`ProcessPendingDownloads` were deleted. These two
+    // tests spawn a real `DownloadSupervisor` and assert on its own state
+    // instead.
+    //
+    // The assertion deliberately checks `dispatching`, not just
+    // `active_downloads`: `reserve_dispatch` (which sets `dispatching`) runs
+    // synchronously inside the `EnqueueDownload` handler, before the handler
+    // returns and before any `tokio::spawn`'d work runs, and Kameo actors
+    // process their mailbox one message at a time. So by the time the
+    // `GetSupervisorStatus` that follows is handled, `dispatching` reflects
+    // exactly what `dispatch_download` did — deterministically, no sleep, no
+    // race against the spawned download task. `active_downloads` alone does
+    // NOT have this property: it is only populated later, by a `tell` from
+    // that spawned task, so a `GetSupervisorStatus` sent immediately after
+    // `EnqueueDownload` can race it and read 0 either way. Both are asserted
+    // below (matching the brief's shape and because a real regression would
+    // eventually populate `active_downloads` too), but `dispatching` is the
+    // assertion this test actually depends on to fail on a deleted gate.
+    // ========================================================================
+
+    /// Spawn a real `DownloadSupervisor` wired to the given settings/drain
+    /// channel. `YtdlpClient::new` is path-only construction (no process
+    /// spawn — see `ytdlp.rs:449`), so this needs no live yt-dlp binary.
+    async fn spawn_test_supervisor(
+        pool: PgPool,
+        config_rx: watch::Receiver<Arc<EffectiveSettings>>,
+        drain: DrainToken,
+    ) -> ActorRef<DownloadSupervisor> {
+        let ytdlp = Arc::new(
+            YtdlpClient::new("yt-dlp", None, std::path::Path::new("/tmp"))
+                .await
+                .expect("YtdlpClient::new is path-only construction and cannot fail here"),
+        );
+        let (progress_tx, _progress_rx) = mpsc::channel(10);
+        let config = AppDownloadConfig {
+            max_concurrent: 2,
+            timeout: Duration::from_hours(1),
+            max_attempts: 3,
+            rate_limit_delay: Duration::from_millis(50),
+            ytdlp_path: PathBuf::from("yt-dlp"),
+        };
+
+        DownloadSupervisor::spawn(DownloadSupervisorArgs {
+            pool,
+            ytdlp,
+            config,
+            progress_tx,
+            config_rx,
+            broadcaster: ActivityBroadcaster::new(),
+            drain,
+        })
+    }
+
+    /// Seed a `pending` video with a linked profile/source, ready to hand to
+    /// `EnqueueDownload`.
+    async fn seed_pending_video(pool: &PgPool) -> (Video, Profile, Source) {
+        use crate::domain::source::SourceType;
+
+        let user = db::create_user(
+            pool,
+            db::CreateUser {
+                email: "gate-test@example.com",
+                name: "Gate Test",
+                password_hash: None,
+            },
+        )
+        .await
+        .expect("create user");
+
+        let profile = db::create_profile(
+            pool,
+            db::CreateProfile {
+                user_id: user.id,
+                name: "Gate Test Profile",
+                quality: Quality::Q1080p,
+                output_preset: OutputPreset::Auto,
+                naming_template: "{title}.{ext}",
+                output_dir: "/tmp/hof-gate-test",
+                include_livestreams: false,
+                include_shorts: false,
+                storage_quota_bytes: 100_000_000_000,
+                retention_days: None,
+            },
+        )
+        .await
+        .expect("create profile");
+
+        let source = db::create_source(
+            pool,
+            db::CreateSource {
+                profile_id: profile.id,
+                url: "https://example.com/channel",
+                source_type: SourceType::Channel,
+                custom_name: None,
+                index_frequency_secs: 3600,
+                cutoff_date: chrono::NaiveDate::from_ymd_opt(2024, 1, 1).expect("valid date"),
+                retention_days: None,
+            },
+        )
+        .await
+        .expect("create source");
+
+        let video = db::create_video(
+            pool,
+            db::CreateVideo {
+                platform: "youtube",
+                platform_video_id: "gate-test-video",
+                title: "Gate Test Video",
+                description: None,
+                duration_secs: Some(60),
+                published_at: None,
+                thumbnail_url: None,
+            },
+        )
+        .await
+        .expect("create video");
+
+        (video, profile, source)
+    }
+
+    #[sqlx::test]
+    async fn dispatch_download_respects_downloads_pause_gate(pool: PgPool) {
+        use crate::db::RuntimeSettingsRow;
+        use crate::runtime_config::{EnvOverrides, resolve};
+
+        let row = RuntimeSettingsRow {
+            downloads_paused_until: Some(Utc::now() + chrono::Duration::hours(1)),
+            ..RuntimeSettingsRow::default()
+        };
+        let settings = Arc::new(resolve(&row, &EnvOverrides::default()));
+        let (_settings_tx, config_rx) = watch::channel(settings);
+
+        let supervisor = spawn_test_supervisor(pool.clone(), config_rx, DrainToken::new()).await;
+        let (video, profile, source) = seed_pending_video(&pool).await;
+        let video_id = video.id;
+
+        supervisor
+            .ask(EnqueueDownload {
+                video,
+                profile,
+                source,
+            })
+            .await
+            .expect("EnqueueDownload accepted");
+
+        let status = supervisor
+            .ask(GetSupervisorStatus)
+            .await
+            .expect("GetSupervisorStatus");
+        assert_eq!(
+            status.dispatching, 0,
+            "a paused dispatch must not reserve a dispatch slot"
+        );
+        assert_eq!(status.active_downloads, 0);
+
+        let reloaded = db::get_video(&pool, video_id).await.expect("get_video");
+        assert_eq!(reloaded.status, VideoStatus::Pending);
+    }
+
+    #[sqlx::test]
+    async fn dispatch_download_respects_drain_gate(pool: PgPool) {
+        use crate::db::RuntimeSettingsRow;
+        use crate::runtime_config::{EnvOverrides, resolve};
+
+        let settings = Arc::new(resolve(
+            &RuntimeSettingsRow::default(),
+            &EnvOverrides::default(),
+        ));
+        let (_settings_tx, config_rx) = watch::channel(settings);
+
+        let drain = DrainToken::new();
+        drain.begin(Utc::now());
+
+        let supervisor = spawn_test_supervisor(pool.clone(), config_rx, drain).await;
+        let (video, profile, source) = seed_pending_video(&pool).await;
+        let video_id = video.id;
+
+        supervisor
+            .ask(EnqueueDownload {
+                video,
+                profile,
+                source,
+            })
+            .await
+            .expect("EnqueueDownload accepted");
+
+        let status = supervisor
+            .ask(GetSupervisorStatus)
+            .await
+            .expect("GetSupervisorStatus");
+        assert_eq!(
+            status.dispatching, 0,
+            "a draining supervisor must not reserve a dispatch slot"
+        );
+        assert_eq!(status.active_downloads, 0);
+
+        let reloaded = db::get_video(&pool, video_id).await.expect("get_video");
+        assert_eq!(reloaded.status, VideoStatus::Pending);
     }
 }
