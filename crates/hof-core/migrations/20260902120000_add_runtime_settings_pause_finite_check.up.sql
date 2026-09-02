@@ -1,0 +1,5 @@
+ALTER TABLE runtime_settings
+ADD CONSTRAINT runtime_settings_indexing_paused_until_finite
+CHECK (isfinite(indexing_paused_until)),
+ADD CONSTRAINT runtime_settings_downloads_paused_until_finite
+CHECK (isfinite(downloads_paused_until));
