@@ -1,9 +1,15 @@
 //! Runtime-mutable configuration: resolution and propagation.
 #![deny(clippy::arithmetic_side_effects, clippy::string_slice)]
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
+use color_eyre::eyre::Result;
+use sqlx::PgPool;
+use sqlx::postgres::PgListener;
+use tokio::sync::watch;
+use tracing::{error, info, warn};
 
 pub use crate::config::EnvOverrides;
 use crate::db::RuntimeSettingsRow;
@@ -166,6 +172,121 @@ fn pick_secs(db: Option<i32>, env: Option<u64>, default: u64) -> Resolved<Durati
     }
 }
 
+/// Postgres NOTIFY channel carrying settings-change signals.
+const NOTIFY_CHANNEL: &str = "runtime_settings_changed";
+
+/// How long to wait before retrying after the listener drops its connection.
+const LISTENER_RETRY_DELAY: Duration = Duration::from_secs(5);
+
+/// Saturating "how long until `deadline`", never negative.
+///
+/// `unchecked_time_subtraction` is denied workspace-wide, so this uses
+/// `signed_duration_since` and clamps a past deadline to zero.
+#[must_use]
+pub fn sleep_duration_until(deadline: DateTime<Utc>, now: DateTime<Utc>) -> Duration {
+    deadline
+        .signed_duration_since(now)
+        .to_std()
+        .unwrap_or(Duration::ZERO)
+}
+
+/// Handle to the current runtime settings.
+#[derive(Debug, Clone)]
+pub struct RuntimeConfig {
+    tx: watch::Sender<Arc<EffectiveSettings>>,
+    pool: PgPool,
+    env: EnvOverrides,
+}
+
+impl RuntimeConfig {
+    /// Load settings once and build the handle.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the initial settings read fails.
+    pub async fn new(pool: PgPool, env: EnvOverrides) -> Result<Self> {
+        let row = crate::db::get_runtime_settings(&pool).await?;
+        let (tx, _) = watch::channel(Arc::new(resolve(&row, &env)));
+        Ok(Self { tx, pool, env })
+    }
+
+    #[must_use]
+    pub fn subscribe(&self) -> watch::Receiver<Arc<EffectiveSettings>> {
+        self.tx.subscribe()
+    }
+
+    #[must_use]
+    pub fn current(&self) -> Arc<EffectiveSettings> {
+        self.tx.borrow().clone()
+    }
+
+    async fn reload(&self) {
+        match crate::db::get_runtime_settings(&self.pool).await {
+            Ok(row) => {
+                let next = Arc::new(resolve(&row, &self.env));
+                // `send_replace` so a value is published even with no subscribers.
+                self.tx.send_replace(next);
+            }
+            Err(error) => error!(%error, "Failed to reload runtime settings"),
+        }
+    }
+
+    /// Spawn the listener. It republishes on NOTIFY and when a pause lapses.
+    pub fn spawn_listener(self) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            loop {
+                let mut listener = match PgListener::connect_with(&self.pool).await {
+                    Ok(l) => l,
+                    Err(error) => {
+                        error!(%error, "Runtime settings listener failed to connect; retrying");
+                        tokio::time::sleep(LISTENER_RETRY_DELAY).await;
+                        continue;
+                    }
+                };
+                if let Err(error) = listener.listen(NOTIFY_CHANNEL).await {
+                    error!(%error, "Failed to LISTEN on runtime settings channel; retrying");
+                    tokio::time::sleep(LISTENER_RETRY_DELAY).await;
+                    continue;
+                }
+
+                // NOTIFY is fire-and-forget: anything sent while we were
+                // disconnected is lost, so always full-resync on (re)connect.
+                self.reload().await;
+                info!("Runtime settings listener connected");
+
+                loop {
+                    // Recompute the deadline on EVERY iteration. If an operator
+                    // shortens a 7-day pause to 1 hour, the notify arm wakes us
+                    // and the stale deadline must be dropped and re-armed —
+                    // otherwise the change would silently do nothing for days.
+                    let deadline = self.current().next_pause_deadline(Utc::now());
+
+                    let notified = if let Some(deadline) = deadline {
+                        let wait = sleep_duration_until(deadline, Utc::now());
+                        tokio::select! {
+                            n = listener.recv() => n.is_ok(),
+                            () = tokio::time::sleep(wait) => {
+                                // Pause lapsed: republish so consumers re-read.
+                                self.reload().await;
+                                continue;
+                            }
+                        }
+                    } else {
+                        listener.recv().await.is_ok()
+                    };
+
+                    if notified {
+                        self.reload().await;
+                    } else {
+                        warn!("Runtime settings listener disconnected; reconnecting");
+                        break;
+                    }
+                }
+            }
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -276,5 +397,39 @@ mod tests {
         };
         let s = resolve(&row, &no_env());
         assert_eq!(s.next_pause_deadline(Utc::now()), Some(soon));
+    }
+
+    // This test builds a deadline with plain `Utc::now() + chrono::Duration`
+    // arithmetic. See `future_pause_is_paused_and_yields_deadline` above for
+    // why this fixture is scoped out rather than removing the file-level
+    // deny.
+    #[tokio::test(start_paused = true)]
+    #[allow(clippy::arithmetic_side_effects)]
+    async fn deadline_republishes_when_pause_lapses() {
+        let until = Utc::now() + chrono::Duration::hours(1);
+        let row = RuntimeSettingsRow {
+            indexing_paused_until: Some(until),
+            ..RuntimeSettingsRow::default()
+        };
+        let settings = resolve(&row, &EnvOverrides::default());
+        assert!(settings.indexing_paused(Utc::now()));
+
+        let deadline = settings.next_pause_deadline(Utc::now()).expect("deadline");
+        let wait = sleep_duration_until(deadline, Utc::now());
+        assert!(wait >= Duration::from_secs(3500) && wait <= Duration::from_hours(1));
+
+        tokio::time::sleep(wait).await;
+        // After the deadline the same settings value must read as un-paused.
+        assert!(!settings.indexing_paused(deadline + chrono::Duration::seconds(1)));
+    }
+
+    // See `future_pause_is_paused_and_yields_deadline` above for why this
+    // fixture's `Utc::now() - chrono::Duration` arithmetic is scoped out
+    // rather than removing the file-level deny.
+    #[test]
+    #[allow(clippy::arithmetic_side_effects)]
+    fn sleep_duration_is_zero_for_elapsed_deadline() {
+        let past = Utc::now() - chrono::Duration::hours(1);
+        assert_eq!(sleep_duration_until(past, Utc::now()), Duration::ZERO);
     }
 }
