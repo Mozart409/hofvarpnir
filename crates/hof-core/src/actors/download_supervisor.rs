@@ -327,6 +327,19 @@ impl Message<DownloadCompleted> for DownloadSupervisor {
         // Release the in-flight dispatch reservation so the video can be
         // dispatched again on a future tick (if still eligible).
         self.dispatching.remove(&msg.video_id);
+
+        // Reconcile the semaphore against the current target now that this
+        // download's permit has been released (see the `drop(permit)` in
+        // `dispatch_download`'s spawned task, which runs strictly before this
+        // message is sent). A shrink that couldn't fully reclaim free permits
+        // when it was first requested converges here, one freed permit at a
+        // time, as in-flight downloads finish. `resize_semaphore` is a no-op
+        // when `target == permits_total`, so this costs nothing on the common
+        // path where the cap hasn't changed.
+        let target = usize::try_from(self.config_rx.borrow().max_concurrent_downloads.value)
+            .unwrap_or(DEFAULT_MAX_CONCURRENT);
+        self.resize_semaphore(target);
+
         // See the analogous conversion in `RegisterWorker::handle` above: `usize`
         // has no lossless conversion to `f64`, and the count is always small.
         #[allow(clippy::cast_precision_loss, clippy::as_conversions)]
@@ -661,7 +674,7 @@ impl DownloadSupervisor {
             }
 
             // Acquire semaphore permit
-            let Ok(_permit) = semaphore.acquire().await else {
+            let Ok(permit) = semaphore.acquire().await else {
                 // Semaphore closed during shutdown. Release the dispatch
                 // reservation so the video isn't left wedged as "in flight".
                 debug!(video_id = %video_id, "Semaphore closed, aborting download");
@@ -709,6 +722,14 @@ impl DownloadSupervisor {
 
             // Ask the worker to start the download and wait for the outcome
             let outcome = worker_ref.ask(StartDownload).await;
+
+            // Release the semaphore permit before reporting completion. This
+            // guarantees that by the time the supervisor's `DownloadCompleted`
+            // handler runs (and reconciles a pending concurrency-cap shrink
+            // via `resize_semaphore`), the permit has already been returned
+            // to the semaphore's free pool -- reclaiming it before this drop
+            // would just no-op.
+            drop(permit);
 
             // Notify supervisor that download completed
             // The worker will have already updated the database
@@ -760,9 +781,15 @@ impl DownloadSupervisor {
 
     /// Resize the download semaphore.
     ///
-    /// Growing is immediate. Shrinking reclaims only currently-free permits;
-    /// the remainder lands as in-flight downloads finish, so a decrease is
-    /// applied lazily by design.
+    /// Growing is immediate: `Semaphore::add_permits` wakes any tasks
+    /// already parked on `acquire()`. Shrinking reclaims whatever permits
+    /// are free at the moment of the call immediately (`forget_permits`
+    /// keeps no debt bookkeeping for permits still in flight, so this alone
+    /// cannot always reach `target`); the remainder converges as in-flight
+    /// downloads finish, because `DownloadCompleted`'s handler re-applies
+    /// the current target after releasing its permit. Idempotent: calling
+    /// with `target == permits_total` (the common case, run on every
+    /// completed download) is a no-op.
     fn resize_semaphore(&mut self, target: usize) {
         if target > self.permits_total {
             let delta = target.saturating_sub(self.permits_total);
