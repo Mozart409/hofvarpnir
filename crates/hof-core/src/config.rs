@@ -176,6 +176,36 @@ fn optional_env(key: &str) -> Option<String> {
     env::var(key).ok()
 }
 
+/// Raw environment overrides, preserving "unset" so the resolver can report
+/// whether a value came from the environment or from a compiled-in default.
+#[derive(Debug, Clone, Default)]
+pub struct EnvOverrides {
+    pub max_concurrent_downloads: Option<u32>,
+    pub max_indexers_per_tick: Option<u32>,
+    pub rate_limit_delay_secs: Option<u64>,
+    pub check_interval_secs: Option<u64>,
+    pub cleanup_interval_secs: Option<u64>,
+    pub drain_timeout_secs: Option<u64>,
+}
+
+impl EnvOverrides {
+    #[must_use]
+    pub fn from_env() -> Self {
+        Self {
+            max_concurrent_downloads: optional_env("MAX_CONCURRENT_DOWNLOADS")
+                .and_then(|s| s.parse().ok()),
+            max_indexers_per_tick: optional_env("MAX_INDEXERS_PER_TICK")
+                .and_then(|s| s.parse().ok()),
+            rate_limit_delay_secs: optional_env("RATE_LIMIT_DELAY_SECS")
+                .and_then(|s| s.parse().ok()),
+            check_interval_secs: optional_env("CHECK_INTERVAL_SECS").and_then(|s| s.parse().ok()),
+            cleanup_interval_secs: optional_env("CLEANUP_INTERVAL_SECS")
+                .and_then(|s| s.parse().ok()),
+            drain_timeout_secs: optional_env("DRAIN_TIMEOUT_SECS").and_then(|s| s.parse().ok()),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
