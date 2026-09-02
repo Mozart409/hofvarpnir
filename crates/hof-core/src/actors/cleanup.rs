@@ -5,12 +5,14 @@
 //! agree the retention period has expired.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 use kameo::Reply;
 use kameo::prelude::*;
 use metrics::{counter, gauge};
 use sqlx::PgPool;
+use tokio::sync::watch;
 use tokio::time::{MissedTickBehavior, interval};
 use tracing::{debug, error, info, instrument, warn};
 use ulid::Ulid;
@@ -21,9 +23,7 @@ use crate::db;
 use crate::db::ActivityBroadcaster;
 use crate::domain::activity::{ActivityEventType, ActivitySeverity};
 use crate::domain::video::{Video, VideoStatus};
-
-/// Default cleanup interval.
-const DEFAULT_CLEANUP_INTERVAL_SECS: u64 = 60 * 60 * 3; // seconds x minutes x hours
+use crate::runtime_config::EffectiveSettings;
 
 /// How long the cleanup loop waits for mailbox space before giving up on a
 /// single tick. Bounded so the loop can never stall indefinitely, but long
@@ -40,8 +40,8 @@ pub struct CleanupActor {
     pool: PgPool,
     /// Global retention policy in days (fallback if not set per-profile/source).
     global_retention_days: Option<i32>,
-    /// Cleanup interval.
-    cleanup_interval: Duration,
+    /// Live runtime settings (cleanup interval, ...).
+    config_rx: watch::Receiver<Arc<EffectiveSettings>>,
     /// Whether the cleanup loop is running.
     running: bool,
     /// Timestamp of the last cleanup run.
@@ -54,7 +54,10 @@ impl std::fmt::Debug for CleanupActor {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CleanupActor")
             .field("global_retention_days", &self.global_retention_days)
-            .field("cleanup_interval_secs", &self.cleanup_interval.as_secs())
+            .field(
+                "cleanup_interval_secs",
+                &self.config_rx.borrow().cleanup_interval.value.as_secs(),
+            )
             .field("running", &self.running)
             .finish_non_exhaustive()
     }
@@ -65,8 +68,9 @@ pub struct CleanupActorArgs {
     pub pool: PgPool,
     /// Global retention in days (from config).
     pub global_retention_days: Option<u32>,
-    /// Optional custom cleanup interval.
-    pub cleanup_interval: Option<Duration>,
+    /// Live runtime settings, shared across all actors that consume
+    /// pacing/concurrency knobs.
+    pub config_rx: watch::Receiver<Arc<EffectiveSettings>>,
     pub broadcaster: ActivityBroadcaster,
 }
 
@@ -75,13 +79,11 @@ impl Actor for CleanupActor {
     type Error = color_eyre::eyre::Error;
 
     async fn on_start(args: Self::Args, actor_ref: ActorRef<Self>) -> Result<Self, Self::Error> {
-        let cleanup_interval = args
-            .cleanup_interval
-            .unwrap_or(Duration::from_secs(DEFAULT_CLEANUP_INTERVAL_SECS));
+        let cleanup_interval_secs = args.config_rx.borrow().cleanup_interval.value.as_secs();
 
         info!(
             global_retention_days = ?args.global_retention_days,
-            cleanup_interval_secs = cleanup_interval.as_secs(),
+            cleanup_interval_secs,
             "Cleanup actor starting"
         );
 
@@ -90,7 +92,7 @@ impl Actor for CleanupActor {
             global_retention_days: args
                 .global_retention_days
                 .and_then(|d| i32::try_from(d).ok()),
-            cleanup_interval,
+            config_rx: args.config_rx,
             running: false,
             last_run_at: None,
             broadcaster: args.broadcaster,
@@ -133,11 +135,16 @@ impl Message<StartCleanup> for CleanupActor {
         info!("Starting cleanup loop");
 
         let actor_ref = ctx.actor_ref().clone();
-        let cleanup_interval = self.cleanup_interval;
+        let mut config_rx = self.config_rx.clone();
+        let mut current_interval = config_rx.borrow().cleanup_interval.value;
 
         tokio::spawn(async move {
-            let mut interval = interval(cleanup_interval);
-            interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+            let mut ticker = interval(current_interval);
+            ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
+            // See the analogous guard in `scheduler.rs::StartScheduler`: once
+            // the `RuntimeConfig` sender is dropped, `changed()` resolves
+            // immediately (as `Err`) forever, so we stop selecting on it.
+            let mut config_alive = true;
 
             // Run immediately on start
             if let Err(e) = actor_ref.tell(RunCleanup).try_send() {
@@ -145,34 +152,55 @@ impl Message<StartCleanup> for CleanupActor {
             }
 
             loop {
-                interval.tick().await;
+                tokio::select! {
+                    _ = ticker.tick() => {
+                        if !actor_ref.is_alive() {
+                            break;
+                        }
 
-                if !actor_ref.is_alive() {
-                    break;
-                }
-
-                // A single try_send() failure here used to permanently kill this
-                // ticker on any transient mailbox-full condition — the same bug
-                // fixed in scheduler.rs (see TICK_SEND_TIMEOUT there for details).
-                // Wait (bounded) for mailbox space instead: a full mailbox just
-                // skips this tick and retries on the next one; only a truly
-                // stopped actor ends the loop.
-                match actor_ref
-                    .tell(RunCleanup)
-                    .mailbox_timeout(TICK_SEND_TIMEOUT)
-                    .send()
-                    .await
-                {
-                    Ok(()) => {}
-                    Err(SendError::Timeout(_)) => {
-                        warn!(
-                            timeout_secs = TICK_SEND_TIMEOUT.as_secs(),
-                            "Cleanup mailbox still full after wait, skipping this tick"
-                        );
+                        // A single try_send() failure here used to permanently kill this
+                        // ticker on any transient mailbox-full condition — the same bug
+                        // fixed in scheduler.rs (see TICK_SEND_TIMEOUT there for details).
+                        // Wait (bounded) for mailbox space instead: a full mailbox just
+                        // skips this tick and retries on the next one; only a truly
+                        // stopped actor ends the loop.
+                        match actor_ref
+                            .tell(RunCleanup)
+                            .mailbox_timeout(TICK_SEND_TIMEOUT)
+                            .send()
+                            .await
+                        {
+                            Ok(()) => {}
+                            Err(SendError::Timeout(_)) => {
+                                warn!(
+                                    timeout_secs = TICK_SEND_TIMEOUT.as_secs(),
+                                    "Cleanup mailbox still full after wait, skipping this tick"
+                                );
+                            }
+                            Err(e) => {
+                                warn!(error = %e, "Failed to trigger cleanup, actor has stopped");
+                                break;
+                            }
+                        }
                     }
-                    Err(e) => {
-                        warn!(error = %e, "Failed to trigger cleanup, actor has stopped");
-                        break;
+                    changed = config_rx.changed(), if config_alive => {
+                        if changed.is_err() {
+                            debug!(
+                                "Runtime config channel closed; cleanup keeps its last known interval"
+                            );
+                            config_alive = false;
+                        } else {
+                            let next = config_rx.borrow_and_update().cleanup_interval.value;
+                            if next != current_interval {
+                                current_interval = next;
+                                ticker = interval(current_interval);
+                                ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
+                                info!(
+                                    interval_secs = current_interval.as_secs(),
+                                    "Cleanup interval updated"
+                                );
+                            }
+                        }
                     }
                 }
             }
@@ -306,7 +334,7 @@ impl Message<GetCleanupStatus> for CleanupActor {
         CleanupStatus {
             running: self.running,
             global_retention_days: self.global_retention_days,
-            cleanup_interval_secs: self.cleanup_interval.as_secs(),
+            cleanup_interval_secs: self.config_rx.borrow().cleanup_interval.value.as_secs(),
             last_run_at: self.last_run_at,
         }
     }
@@ -649,10 +677,9 @@ impl Message<CleanupPartFiles> for CleanupActor {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn test_default_cleanup_interval() {
+        use crate::runtime_config::DEFAULT_CLEANUP_INTERVAL_SECS;
         // Should be reasonable (not too frequent, not too infrequent)
         const _: () = assert!(DEFAULT_CLEANUP_INTERVAL_SECS >= 300); // At least 5 minutes
         const _: () = assert!(DEFAULT_CLEANUP_INTERVAL_SECS <= 86400); // At most 1 day

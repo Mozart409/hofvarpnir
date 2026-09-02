@@ -9,6 +9,7 @@ use std::time::Duration;
 use kameo::Reply;
 use kameo::prelude::*;
 use sqlx::PgPool;
+use tokio::sync::watch;
 use tokio::time::{Instant, MissedTickBehavior, interval};
 use tracing::{debug, error, info, instrument, warn};
 use ulid::Ulid;
@@ -17,13 +18,11 @@ use crate::db;
 use crate::db::ActivityBroadcaster;
 use crate::domain::activity::{ActivityEventType, ActivitySeverity};
 use crate::domain::source::Source;
+use crate::runtime_config::EffectiveSettings;
 use crate::ytdlp::YtdlpClient;
 
 use super::download_supervisor::{DownloadSupervisor, ProcessPendingDownloads};
 use super::source_indexer::{IndexingResult, SourceIndexerActor, SourceIndexerArgs};
-
-/// Default interval for checking which sources need indexing.
-const DEFAULT_CHECK_INTERVAL_SECS: u64 = 60;
 
 /// Minimum interval between indexing the same source (rate limiting).
 const MIN_INDEX_INTERVAL_SECS: u64 = 300; // 5 minutes
@@ -42,6 +41,13 @@ const TICK_SEND_TIMEOUT: Duration = Duration::from_secs(10);
 /// which is exactly what triggered the mass-timeout incident this file's
 /// mailbox fix addresses. Staggering across ticks (one batch every
 /// `check_interval`) ramps up gradually instead.
+///
+/// Also serves as the fallback when the resolved `max_indexers_per_tick`
+/// (a `u32` from `EffectiveSettings`) fails to convert to `usize` — which
+/// cannot happen on any real platform, but the conversion must still fall
+/// back to a small bounded value here, never `usize::MAX`, since an
+/// unbounded cap is exactly the runaway-indexer load this feature exists to
+/// prevent. Mirrors `runtime_config::DEFAULT_MAX_INDEXERS_PER_TICK`.
 const DEFAULT_MAX_INDEXERS_PER_TICK: usize = 5;
 
 /// The scheduler actor.
@@ -55,10 +61,8 @@ pub struct SchedulerActor {
     ytdlp: Arc<YtdlpClient>,
     /// Reference to the download supervisor.
     supervisor: ActorRef<DownloadSupervisor>,
-    /// Interval for checking sources.
-    check_interval: Duration,
-    /// Maximum number of new indexers spawned per `CheckSources` tick.
-    max_indexers_per_tick: usize,
+    /// Live runtime settings (check interval, indexer cap, ...).
+    config_rx: watch::Receiver<Arc<EffectiveSettings>>,
     /// Track when each source was last indexed (for rate limiting).
     last_indexed: HashMap<Ulid, Instant>,
     /// Active indexing tasks (`source_id` -> actor ref).
@@ -83,11 +87,9 @@ pub struct SchedulerArgs {
     pub pool: PgPool,
     pub ytdlp: Arc<YtdlpClient>,
     pub supervisor: ActorRef<DownloadSupervisor>,
-    /// Optional custom check interval.
-    pub check_interval: Option<Duration>,
-    /// Optional cap on new indexers spawned per tick (see
-    /// `DEFAULT_MAX_INDEXERS_PER_TICK`).
-    pub max_indexers_per_tick: Option<usize>,
+    /// Live runtime settings, shared across all actors that consume
+    /// pacing/concurrency knobs.
+    pub config_rx: watch::Receiver<Arc<EffectiveSettings>>,
     pub broadcaster: ActivityBroadcaster,
 }
 
@@ -96,15 +98,16 @@ impl Actor for SchedulerActor {
     type Error = color_eyre::eyre::Error;
 
     async fn on_start(args: Self::Args, actor_ref: ActorRef<Self>) -> Result<Self, Self::Error> {
-        let check_interval = args
-            .check_interval
-            .unwrap_or(Duration::from_secs(DEFAULT_CHECK_INTERVAL_SECS));
-        let max_indexers_per_tick = args
-            .max_indexers_per_tick
-            .unwrap_or(DEFAULT_MAX_INDEXERS_PER_TICK);
+        let (check_interval_secs, max_indexers_per_tick) = {
+            let settings = args.config_rx.borrow();
+            (
+                settings.check_interval.value.as_secs(),
+                settings.max_indexers_per_tick.value,
+            )
+        };
 
         info!(
-            check_interval_secs = check_interval.as_secs(),
+            check_interval_secs,
             max_indexers_per_tick, "Scheduler actor starting"
         );
 
@@ -112,8 +115,7 @@ impl Actor for SchedulerActor {
             pool: args.pool,
             ytdlp: args.ytdlp,
             supervisor: args.supervisor,
-            check_interval,
-            max_indexers_per_tick,
+            config_rx: args.config_rx,
             last_indexed: HashMap::new(),
             active_indexers: HashMap::new(),
             running: false,
@@ -169,45 +171,72 @@ impl Message<StartScheduler> for SchedulerActor {
         info!("Starting scheduler loop");
 
         let actor_ref = ctx.actor_ref().clone();
-        let check_interval = self.check_interval;
+        let mut config_rx = self.config_rx.clone();
+        let mut current_interval = config_rx.borrow().check_interval.value;
 
         // Spawn the scheduling loop
         tokio::spawn(async move {
-            let mut interval = interval(check_interval);
-            interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+            let mut ticker = interval(current_interval);
+            ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
+            // Once the `RuntimeConfig` sender is dropped, `changed()` resolves
+            // immediately (as `Err`) forever. Left unguarded, a `select!`
+            // branch on it would never again suspend on the ticker branch
+            // reliably re-arming, so once closed we stop selecting on it.
+            let mut config_alive = true;
 
             loop {
-                interval.tick().await;
+                tokio::select! {
+                    _ = ticker.tick() => {
+                        // Check if we should continue
+                        if !actor_ref.is_alive() {
+                            break;
+                        }
 
-                // Check if we should continue
-                if !actor_ref.is_alive() {
-                    break;
-                }
-
-                // Trigger a check. A single try_send() failure here used to
-                // permanently kill this ticker on any transient mailbox-full
-                // condition (e.g. a burst of IndexingCompleted replies from a
-                // large indexing backlog) — the scheduler would then silently
-                // stop indexing forever while still reporting `running: true`.
-                // Wait (bounded) for mailbox space instead: a full mailbox
-                // just skips this tick and retries on the next one; only a
-                // truly stopped actor ends the loop.
-                match actor_ref
-                    .tell(CheckSources)
-                    .mailbox_timeout(TICK_SEND_TIMEOUT)
-                    .send()
-                    .await
-                {
-                    Ok(()) => {}
-                    Err(SendError::Timeout(_)) => {
-                        warn!(
-                            timeout_secs = TICK_SEND_TIMEOUT.as_secs(),
-                            "Scheduler mailbox still full after wait, skipping this tick"
-                        );
+                        // Trigger a check. A single try_send() failure here used to
+                        // permanently kill this ticker on any transient mailbox-full
+                        // condition (e.g. a burst of IndexingCompleted replies from a
+                        // large indexing backlog) — the scheduler would then silently
+                        // stop indexing forever while still reporting `running: true`.
+                        // Wait (bounded) for mailbox space instead: a full mailbox
+                        // just skips this tick and retries on the next one; only a
+                        // truly stopped actor ends the loop.
+                        match actor_ref
+                            .tell(CheckSources)
+                            .mailbox_timeout(TICK_SEND_TIMEOUT)
+                            .send()
+                            .await
+                        {
+                            Ok(()) => {}
+                            Err(SendError::Timeout(_)) => {
+                                warn!(
+                                    timeout_secs = TICK_SEND_TIMEOUT.as_secs(),
+                                    "Scheduler mailbox still full after wait, skipping this tick"
+                                );
+                            }
+                            Err(e) => {
+                                warn!(error = %e, "Failed to send CheckSources, actor has stopped");
+                                break;
+                            }
+                        }
                     }
-                    Err(e) => {
-                        warn!(error = %e, "Failed to send CheckSources, actor has stopped");
-                        break;
+                    changed = config_rx.changed(), if config_alive => {
+                        if changed.is_err() {
+                            debug!(
+                                "Runtime config channel closed; scheduler keeps its last known interval"
+                            );
+                            config_alive = false;
+                        } else {
+                            let next = config_rx.borrow_and_update().check_interval.value;
+                            if next != current_interval {
+                                current_interval = next;
+                                ticker = interval(current_interval);
+                                ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
+                                info!(
+                                    interval_secs = current_interval.as_secs(),
+                                    "Scheduler check interval updated"
+                                );
+                            }
+                        }
                     }
                 }
             }
@@ -243,6 +272,10 @@ impl Message<CheckSources> for SchedulerActor {
 
         debug!("Checking for sources due for indexing");
 
+        let max_indexers_per_tick =
+            usize::try_from(self.config_rx.borrow().max_indexers_per_tick.value)
+                .unwrap_or(DEFAULT_MAX_INDEXERS_PER_TICK);
+
         // Get sources that are due for indexing
         let sources = match db::list_sources_due_for_indexing(&self.pool).await {
             Ok(s) => s,
@@ -265,11 +298,11 @@ impl Message<CheckSources> for SchedulerActor {
                 // every due source's indexer at once — a burst of dozens of
                 // concurrent yt-dlp processes is what caused every source to
                 // time out simultaneously after an outage.
-                if spawned_this_tick >= self.max_indexers_per_tick {
+                if spawned_this_tick >= max_indexers_per_tick {
                     info!(
                         spawned_this_tick,
                         remaining = total_due.saturating_sub(spawned_this_tick),
-                        max_indexers_per_tick = self.max_indexers_per_tick,
+                        max_indexers_per_tick,
                         "Reached per-tick indexer cap, remaining due sources deferred to next tick"
                     );
                     break;
@@ -377,7 +410,7 @@ impl Message<GetSchedulerStatus> for SchedulerActor {
         SchedulerStatus {
             running: self.running,
             active_indexers: self.active_indexers.len(),
-            check_interval_secs: self.check_interval.as_secs(),
+            check_interval_secs: self.config_rx.borrow().check_interval.value.as_secs(),
         }
     }
 }
@@ -585,6 +618,7 @@ mod tests {
 
     #[test]
     fn test_default_check_interval() {
+        use crate::runtime_config::DEFAULT_CHECK_INTERVAL_SECS;
         const _: () = assert!(DEFAULT_CHECK_INTERVAL_SECS >= 30);
         const _: () = assert!(DEFAULT_CHECK_INTERVAL_SECS <= 300);
     }

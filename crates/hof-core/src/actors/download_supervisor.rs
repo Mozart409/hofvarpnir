@@ -14,7 +14,7 @@ use kameo::Reply;
 use kameo::prelude::*;
 use metrics::{counter, gauge};
 use sqlx::PgPool;
-use tokio::sync::{Semaphore, mpsc};
+use tokio::sync::{Semaphore, mpsc, watch};
 use tokio::time::Instant;
 use tracing::{debug, error, info, instrument, warn};
 use ulid::Ulid;
@@ -26,6 +26,7 @@ use crate::domain::activity::{ActivityEventType, ActivitySeverity};
 use crate::domain::profile::{OutputPreset, Profile, Quality};
 use crate::domain::source::Source;
 use crate::domain::video::{DownloadProgress, Video, VideoStatus};
+use crate::runtime_config::EffectiveSettings;
 use crate::ytdlp::FallbackStage;
 use crate::ytdlp::YtdlpClient;
 
@@ -50,6 +51,19 @@ const BACKOFF_MAX_SECS: u64 = 3840; // 64 minutes
 /// With base delay of 5s and multiplier of 60, max delay is 5 minutes.
 const MAX_RATE_LIMIT_MULTIPLIER: u32 = 60;
 
+/// Fallback permit count when the resolved `max_concurrent_downloads` (a
+/// `u32` from `EffectiveSettings`) fails to convert to `usize` — which
+/// cannot happen on any real platform, but the conversion must still fall
+/// back to a small bounded value, never `usize::MAX`: an unbounded semaphore
+/// is exactly the unmetered download concurrency this feature exists to
+/// prevent. Mirrors `runtime_config::DEFAULT_MAX_CONCURRENT`; keep in sync.
+const DEFAULT_MAX_CONCURRENT: usize = 3;
+
+/// How long the semaphore-resize watcher waits for mailbox space before
+/// giving up on delivering a single resize. Mirrors
+/// `scheduler::TICK_SEND_TIMEOUT` / `cleanup::TICK_SEND_TIMEOUT`.
+const RESIZE_SEND_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// The download supervisor actor.
 ///
 /// Manages concurrent downloads using a semaphore and handles retry logic
@@ -61,8 +75,12 @@ pub struct DownloadSupervisor {
     ytdlp: Arc<YtdlpClient>,
     /// Semaphore for limiting concurrent downloads.
     semaphore: Arc<Semaphore>,
-    /// Delay between yt-dlp invocations to avoid rate limiting.
-    rate_limit_delay: Duration,
+    /// Total permits the semaphore is sized to, including those currently
+    /// held. `Semaphore::available_permits()` excludes in-flight permits, so
+    /// it cannot serve as the resize baseline.
+    permits_total: usize,
+    /// Live runtime settings (rate limit delay, concurrency cap, ...).
+    config_rx: watch::Receiver<Arc<EffectiveSettings>>,
     /// Last time we started a download (for rate limiting).
     last_download_start: Option<Instant>,
     /// Current rate limit backoff multiplier (increases on 429s).
@@ -100,6 +118,9 @@ pub struct DownloadSupervisorArgs {
     pub ytdlp: Arc<YtdlpClient>,
     pub config: AppDownloadConfig,
     pub progress_tx: mpsc::Sender<DownloadProgress>,
+    /// Live runtime settings, shared across all actors that consume
+    /// pacing/concurrency knobs.
+    pub config_rx: watch::Receiver<Arc<EffectiveSettings>>,
     pub broadcaster: ActivityBroadcaster,
 }
 
@@ -107,21 +128,23 @@ impl Actor for DownloadSupervisor {
     type Args = DownloadSupervisorArgs;
     type Error = color_eyre::eyre::Error;
 
-    async fn on_start(args: Self::Args, _actor_ref: ActorRef<Self>) -> Result<Self, Self::Error> {
+    async fn on_start(args: Self::Args, actor_ref: ActorRef<Self>) -> Result<Self, Self::Error> {
+        let max_concurrent =
+            usize::try_from(args.config_rx.borrow().max_concurrent_downloads.value)
+                .unwrap_or(DEFAULT_MAX_CONCURRENT);
+
         info!(
-            max_concurrent = args.config.max_concurrent,
+            max_concurrent,
             timeout = ?args.config.timeout,
             "Download supervisor starting"
         );
-
-        let max_concurrent = usize::try_from(args.config.max_concurrent)
-            .map_err(|e| color_eyre::eyre::eyre!("invalid max_concurrent value: {e}"))?;
 
         let supervisor = Self {
             pool: args.pool,
             ytdlp: args.ytdlp,
             semaphore: Arc::new(Semaphore::new(max_concurrent)),
-            rate_limit_delay: args.config.rate_limit_delay,
+            permits_total: max_concurrent,
+            config_rx: args.config_rx.clone(),
             last_download_start: None,
             rate_limit_backoff_multiplier: 1,
             active_downloads: HashMap::new(),
@@ -131,6 +154,44 @@ impl Actor for DownloadSupervisor {
             max_attempts: args.config.max_attempts,
             broadcaster: args.broadcaster,
         };
+
+        // Reactively resize the semaphore whenever the concurrency cap
+        // changes, so a raised cap immediately wakes tasks already parked on
+        // `semaphore.acquire()` rather than waiting for the next unrelated
+        // dispatch to happen to call `resize_semaphore`.
+        let mut watch_rx = args.config_rx;
+        tokio::spawn(async move {
+            loop {
+                if watch_rx.changed().await.is_err() {
+                    debug!("Runtime config channel closed; semaphore watcher exiting");
+                    break;
+                }
+                if !actor_ref.is_alive() {
+                    break;
+                }
+                let target =
+                    usize::try_from(watch_rx.borrow_and_update().max_concurrent_downloads.value)
+                        .unwrap_or(DEFAULT_MAX_CONCURRENT);
+                match actor_ref
+                    .tell(ApplySemaphoreTarget { target })
+                    .mailbox_timeout(RESIZE_SEND_TIMEOUT)
+                    .send()
+                    .await
+                {
+                    Ok(()) => {}
+                    Err(SendError::Timeout(_)) => {
+                        warn!(
+                            timeout_secs = RESIZE_SEND_TIMEOUT.as_secs(),
+                            "Supervisor mailbox still full after wait, dropping this resize"
+                        );
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "Failed to send ApplySemaphoreTarget, actor has stopped");
+                        break;
+                    }
+                }
+            }
+        });
 
         Ok(supervisor)
     }
@@ -208,6 +269,24 @@ impl Message<DownloadStarting> for DownloadSupervisor {
                 None,
             )
             .await;
+    }
+}
+
+/// Internal message: apply a new semaphore permit target.
+///
+/// Sent by the background watcher spawned in `on_start` whenever
+/// `max_concurrent_downloads` changes, so growth wakes already-queued
+/// `semaphore.acquire()` callers immediately instead of waiting for the next
+/// unrelated dispatch.
+struct ApplySemaphoreTarget {
+    target: usize,
+}
+
+impl Message<ApplySemaphoreTarget> for DownloadSupervisor {
+    type Reply = ();
+
+    async fn handle(&mut self, msg: ApplySemaphoreTarget, _ctx: &mut Context<Self, Self::Reply>) {
+        self.resize_semaphore(msg.target);
     }
 }
 
@@ -485,9 +564,10 @@ impl Message<NotifyRateLimited> for DownloadSupervisor {
             .saturating_mul(2)
             .min(MAX_RATE_LIMIT_MULTIPLIER);
 
+        let base_delay = self.config_rx.borrow().rate_limit_delay.value;
         warn!(
             backoff_multiplier = self.rate_limit_backoff_multiplier,
-            effective_delay_secs = self.effective_rate_limit_delay().as_secs(),
+            effective_delay_secs = self.effective_rate_limit_delay(base_delay).as_secs(),
             "Rate limit backoff increased"
         );
     }
@@ -560,7 +640,8 @@ impl DownloadSupervisor {
         let semaphore = self.semaphore.clone();
         let progress_tx = self.progress_tx.clone();
         let download_timeout = self.download_timeout;
-        let rate_limit_delay = self.effective_rate_limit_delay();
+        let base_delay = self.config_rx.borrow().rate_limit_delay.value;
+        let rate_limit_delay = self.effective_rate_limit_delay(base_delay);
         let last_download_start = self.last_download_start;
 
         let video = msg.video;
@@ -665,12 +746,33 @@ impl DownloadSupervisor {
     }
 
     /// Calculate the effective rate limit delay considering backoff.
-    fn effective_rate_limit_delay(&self) -> Duration {
+    ///
+    /// `base` is the current `rate_limit_delay` read fresh from
+    /// `EffectiveSettings` at the call site, rather than a value cached at
+    /// actor startup, so a runtime change takes effect on the very next
+    /// dispatch.
+    fn effective_rate_limit_delay(&self, base: Duration) -> Duration {
         Duration::from_secs(
-            self.rate_limit_delay
-                .as_secs()
+            base.as_secs()
                 .saturating_mul(u64::from(self.rate_limit_backoff_multiplier)),
         )
+    }
+
+    /// Resize the download semaphore.
+    ///
+    /// Growing is immediate. Shrinking reclaims only currently-free permits;
+    /// the remainder lands as in-flight downloads finish, so a decrease is
+    /// applied lazily by design.
+    fn resize_semaphore(&mut self, target: usize) {
+        if target > self.permits_total {
+            let delta = target.saturating_sub(self.permits_total);
+            self.semaphore.add_permits(delta);
+            self.permits_total = target;
+        } else if target < self.permits_total {
+            let delta = self.permits_total.saturating_sub(target);
+            let removed = self.semaphore.forget_permits(delta);
+            self.permits_total = self.permits_total.saturating_sub(removed);
+        }
     }
 
     /// Handle a download failure with retry scheduling.
@@ -867,6 +969,23 @@ mod tests {
         assert_eq!(base * 2u64.pow(4), 1920); // 32 min
         assert_eq!((base * 2u64.pow(5)).min(max), 3840); // 64 min (capped)
         assert_eq!((base * 2u64.pow(6)).min(max), 3840); // still capped
+    }
+
+    #[test]
+    fn semaphore_grows_immediately() {
+        let sem = Arc::new(Semaphore::new(2));
+        sem.add_permits(3);
+        assert_eq!(sem.available_permits(), 5);
+    }
+
+    #[tokio::test]
+    async fn semaphore_shrink_only_reclaims_free_permits() {
+        let sem = Arc::new(Semaphore::new(3));
+        let _held = sem.clone().acquire_owned().await.expect("permit");
+        // 2 free, 1 held: asking to remove 3 can only remove the 2 free ones.
+        let removed = sem.forget_permits(3);
+        assert_eq!(removed, 2);
+        assert_eq!(sem.available_permits(), 0);
     }
 
     #[test]

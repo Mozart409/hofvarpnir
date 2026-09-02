@@ -12,6 +12,7 @@ use std::sync::Arc;
 use color_eyre::eyre::{Result, WrapErr};
 use sqlx::PgPool;
 use tokio::sync::mpsc;
+use tokio::sync::watch;
 use tracing::{debug, error, info, warn};
 
 use crate::actors::cleanup::{CleanupActor, CleanupActorArgs, CleanupPartFiles};
@@ -25,9 +26,13 @@ use crate::db;
 use crate::db::ActivityBroadcaster;
 use crate::domain::system::SystemIssue;
 use crate::domain::video::DownloadProgress;
+use crate::runtime_config::{EffectiveSettings, RuntimeConfig};
 use crate::ytdlp::YtdlpClient;
 
 use kameo::prelude::*;
+
+/// Shorthand for the live-settings receiver threaded into each actor's `Args`.
+type ConfigRx = watch::Receiver<Arc<EffectiveSettings>>;
 
 /// Actors created during startup.
 pub struct ActorSystem {
@@ -45,6 +50,8 @@ pub struct ActorSystem {
     pub startup_issues: Vec<SystemIssue>,
     /// Broadcaster for real-time SSE notifications.
     pub broadcaster: ActivityBroadcaster,
+    /// Handle to the live runtime settings (pacing/concurrency knobs).
+    pub runtime_config: RuntimeConfig,
 }
 
 /// Initialize the actor system and perform crash recovery.
@@ -110,21 +117,35 @@ pub async fn initialize(pool: PgPool, config: &Config) -> Result<ActorSystem> {
     // Create broadcaster for SSE real-time notifications
     let broadcaster = ActivityBroadcaster::new();
 
+    // Phase 3.5: Load runtime-mutable settings and start the change listener.
+    // `spawn_listener` consumes the handle, so keep a clone to return on
+    // `ActorSystem` for callers that want to read/patch settings later.
+    let runtime_config =
+        RuntimeConfig::new(pool.clone(), crate::config::EnvOverrides::from_env()).await?;
+    let _listener = runtime_config.clone().spawn_listener();
+
     // Phase 4: Start actors
     let supervisor = start_supervisor(
         pool.clone(),
         ytdlp.clone(),
         config,
         progress_tx,
+        runtime_config.subscribe(),
         broadcaster.clone(),
     );
     let scheduler = start_scheduler(
         pool.clone(),
         ytdlp.clone(),
         supervisor.clone(),
+        runtime_config.subscribe(),
         broadcaster.clone(),
     );
-    let cleanup = start_cleanup(pool.clone(), config, broadcaster.clone());
+    let cleanup = start_cleanup(
+        pool.clone(),
+        config,
+        runtime_config.subscribe(),
+        broadcaster.clone(),
+    );
     let jellyfin_metadata = start_jellyfin_metadata(pool.clone(), broadcaster.clone());
 
     // Phase 4.5: Kick pending/retry-eligible downloads after startup recovery.
@@ -165,6 +186,7 @@ pub async fn initialize(pool: PgPool, config: &Config) -> Result<ActorSystem> {
         progress_rx,
         startup_issues,
         broadcaster,
+        runtime_config,
     })
 }
 
@@ -239,6 +261,7 @@ fn start_supervisor(
     ytdlp: Arc<YtdlpClient>,
     config: &Config,
     progress_tx: mpsc::Sender<DownloadProgress>,
+    config_rx: ConfigRx,
     broadcaster: ActivityBroadcaster,
 ) -> ActorRef<DownloadSupervisor> {
     let args = DownloadSupervisorArgs {
@@ -246,6 +269,7 @@ fn start_supervisor(
         ytdlp,
         config: config.download.clone(),
         progress_tx,
+        config_rx,
         broadcaster,
     };
 
@@ -260,14 +284,14 @@ fn start_scheduler(
     pool: PgPool,
     ytdlp: Arc<YtdlpClient>,
     supervisor: ActorRef<DownloadSupervisor>,
+    config_rx: ConfigRx,
     broadcaster: ActivityBroadcaster,
 ) -> ActorRef<SchedulerActor> {
     let args = SchedulerArgs {
         pool,
         ytdlp,
         supervisor,
-        check_interval: None,        // Use default
-        max_indexers_per_tick: None, // Use default
+        config_rx,
         broadcaster,
     };
 
@@ -281,12 +305,13 @@ fn start_scheduler(
 fn start_cleanup(
     pool: PgPool,
     config: &Config,
+    config_rx: ConfigRx,
     broadcaster: ActivityBroadcaster,
 ) -> ActorRef<CleanupActor> {
     let args = CleanupActorArgs {
         pool,
         global_retention_days: config.storage.retention_days,
-        cleanup_interval: None, // Use default
+        config_rx,
         broadcaster,
     };
 
