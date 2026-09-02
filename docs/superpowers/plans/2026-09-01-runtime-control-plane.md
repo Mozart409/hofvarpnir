@@ -14,29 +14,84 @@
 
 ## Session Handoff — start here
 
-**State as of 2026-09-01, branch `feat/2026-09-01-429-handling` (not pushed, no upstream):**
+**State as of 2026-09-02, branch `feat/2026-09-01-429-handling` (not pushed, no upstream):**
 
-- Task 0 is **done and committed**; the working tree is clean and green.
-- **Next action: Task 1** — migration, `EffectiveSettings`, precedence resolver
-  with its 8 tests. Nothing is in progress; no partial work to reconcile.
-- Tasks 1 → 2 → 3 → 4 → 5 → 6 → 7 are a **strict dependency chain**. Each needs
-  the previous task's types. They do **not** parallelize; dispatching them
-  concurrently produces agents building against interfaces that do not exist.
-- Read the spec (`docs/superpowers/specs/2026-09-01-runtime-control-plane-design.md`)
-  and ADRs `docs/adr/0001`–`0004` alongside this plan. The ADRs record *why* the
-  four load-bearing decisions were made; do not relitigate them without cause.
+- **Tasks 0, 1 and 2 are done, committed, reviewed, and green.** Working tree clean.
+- **Next action: Task 3** — consumers adopt the watch channel. Nothing is in progress;
+  a Task 3 implementer was dispatched on 2026-09-02 but hit an API session rate limit
+  during orientation and **made no edits**. There is no partial work to reconcile.
 
-**Practical notes for whoever picks this up:**
+**Commits this branch (newest last):**
 
-- `hof-core`'s test suite takes ~330s (~5.5 min). Use `cargo test -p <crate>`
-  for the inner loop and run the full `just test` before each commit.
-- A full `cargo clippy` rebuild is ~8 min when flags change; incremental is
-  ~15-20s. Avoid running two cargo commands at once — they serialize on the
-  build lock, and parallel agents in separate worktrees each pay a full cold
-  build (this was tried and abandoned; see Task 0).
-- The pre-commit hook runs workspace clippy, so any commit requires a green
-  tree. Keep it green rather than accumulating debt.
-- Commit messages: **title only, Conventional Commits, no trailers.**
+| Commit | What |
+|---|---|
+| `d616eb9`, `6464227`, `e643a65` | Task 0 — lint baseline |
+| `ba34c39` | Task 1 — `runtime_settings` table, row type, precedence resolver |
+| `3c428c6` | Task 1 fix — round-trippable indefinite-pause sentinel |
+| `d6193b1` | Docs — sqlx/sqruff/migration-checksum pitfalls (out of plan) |
+| `3d5d10e` | Task 2 — LISTEN/NOTIFY propagation, watch channel, expiry deadline |
+
+**Full execution record — read this before anything else:**
+`.superpowers/sdd/2026-09-01-runtime-control-plane/progress.md` (git-ignored). It holds
+every ruling made, why, and what each costs if wrong. Per-task briefs, reports, context
+files, and review diffs sit beside it. `task-3-brief.md` and `task-3-context.md` are
+already prepared, the latter carrying Task 2's exact public API surface.
+
+### Corrections to this plan, established by execution
+
+The plan's code blocks were written without being compiled and have produced several
+defects. Treat them as close-to-right, not authoritative.
+
+1. **`'infinity'::timestamptz` is unreachable.** sqlx decodes binary timestamptz as
+   `postgres_epoch + Duration::microseconds(us)` with no infinity branch, and chrono's
+   `Add` panics on overflow — so a literal `infinity` **panics on read**. `MAX_UTC` is
+   also wrong: its nanosecond precision does not survive Postgres's microsecond
+   truncation, so it fails to round-trip and the sentinel comparison stops matching.
+   **`runtime_config::indefinite_pause()` (9999-12-31T23:59:59Z, whole microseconds) is
+   the sentinel.** Task 6 must use it, not `MAX_UTC`. A new migration adds
+   `CHECK (isfinite(...))` on both pause columns. **ADR-0003 still needs amending.**
+2. **New timestamp queries need an explicit sqlx type override** —
+   `col AS "col: DateTime<Utc>"`, `?` form when nullable. Both the `chrono` and `time`
+   features are unified on, and the macros prefer `time`. Bites Task 6.
+3. **`#[tokio::test(start_paused = true)]` needs tokio's `test-util` feature**, which
+   `features = ["full"]` does NOT include. Already added to `hof-core`'s dev-dependencies
+   — **Task 5's `start_paused` test depends on this.**
+4. **`sqruff` lints all SQL and is hook-enforced, but `just lint` does not run it.**
+   Run `sqruff fix` on new SQL **before** applying the migration — reformatting an
+   already-applied migration strands its checksum and blocks every commit. See
+   `docs/sqlx-troubleshooting.md`.
+5. **Verification order is `just prepare` → `just lint` → `just test`**, not the order
+   some task steps state. `prepare` generates the `.sqlx/` entries the other two need.
+6. **`EffectiveSettings` exposes `Resolved<u32>`** while the scheduler holds `usize` and
+   `Semaphore` takes `usize`. Convert with
+   `usize::try_from(v).unwrap_or(<DEFAULT const>)` — never `as`, never `usize::MAX`.
+
+### Operational notes
+
+- **Postgres is reachable only with the Bash sandbox disabled**, and so is `podman`.
+  Both containers (5432 dev, 5433 test) are otherwise healthy.
+- **Have the controller own long cargo runs.** Cold builds exceed the 600s foreground
+  cap; implementer agents that background one and stop do not reliably wake.
+- **`git commit` needs the sandbox disabled** so lefthook's hooks can execute, and the
+  SSH signing key must be unlocked (`ssh-add ~/.ssh/id_ed25519`). Do not use
+  `--no-verify`.
+- If `#[sqlx::test]` fails with Postgres `XX002` on `databases_pkey`, that is test-registry
+  corruption: `REINDEX TABLE _sqlx_test.databases;` against 5433.
+- `hof-core`'s suite is ~5.5 min; a full clippy rebuild ~4-8 min. Don't run two cargo
+  commands at once.
+
+### Outstanding items
+
+- **Task 2 fix round is ruled but not dispatched:** backfill a listener integration test
+  (spawn listener, mutate the row, assert the watch receiver observes it) and rename
+  `deadline_republishes_when_pause_lapses`, which does not test what its name claims.
+  Spec §9 requires asserting republish; the brief's verbatim test does not.
+- **Task 6 prerequisite:** `patch_runtime_settings` has zero tests and is dynamic
+  `QueryBuilder` SQL. Do not build the API on it untested.
+- **Task 6 caution:** DB tests share the singleton row while `just test` runs
+  `--test-threads=4`.
+- Tasks 1 → 2 → 3 → 4 → 5 → 6 → 7 remain a **strict dependency chain**; they do not
+  parallelize. Documentation (Task 8) does.
 
 ## Global Constraints
 
