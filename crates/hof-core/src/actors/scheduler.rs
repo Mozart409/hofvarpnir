@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use chrono::Utc;
 use kameo::Reply;
 use kameo::prelude::*;
 use sqlx::PgPool;
@@ -270,76 +271,18 @@ impl Message<CheckSources> for SchedulerActor {
             return;
         }
 
-        debug!("Checking for sources due for indexing");
-
-        let max_indexers_per_tick =
-            usize::try_from(self.config_rx.borrow().max_indexers_per_tick.value)
-                .unwrap_or(DEFAULT_MAX_INDEXERS_PER_TICK);
-
-        // Get sources that are due for indexing
-        let sources = match db::list_sources_due_for_indexing(&self.pool).await {
-            Ok(s) => s,
-            Err(e) => {
-                error!(error = %e, "Failed to list sources due for indexing");
-                return;
-            }
-        };
-
-        if sources.is_empty() {
-            debug!("No sources due for indexing");
+        if self.config_rx.borrow().indexing_paused(Utc::now()) {
+            debug!("Indexing paused; skipping this tick");
         } else {
-            info!(count = sources.len(), "Found sources due for indexing");
-
-            let total_due = sources.len();
-            let mut spawned_this_tick = 0usize;
-
-            for source in sources {
-                // Stagger a large backlog across ticks instead of spawning
-                // every due source's indexer at once — a burst of dozens of
-                // concurrent yt-dlp processes is what caused every source to
-                // time out simultaneously after an outage.
-                if spawned_this_tick >= max_indexers_per_tick {
-                    info!(
-                        spawned_this_tick,
-                        remaining = total_due.saturating_sub(spawned_this_tick),
-                        max_indexers_per_tick,
-                        "Reached per-tick indexer cap, remaining due sources deferred to next tick"
-                    );
-                    break;
-                }
-
-                // Skip if already being indexed
-                if self.active_indexers.contains_key(&source.id) {
-                    debug!(source_id = %source.id, "Source already being indexed");
-                    continue;
-                }
-
-                // Rate limit: don't index too frequently
-                if let Some(last) = self.last_indexed.get(&source.id)
-                    && last.elapsed() < Duration::from_secs(MIN_INDEX_INTERVAL_SECS)
-                {
-                    debug!(
-                        source_id = %source.id,
-                        elapsed_secs = last.elapsed().as_secs(),
-                        "Source indexed too recently, skipping"
-                    );
-                    continue;
-                }
-
-                // Spawn indexer for this source
-                if let Err(e) = self.spawn_indexer(&source, ctx.actor_ref().clone()).await {
-                    error!(
-                        source_id = %source.id,
-                        error = %e,
-                        "Failed to spawn indexer"
-                    );
-                }
-                spawned_this_tick += 1;
-            }
+            self.spawn_due_indexers(ctx.actor_ref()).await;
         }
 
         // Always sweep pending/retry-ready downloads every scheduler tick,
-        // even when no sources are due for indexing.
+        // even when no sources are due for indexing, indexing errored, or
+        // indexing is paused — the indexing and downloads pause switches are
+        // independent, so a paused indexer must not also stall the
+        // downloads-supervisor sweep. `ProcessPendingDownloads` applies its
+        // own `downloads_paused` gate.
         match self.supervisor.tell(ProcessPendingDownloads).await {
             Ok(()) => {
                 debug!("Triggered pending download processing from scheduler tick");
@@ -489,6 +432,85 @@ impl Message<IndexingCompleted> for SchedulerActor {
 }
 
 impl SchedulerActor {
+    /// Find sources due for indexing and spawn indexers for them, staggered
+    /// across ticks by `max_indexers_per_tick`.
+    ///
+    /// Only called from `CheckSources` when indexing is not paused. Every
+    /// exit path here (no sources due, a DB error, or the per-tick cap) is a
+    /// plain early return from *this* method — it must never early-return
+    /// out of the caller's `handle`, since the caller still needs to run the
+    /// downloads-supervisor sweep afterward regardless of what happens here.
+    async fn spawn_due_indexers(&mut self, scheduler_ref: &ActorRef<Self>) {
+        debug!("Checking for sources due for indexing");
+
+        let max_indexers_per_tick =
+            usize::try_from(self.config_rx.borrow().max_indexers_per_tick.value)
+                .unwrap_or(DEFAULT_MAX_INDEXERS_PER_TICK);
+
+        // Get sources that are due for indexing
+        let sources = match db::list_sources_due_for_indexing(&self.pool).await {
+            Ok(s) => s,
+            Err(e) => {
+                error!(error = %e, "Failed to list sources due for indexing");
+                return;
+            }
+        };
+
+        if sources.is_empty() {
+            debug!("No sources due for indexing");
+            return;
+        }
+
+        info!(count = sources.len(), "Found sources due for indexing");
+
+        let total_due = sources.len();
+        let mut spawned_this_tick = 0usize;
+
+        for source in sources {
+            // Stagger a large backlog across ticks instead of spawning
+            // every due source's indexer at once — a burst of dozens of
+            // concurrent yt-dlp processes is what caused every source to
+            // time out simultaneously after an outage.
+            if spawned_this_tick >= max_indexers_per_tick {
+                info!(
+                    spawned_this_tick,
+                    remaining = total_due.saturating_sub(spawned_this_tick),
+                    max_indexers_per_tick,
+                    "Reached per-tick indexer cap, remaining due sources deferred to next tick"
+                );
+                break;
+            }
+
+            // Skip if already being indexed
+            if self.active_indexers.contains_key(&source.id) {
+                debug!(source_id = %source.id, "Source already being indexed");
+                continue;
+            }
+
+            // Rate limit: don't index too frequently
+            if let Some(last) = self.last_indexed.get(&source.id)
+                && last.elapsed() < Duration::from_secs(MIN_INDEX_INTERVAL_SECS)
+            {
+                debug!(
+                    source_id = %source.id,
+                    elapsed_secs = last.elapsed().as_secs(),
+                    "Source indexed too recently, skipping"
+                );
+                continue;
+            }
+
+            // Spawn indexer for this source
+            if let Err(e) = self.spawn_indexer(&source, scheduler_ref.clone()).await {
+                error!(
+                    source_id = %source.id,
+                    error = %e,
+                    "Failed to spawn indexer"
+                );
+            }
+            spawned_this_tick += 1;
+        }
+    }
+
     /// Spawn an indexer for a source.
     #[instrument(skip(self, scheduler_ref), fields(source_id = %source.id))]
     async fn spawn_indexer(
@@ -629,5 +651,21 @@ mod tests {
         // processes, but not so small that a large backlog never drains.
         const _: () = assert!(DEFAULT_MAX_INDEXERS_PER_TICK >= 1);
         const _: () = assert!(DEFAULT_MAX_INDEXERS_PER_TICK <= 20);
+    }
+
+    // NOTE: this exercises `EffectiveSettings::indexing_paused` directly via
+    // `resolve`, not the `CheckSources` handler's gate itself — there is no
+    // actor-level assertion here that a paused tick actually skips spawning.
+    #[test]
+    fn paused_indexing_blocks_new_indexers() {
+        use crate::db::RuntimeSettingsRow;
+        use crate::runtime_config::{EnvOverrides, resolve};
+
+        let row = RuntimeSettingsRow {
+            indexing_paused_until: Some(Utc::now() + chrono::Duration::hours(1)),
+            ..RuntimeSettingsRow::default()
+        };
+        let s = resolve(&row, &EnvOverrides::default());
+        assert!(s.indexing_paused(Utc::now()));
     }
 }
