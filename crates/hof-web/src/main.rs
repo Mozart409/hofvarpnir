@@ -39,6 +39,10 @@ async fn main() -> Result<()> {
     // Initialize actor system
     let mut actor_system = initialize(pool.clone(), &config).await?;
 
+    // `shutdown()` below takes `actor_system` by value, so clone the drain
+    // handle now for the select arm and for `AppState`.
+    let drain = actor_system.drain.clone();
+
     // Create broadcast channel for SSE progress updates
     // The actor system uses mpsc, so we bridge it to broadcast
     let (progress_tx, _) = broadcast::channel(1000);
@@ -71,6 +75,7 @@ async fn main() -> Result<()> {
             .storage
             .retention_days
             .map(|d| i32::try_from(d).unwrap_or(i32::MAX)),
+        drain.clone(),
     );
 
     // Initialize OIDC client if configured
@@ -135,6 +140,9 @@ async fn main() -> Result<()> {
         }
         _ = tokio::signal::ctrl_c() => {
             tracing::info!("Received shutdown signal");
+        }
+        () = drain.wait_complete() => {
+            tracing::info!("Drain complete, shutting down");
         }
     }
 

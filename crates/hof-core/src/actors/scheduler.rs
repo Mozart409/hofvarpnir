@@ -19,7 +19,7 @@ use crate::db;
 use crate::db::ActivityBroadcaster;
 use crate::domain::activity::{ActivityEventType, ActivitySeverity};
 use crate::domain::source::Source;
-use crate::runtime_config::EffectiveSettings;
+use crate::runtime_config::{DrainToken, EffectiveSettings};
 use crate::ytdlp::YtdlpClient;
 
 use super::download_supervisor::{DownloadSupervisor, ProcessPendingDownloads};
@@ -72,6 +72,10 @@ pub struct SchedulerActor {
     running: bool,
     /// Broadcaster for real-time SSE notifications.
     broadcaster: ActivityBroadcaster,
+    /// Process-local drain signal. A second source (alongside the
+    /// `indexing_paused` pause gate) for the same "stop starting new work"
+    /// refusal path — see `CheckSources`.
+    drain: DrainToken,
 }
 
 impl std::fmt::Debug for SchedulerActor {
@@ -92,6 +96,8 @@ pub struct SchedulerArgs {
     /// pacing/concurrency knobs.
     pub config_rx: watch::Receiver<Arc<EffectiveSettings>>,
     pub broadcaster: ActivityBroadcaster,
+    /// Process-local drain signal, threaded in from `ActorSystem`.
+    pub drain: DrainToken,
 }
 
 impl Actor for SchedulerActor {
@@ -121,6 +127,7 @@ impl Actor for SchedulerActor {
             active_indexers: HashMap::new(),
             running: false,
             broadcaster: args.broadcaster,
+            drain: args.drain,
         };
 
         // Start the scheduling loop.
@@ -271,8 +278,8 @@ impl Message<CheckSources> for SchedulerActor {
             return;
         }
 
-        if self.config_rx.borrow().indexing_paused(Utc::now()) {
-            debug!("Indexing paused; skipping this tick");
+        if self.config_rx.borrow().indexing_paused(Utc::now()) || self.drain.is_draining() {
+            debug!("Indexing paused or draining; skipping this tick");
         } else {
             self.spawn_due_indexers(ctx.actor_ref()).await;
         }
