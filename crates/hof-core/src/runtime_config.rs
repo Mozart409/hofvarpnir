@@ -403,9 +403,15 @@ mod tests {
     // arithmetic. See `future_pause_is_paused_and_yields_deadline` above for
     // why this fixture is scoped out rather than removing the file-level
     // deny.
+    //
+    // This exercises `next_pause_deadline` and `sleep_duration_until` only —
+    // it never constructs a `RuntimeConfig`, never spawns the listener, and
+    // never touches the watch channel or `reload`/`send_replace`. The
+    // listener/`select!`/watch machinery itself is covered by the
+    // `listener_republishes_on_notify` integration test below.
     #[tokio::test(start_paused = true)]
     #[allow(clippy::arithmetic_side_effects)]
-    async fn deadline_republishes_when_pause_lapses() {
+    async fn pause_deadline_computes_sleep_and_lapses() {
         let until = Utc::now() + chrono::Duration::hours(1);
         let row = RuntimeSettingsRow {
             indexing_paused_until: Some(until),
@@ -431,5 +437,100 @@ mod tests {
     fn sleep_duration_is_zero_for_elapsed_deadline() {
         let past = Utc::now() - chrono::Duration::hours(1);
         assert_eq!(sleep_duration_until(past, Utc::now()), Duration::ZERO);
+    }
+
+    // Integration tests require a running database.
+    // Run with: DATABASE_URL=postgres://... cargo test -p hof-core --all-features -- --include-ignored
+
+    /// Exercises the propagation path this task actually delivers: build a
+    /// real `RuntimeConfig` against Postgres, `subscribe()`, spawn the
+    /// listener, then mutate the singleton row through
+    /// `patch_runtime_settings` (which fires the trigger and hence
+    /// `pg_notify`) and confirm the watch receiver observes the new value.
+    /// This is the keystone case `deadline_republishes_when_pause_lapses`
+    /// (renamed `pause_deadline_computes_sleep_and_lapses` above) never
+    /// covered, because that test never touches `RuntimeConfig`, the
+    /// listener, or the watch channel at all.
+    ///
+    /// Deliberately not covered here: a virtual-clock deadline-expiry test
+    /// driving this live listener. `tokio::time::pause` does not compose
+    /// reliably with real Postgres IO (the listener's connection and the
+    /// test's own queries both need real time to make progress), so forcing
+    /// it would trade an honest gap for a flaky test. The deadline-expiry
+    /// path stays covered by `pause_deadline_computes_sleep_and_lapses`
+    /// (the pure `sleep_duration_until`/`next_pause_deadline` helpers) plus
+    /// manual review of `spawn_listener`'s inner loop.
+    #[tokio::test]
+    #[ignore = "requires a running database (run with --include-ignored)"]
+    async fn listener_republishes_on_notify() {
+        let pool = crate::db::create_pool()
+            .await
+            .expect("Failed to create pool");
+        crate::db::run_migrations(&pool)
+            .await
+            .expect("Failed to run migrations");
+
+        let config = RuntimeConfig::new(pool.clone(), EnvOverrides::default())
+            .await
+            .expect("Failed to build RuntimeConfig");
+        let mut rx = config.subscribe();
+        let listener_handle = config.spawn_listener();
+
+        let target = Duration::from_secs(1234);
+
+        // The listener connects and LISTENs asynchronously in its spawned
+        // task, so there is an unavoidable race between "the test patches
+        // the row" and "the listener is ready to receive the resulting
+        // NOTIFY" — NOTIFY is fire-and-forget, so a patch that lands before
+        // the listener is ready is simply missed. Retry the *write*, not
+        // just the read: keep re-patching until a change is observed with
+        // the expected value, bounded overall so a genuine regression fails
+        // fast instead of hanging the suite.
+        let observed = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let patch = crate::db::RuntimeSettingsPatch {
+                    rate_limit_delay_secs: Some(Some(1234)),
+                    // `updated_by` is `TEXT REFERENCES users (id)`, so it
+                    // must be a real user id or NULL — the marker string
+                    // used here previously violated that FK. `None` nulls
+                    // the column (this field is not a nested `Option`, so
+                    // it is unconditionally overwritten every call); fine
+                    // for this test, since nothing here depends on the
+                    // audit value.
+                    updated_by: None,
+                    ..crate::db::RuntimeSettingsPatch::default()
+                };
+                crate::db::patch_runtime_settings(&pool, &patch)
+                    .await
+                    .expect("Failed to patch runtime settings");
+
+                if matches!(
+                    tokio::time::timeout(Duration::from_millis(250), rx.changed()).await,
+                    Ok(Ok(()))
+                ) {
+                    let settings = rx.borrow().clone();
+                    if settings.rate_limit_delay.value == target {
+                        break settings;
+                    }
+                }
+            }
+        })
+        .await
+        .expect("Timed out waiting for listener to republish settings after NOTIFY");
+
+        assert_eq!(observed.rate_limit_delay.value, target);
+
+        listener_handle.abort();
+
+        // Cleanup: leave the singleton row as the other `#[ignore]`d tests
+        // in this binary expect to find it.
+        let cleanup = crate::db::RuntimeSettingsPatch {
+            rate_limit_delay_secs: Some(None),
+            updated_by: None,
+            ..crate::db::RuntimeSettingsPatch::default()
+        };
+        crate::db::patch_runtime_settings(&pool, &cleanup)
+            .await
+            .expect("Failed to reset runtime settings");
     }
 }
