@@ -1,4 +1,5 @@
 //! Runtime-mutable settings, stored as a single row.
+#![deny(clippy::arithmetic_side_effects, clippy::string_slice)]
 
 use chrono::{DateTime, Utc};
 use sqlx::PgPool;
@@ -130,4 +131,58 @@ pub async fn patch_runtime_settings(
     builder.build().execute(pool).await?;
 
     get_runtime_settings(pool).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::{create_pool, run_migrations};
+    use crate::runtime_config::{indefinite_pause, resolve};
+
+    // Integration tests require a running database.
+    // Run with: DATABASE_URL=postgres://... cargo test -p hof-core --all-features -- --include-ignored
+
+    /// This is the exact boundary the resolver's unit tests never cross:
+    /// writing the indefinite-pause sentinel through `patch_runtime_settings`,
+    /// reading it back through `get_runtime_settings`, and confirming the
+    /// resolved value still reports "no deadline". A prior sentinel choice
+    /// (`DateTime::<Utc>::MAX_UTC`) passed every in-memory unit test but
+    /// silently failed exactly this round trip, because Postgres's
+    /// microsecond-resolution `timestamptz` truncated away the nanosecond
+    /// remainder on write.
+    #[tokio::test]
+    #[ignore = "requires a running database (run with --include-ignored)"]
+    async fn indefinite_pause_round_trips_through_postgres() {
+        let pool = create_pool().await.expect("Failed to create pool");
+        run_migrations(&pool)
+            .await
+            .expect("Failed to run migrations");
+
+        let sentinel = indefinite_pause();
+        let patch = RuntimeSettingsPatch {
+            downloads_paused_until: Some(Some(sentinel)),
+            ..RuntimeSettingsPatch::default()
+        };
+        patch_runtime_settings(&pool, &patch)
+            .await
+            .expect("Failed to patch runtime settings");
+
+        let row = get_runtime_settings(&pool)
+            .await
+            .expect("Failed to read runtime settings");
+        assert_eq!(row.downloads_paused_until, Some(sentinel));
+
+        let effective = resolve(&row, &crate::config::EnvOverrides::default());
+        assert_eq!(effective.next_pause_deadline(Utc::now()), None);
+
+        // Cleanup: leave the singleton row as the other `#[ignore]`d tests
+        // in this binary expect to find it.
+        let cleanup = RuntimeSettingsPatch {
+            downloads_paused_until: Some(None),
+            ..RuntimeSettingsPatch::default()
+        };
+        patch_runtime_settings(&pool, &cleanup)
+            .await
+            .expect("Failed to reset runtime settings");
+    }
 }

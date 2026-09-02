@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 
-use crate::config::EnvOverrides;
+pub use crate::config::EnvOverrides;
 use crate::db::RuntimeSettingsRow;
 
 pub const DEFAULT_MAX_CONCURRENT: u32 = 3;
@@ -14,6 +14,31 @@ pub const DEFAULT_RATE_LIMIT_DELAY_SECS: u64 = 5;
 pub const DEFAULT_CHECK_INTERVAL_SECS: u64 = 60;
 pub const DEFAULT_CLEANUP_INTERVAL_SECS: u64 = 60 * 60 * 3;
 pub const DEFAULT_DRAIN_TIMEOUT_SECS: u64 = 1800;
+
+/// Whole-microsecond Unix timestamp for [`indefinite_pause`]:
+/// 9999-12-31T23:59:59Z.
+const INDEFINITE_PAUSE_MICROS: i64 = 253_402_300_799_000_000;
+
+/// A finite sentinel timestamp meaning "paused indefinitely".
+///
+/// `DateTime::<Utc>::MAX_UTC` cannot serve this role: it carries
+/// sub-microsecond (nanosecond) precision that Postgres's
+/// microsecond-resolution `timestamptz` truncates away on write. A value
+/// written as `MAX_UTC` and read back from the database no longer equals
+/// `MAX_UTC`, so an equality guard against it silently stops matching after
+/// a single round trip. `indefinite_pause` is instead built entirely from a
+/// whole microsecond count, so it round-trips through Postgres
+/// bit-for-bit.
+#[must_use]
+pub fn indefinite_pause() -> DateTime<Utc> {
+    // `from_timestamp_micros` only returns `None` on over/underflow of
+    // chrono's internal representable range; `INDEFINITE_PAUSE_MICROS`
+    // (year 9999) is nowhere near that boundary, so the fallback below is
+    // unreachable in practice. `unwrap_or` (not `unwrap`/`expect`) keeps
+    // this off the banned-panic surface; the fallback value is arbitrary
+    // since it is never actually returned.
+    DateTime::from_timestamp_micros(INDEFINITE_PAUSE_MICROS).unwrap_or(DateTime::<Utc>::UNIX_EPOCH)
+}
 
 /// Which layer supplied a resolved value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -57,14 +82,14 @@ impl EffectiveSettings {
 
     /// The nearest future pause expiry, if any.
     ///
-    /// Returns `None` for an indefinite pause (`DateTime::<Utc>::MAX_UTC`),
+    /// Returns `None` for an indefinite pause ([`indefinite_pause`]),
     /// because such a pause never lapses on its own and must not arm a timer.
     #[must_use]
     pub fn next_pause_deadline(&self, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
         [self.indexing_paused_until, self.downloads_paused_until]
             .into_iter()
             .flatten()
-            .filter(|t| *t > now && *t != DateTime::<Utc>::MAX_UTC)
+            .filter(|t| *t > now && *t != indefinite_pause())
             .min()
     }
 }
@@ -141,12 +166,7 @@ fn pick_secs(db: Option<i32>, env: Option<u64>, default: u64) -> Resolved<Durati
     }
 }
 
-// Test fixtures build deadlines with plain `Utc::now() + chrono::Duration`
-// arithmetic; the file-level deny above exists to keep *production* deadline
-// arithmetic checked, not to force test fixtures into checked-arithmetic
-// ceremony.
 #[cfg(test)]
-#[allow(clippy::arithmetic_side_effects)]
 mod tests {
     use super::*;
 
@@ -196,7 +216,13 @@ mod tests {
         assert!(!s.indexing_paused(Utc::now()));
     }
 
+    // This test builds a deadline with plain `Utc::now() + chrono::Duration`
+    // arithmetic. The file-level deny above exists to keep *production*
+    // deadline arithmetic checked; this fixture is not production code, so
+    // it is scoped out rather than rewritten into checked-arithmetic
+    // ceremony.
     #[test]
+    #[allow(clippy::arithmetic_side_effects)]
     fn future_pause_is_paused_and_yields_deadline() {
         let until = Utc::now() + chrono::Duration::hours(1);
         let row = RuntimeSettingsRow {
@@ -208,7 +234,11 @@ mod tests {
         assert_eq!(s.next_pause_deadline(Utc::now()), Some(until));
     }
 
+    // See `future_pause_is_paused_and_yields_deadline` above for why this
+    // fixture's `Utc::now() - chrono::Duration` arithmetic is scoped out
+    // rather than removing the file-level deny.
     #[test]
+    #[allow(clippy::arithmetic_side_effects)]
     fn elapsed_pause_is_not_paused() {
         let past = Utc::now() - chrono::Duration::hours(1);
         let row = RuntimeSettingsRow {
@@ -221,9 +251,9 @@ mod tests {
     }
 
     #[test]
-    fn infinity_pause_is_paused_but_schedules_no_deadline() {
+    fn indefinite_pause_is_paused_but_schedules_no_deadline() {
         let row = RuntimeSettingsRow {
-            downloads_paused_until: Some(DateTime::<Utc>::MAX_UTC),
+            downloads_paused_until: Some(indefinite_pause()),
             ..empty_row()
         };
         let s = resolve(&row, &no_env());
@@ -231,7 +261,11 @@ mod tests {
         assert_eq!(s.next_pause_deadline(Utc::now()), None);
     }
 
+    // See `future_pause_is_paused_and_yields_deadline` above for why this
+    // fixture's `Utc::now() + chrono::Duration` arithmetic is scoped out
+    // rather than removing the file-level deny.
     #[test]
+    #[allow(clippy::arithmetic_side_effects)]
     fn nearest_of_two_deadlines_wins() {
         let soon = Utc::now() + chrono::Duration::minutes(10);
         let later = Utc::now() + chrono::Duration::hours(5);

@@ -1,0 +1,3 @@
+ALTER TABLE runtime_settings
+DROP CONSTRAINT IF EXISTS runtime_settings_downloads_paused_until_finite,
+DROP CONSTRAINT IF EXISTS runtime_settings_indexing_paused_until_finite;
