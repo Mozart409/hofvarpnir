@@ -435,6 +435,19 @@ impl Message<ProcessPendingDownloads> for DownloadSupervisor {
         _msg: ProcessPendingDownloads,
         ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
+        // Optimisation only, not the authoritative gate: skips the DB query
+        // below when there is no point running it, since a pause will
+        // discard whatever it returns. The real gate every dispatch path
+        // must pass through lives in `dispatch_download` (see its doc
+        // comment) — do not remove this early return under the assumption
+        // it is redundant, but also do not treat it as sufficient on its
+        // own; `EnqueueDownload` reaches `dispatch_download` without ever
+        // passing through here.
+        if self.config_rx.borrow().downloads_paused(Utc::now()) {
+            debug!("Downloads paused; leaving videos pending");
+            return Ok(0);
+        }
+
         // Get all videos ready for download
         let videos = db::list_videos_ready_for_download(&self.pool)
             .await
@@ -592,8 +605,9 @@ impl DownloadSupervisor {
     /// Shared by the `EnqueueDownload` message handler and the
     /// `ProcessPendingDownloads` sweep. Called directly (not via the actor
     /// mailbox) so a large pending backlog is never dropped by bounded-mailbox
-    /// backpressure. Runs the eligibility check, reserves a dispatch slot, and
-    /// spawns the rate-limited download task.
+    /// backpressure. Checks the downloads-pause gate, runs the eligibility
+    /// check, reserves a dispatch slot, and spawns the rate-limited download
+    /// task.
     ///
     /// Kept `async` (though the current body has no top-level `.await`
     /// outside the spawned task) to match the call sites, which `.await`
@@ -606,6 +620,24 @@ impl DownloadSupervisor {
         supervisor_ref: ActorRef<Self>,
     ) -> Result<(), String> {
         let video_id = msg.video.id;
+
+        // Authoritative downloads-pause gate. This is the single choke point
+        // every dispatch path passes through (`EnqueueDownload` — fired from
+        // the indexer on every newly discovered video, and from manual
+        // API/web actions — and the `ProcessPendingDownloads` sweep both
+        // call this method), so it must live here rather than only in the
+        // sweep. Placed before anything below is touched: no DB write, no
+        // `self.dispatching` reservation, no `self.active_downloads` entry
+        // has happened yet, so returning here leaves the video exactly as it
+        // arrived (typically `pending`) and untracked — required for the
+        // backlog to drain naturally once the pause lifts. `Ok(())` because
+        // a deliberate pause is "accepted, not started," not a failure; an
+        // `Err` here would make `EnqueueDownload`'s callers (indexer, API,
+        // web) log or surface a spurious error for an operator action.
+        if self.config_rx.borrow().downloads_paused(Utc::now()) {
+            debug!(video_id = %video_id, "Downloads paused; leaving video pending");
+            return Ok(());
+        }
 
         // Check video status
         match msg.video.status {
@@ -1026,5 +1058,25 @@ mod tests {
         assert_eq!(effective_1x, 5);
         assert_eq!(effective_2x, 10);
         assert_eq!(effective_4x, 20);
+    }
+
+    // NOTE: this exercises `EffectiveSettings::downloads_paused` directly via
+    // `resolve`, not either of the actor-level gates that consume it
+    // (`ProcessPendingDownloads`'s early-return optimisation, or the
+    // authoritative check in `dispatch_download`) — there is no actor-level
+    // assertion here that a paused dispatch actually leaves a video
+    // undispatched.
+    #[test]
+    fn paused_downloads_leave_indexing_running() {
+        use crate::db::RuntimeSettingsRow;
+        use crate::runtime_config::{EnvOverrides, resolve};
+
+        let row = RuntimeSettingsRow {
+            downloads_paused_until: Some(Utc::now() + chrono::Duration::hours(1)),
+            ..RuntimeSettingsRow::default()
+        };
+        let s = resolve(&row, &EnvOverrides::default());
+        assert!(s.downloads_paused(Utc::now()));
+        assert!(!s.indexing_paused(Utc::now()));
     }
 }
