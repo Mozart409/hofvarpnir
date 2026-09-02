@@ -14,12 +14,26 @@
 
 ## Session Handoff — start here
 
-**State as of 2026-09-02, branch `feat/2026-09-01-429-handling` (not pushed, no upstream):**
+**State as of 2026-09-02 (end of session), branch `feat/2026-09-01-429-handling`
+(not pushed, no upstream):**
 
-- **Tasks 0, 1 and 2 are done, committed, reviewed, and green.** Working tree clean.
-- **Next action: Task 3** — consumers adopt the watch channel. Nothing is in progress;
-  a Task 3 implementer was dispatched on 2026-09-02 but hit an API session rate limit
-  during orientation and **made no edits**. There is no partial work to reconcile.
+- **Tasks 0, 1, 2, 3, 4 are done, committed, reviewed, and green.**
+- **Task 5 is written, lint-clean and test-green (387 passing), and committed —
+  but it has NOT been through task review yet.** That is the next action.
+- **Next action: dispatch the Task 5 task review**, then Task 6 (API endpoints).
+
+**Two things Task 5's review MUST carry (both are already argued in the ledger):**
+
+1. **The Ruling F mutation check was never run.** The implementer was barred from
+   running cargo, so it supplied an exact two-mutation recipe instead
+   (`task-5-report.md`, "The recipe to confirm this empirically"). Running it is the
+   whole point of the ruling — Task 4's tests passed with their gate deleted, and this
+   is the repayment. Note the trap the report calls out: the gate line appears twice in
+   `download_supervisor.rs`, and mutating the `ProcessPendingDownloads` copy instead of
+   the `dispatch_download` one yields a false confirmation.
+2. **Gate mutation coverage is scoped to ONE of the three extended gates**
+   (`dispatch_download`). The `ProcessPendingDownloads` sweep gate and `CheckSources`
+   gate have no actor-level test. Disclosed, not hidden.
 
 **Commits this branch (newest last):**
 
@@ -30,6 +44,11 @@
 | `3c428c6` | Task 1 fix — round-trippable indefinite-pause sentinel |
 | `d6193b1` | Docs — sqlx/sqruff/migration-checksum pitfalls (out of plan) |
 | `3d5d10e` | Task 2 — LISTEN/NOTIFY propagation, watch channel, expiry deadline |
+| `d385204` | Docs — tasks 1-2 complete, plan corrections |
+| `64ddb11` | Task 3 — actors adopt runtime settings for pacing and concurrency |
+| `25b2004` | Task 2 fix — listener republish test over the watch channel |
+| `219431d` | Task 3 fix — converge semaphore shrink as downloads complete |
+| `2be0653` | Task 4 — gate indexing and downloads on pause state |
 
 **Full execution record — read this before anything else:**
 `.superpowers/sdd/2026-09-01-runtime-control-plane/progress.md` (git-ignored). It holds
@@ -65,6 +84,31 @@ defects. Treat them as close-to-right, not authoritative.
 6. **`EffectiveSettings` exposes `Resolved<u32>`** while the scheduler holds `usize` and
    `Semaphore` takes `usize`. Convert with
    `usize::try_from(v).unwrap_or(<DEFAULT const>)` — never `as`, never `usize::MAX`.
+7. **Task 5 Step 1's `DrainToken` is broken as written — do not resurrect it.** It
+   signals completion with `Notify::notify_waiters()`, which stores no permit and wakes
+   only waiters already parked. Draining an **idle** instance reaches quiescence before
+   `main`'s select arm is polled, so the wakeup is dropped and `main` parks forever on a
+   shutdown that already happened. Shipped instead with two `tokio::sync::watch`
+   channels (level-triggered). This is also a deliberate deviation from **spec §5**,
+   whose table names `CancellationToken`: that constrains drain state to be in-memory,
+   cheaply cloneable and unpersisted, not to a concrete type, and `CancellationToken`
+   would need `tokio-util` added as a dependency for no gain. Bonus: `watch`'s
+   `send_replace`/`send_if_modified` are infallible, so none of the plan's
+   `unwrap_or_else(|e| e.into_inner())` poison handling is needed.
+8. **Task 5 Step 1 and Step 5 contradict each other.** Step 1 defines
+   `begin(&self, now: DateTime<Utc>)`; Step 5's test calls `t.begin()`. Shipped with the
+   injected clock (matches `downloads_paused(now)` and friends, and the `start_paused`
+   timeout test needs it).
+9. **Spec §5.1's quiescence predicate is wrong.** It waits for
+   `active_downloads == 0 && active_indexers == 0`. But `dispatching.insert` happens
+   synchronously inside `dispatch_download`, while `active_downloads.insert` happens in a
+   *different* handler sent by the spawned task only after it sleeps out the rate-limit
+   delay and acquires a permit — so a video sits reserved-but-not-active for that whole
+   window, and a watcher polling only `active_downloads` can read zero and shut down on
+   top of downloads about to start. `SupervisorStatus` gained a `dispatching: usize`
+   field and the predicate now includes it. **This same asynchrony is why Task 4's gate
+   tests could pass with the gate deleted** — `active_downloads` is not a sound
+   discriminator for a just-sent `EnqueueDownload`; `dispatching` is.
 
 ### Operational notes
 
@@ -79,13 +123,38 @@ defects. Treat them as close-to-right, not authoritative.
   corruption: `REINDEX TABLE _sqlx_test.databases;` against 5433.
 - `hof-core`'s suite is ~5.5 min; a full clippy rebuild ~4-8 min. Don't run two cargo
   commands at once.
+- **Never trust a wrapper's exit code.** `{ just lint; just test; } > log` reports only
+  the last command's status — it masked a clippy failure (`LINT_EXIT=101`) behind an
+  overall exit 0 in this very session. Always emit and grep explicit `### *_EXIT`
+  markers and the `test result:` lines.
+- **Build tooling changed at the end of 2026-09-02** and needs `direnv reload` before
+  the next session's first build: `sccache` added to `commonDevPackages` with
+  `RUSTC_WRAPPER=sccache` exported from the devshell; new root `rust-analyzer.toml`
+  pinning RA to `features = "all"` + its own `targetDir`. The RA file is the actual fix
+  for the repeated `aws-lc-sys` rebuilds: RA was running `cargo check` with *default*
+  features into the same `target/` that `just lint`/`just test` use with
+  `--all-features`, so the two invalidated each other's TLS chain on every alternation.
+  A `cargo clean` after the reload is optional — it buys a clean baseline and populates
+  the sccache cache, nothing more.
+- **Do NOT drop `aarch64-linux` from the flake's `eachSystem` list.** It looks unused
+  locally (no arm device here), but `.github/workflows/{ci,release}.yml` run
+  `nix develop .#ci` and `nix build .#containerFromBinary` on `ubuntu-24.04-arm`
+  runners, which resolve the flake's **`aarch64-linux`** outputs natively. Removing it
+  breaks the arm build job, the arm container job, and the multi-arch
+  `buildah manifest`. This was attempted and reverted on 2026-09-02.
 
 ### Outstanding items
 
-- **Task 2 fix round is ruled but not dispatched:** backfill a listener integration test
-  (spawn listener, mutate the row, assert the watch receiver observes it) and rename
-  `deadline_republishes_when_pause_lapses`, which does not test what its name claims.
-  Spec §9 requires asserting republish; the brief's verbatim test does not.
+- **Task 5 has not been reviewed.** Code is committed and green; the task review is the
+  next action. See the two must-carry items at the top of this handoff.
+- **`IndexSource` bypasses the drain gate.** The manual "index this source now" trigger
+  calls `spawn_indexer` directly and never traverses `CheckSources`'s gate, so a manual
+  index during a drain still starts an indexer. It does not hang shutdown — the indexer
+  just counts toward `active_indexers` and delays quiescence until `drain_timeout`
+  forces it. **Carry to Task 6**, which adds the endpoint that first lets an operator
+  trigger a drain at all.
+- **The `POST /api/v1/system/shutdown` endpoint does not exist yet** (Task 6). Drain is
+  currently triggerable only programmatically and from tests.
 - **Task 6 prerequisite:** `patch_runtime_settings` has zero tests and is dynamic
   `QueryBuilder` SQL. Do not build the API on it untested.
 - **Task 6 caution:** DB tests share the singleton row while `just test` runs
