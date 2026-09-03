@@ -2,6 +2,53 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.8.0 - 2026-09-03
+#### Features
+- (**actors**) gate indexing and downloads on pause state - (2be0653) - macbook-pro
+- (**actors**) adopt runtime settings for pacing and concurrency - (64ddb11) - macbook-pro
+- (**api**) add runtime settings, pause, and shutdown endpoints - (1b80177) - macbook-pro
+- (**clippy**) stricter clippy everywhere - (dc9598f) - macbook-pro
+- (**config**) propagate runtime settings via LISTEN/NOTIFY and watch - (3d5d10e) - macbook-pro
+- (**config**) add runtime_settings table and precedence resolver - (ba34c39) - macbook-pro
+- (**shutdown**) add drain-then-exit with bounded drain window - (76ad5af) - macbook-pro
+- (**ui**) add runtime control panel with pause, drain, and timings - (4c48ef8) - macbook-pro
+#### Bug Fixes
+- (**actors**) converge semaphore shrink as downloads complete - (219431d) - macbook-pro
+- (**ci**) remove update flake step - (e5fc1d7) - macbook-pro
+- (**config**) use a round-trippable indefinite-pause sentinel - (3c428c6) - macbook-pro
+- (**lint**) satisfy strict clippy across the workspace - (d616eb9) - macbook-pro
+- (**shutdown**) freeze the drain deadline at drain start - (52d0d62) - macbook-pro
+- (**tools**) lefthook run sequential - (bcd9dbc) - macbook-pro
+- (**tools**) honor manifest clippy allows and use sqlx offline in tests - (6464227) - macbook-pro
+- (**web**) surface pause and drain refusals instead of a server error - (cea783d) - macbook-pro
+#### Documentation
+- (**agents**) record sqlx, sqruff, and migration-checksum pitfalls - (d6193b1) - macbook-pro
+- (**design**) add lint baseline prerequisite and deadline re-arm rule - (9893bfb) - macbook-pro
+- (**design**) correct rate_limit_delay mutability in timings table - (c31ca09) - macbook-pro
+- (**design**) runtime control plane design and ADRs for #130 - (b42a3fb) - macbook-pro
+- (**flake**) correct the sccache rationale with measured results - (3b9bb45) - macbook-pro
+- (**plan**) record tasks 7 and 8 completion - (9e88b52) - macbook-pro
+- (**plan**) record task 6 completion and carried-forward findings - (f32f690) - macbook-pro
+- (**plan**) record task 5 completion and build tooling handoff - (e6c15bd) - macbook-pro
+- (**plan**) record tasks 1-2 complete and plan corrections - (d385204) - macbook-pro
+- (**plan**) record task 0 completion and session handoff - (2fbee52) - macbook-pro
+- (**plan**) add runtime control plane implementation plan - (cb9573d) - macbook-pro
+- (**runtime**) document runtime control env vars, precedence, and drain caveat - (42695a5) - macbook-pro
+- (**superpowers**) remove superpowers - (309156e) - macbook-pro
+#### Tests
+- (**api**) cover settings route registration and shutdown idempotence over http - (2d75b5d) - macbook-pro
+- (**config**) cover listener republish over the watch channel - (25b2004) - macbook-pro
+#### Refactoring
+- (**web**) hoist shared panel helpers and correct provenance derivation - (14bb3fb) - macbook-pro
+#### Miscellaneous Chores
+- (**build**) run clippy offline and drop dependency debuginfo - (f5b5dc0) - macbook-pro
+- (**clippy**) allow noisy restriction lints workspace-wide - (e643a65) - macbook-pro
+- (**ignore**) update - (d5af269) - macbook-pro
+- (**nix**) add sccache and pin rust-analyzer to the workspace feature set - (dac8a47) - macbook-pro
+- (**web**) rebuild tailwind output for the control panel - (208cd54) - macbook-pro
+
+- - -
+
 ## v0.7.0 - 2026-08-25
 #### Features
 - (**test**) add dedicated lean postgres-test service for test suite - (07b3965) - Amadeus Mader
