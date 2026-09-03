@@ -287,6 +287,23 @@ impl RuntimeConfig {
     }
 }
 
+/// The instant a drain began, together with the deadline computed from the
+/// `drain_timeout` in force **at that instant**.
+///
+/// The deadline is frozen here rather than recomputed per read: an operator
+/// retuning `drain_timeout_secs` mid-drain must not be able to extend or
+/// truncate a shutdown already in progress, and must not see a reported
+/// deadline that disagrees with the one the drain watcher is actually
+/// enforcing. Bundling both fields into one value (rather than storing
+/// `started_at` alone and threading a separately-sourced timeout through
+/// every caller) makes that guarantee a property of the type instead of a
+/// convention every call site has to uphold on its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DrainStart {
+    pub started_at: DateTime<Utc>,
+    pub deadline: DateTime<Utc>,
+}
+
 /// Process-local drain state. Deliberately NOT persisted (see ADR-0004): a
 /// persisted drain would leave a restarted container refusing all work,
 /// wedged, with no visible cause.
@@ -300,7 +317,7 @@ impl RuntimeConfig {
 /// watching after the fact still observes it.
 #[derive(Debug, Clone)]
 pub struct DrainToken {
-    started: Arc<watch::Sender<Option<DateTime<Utc>>>>,
+    started: Arc<watch::Sender<Option<DrainStart>>>,
     complete: Arc<watch::Sender<bool>>,
 }
 
@@ -322,17 +339,31 @@ impl DrainToken {
     }
 
     /// Begin draining. Idempotent within a process: the first start time
-    /// wins, so a repeated call cannot extend the drain deadline.
+    /// AND the deadline computed from the `timeout` in force at that first
+    /// call both win — a repeated call, even with a different `timeout`,
+    /// cannot extend or truncate the drain already in progress.
+    ///
+    /// An absurd `timeout` (one that overflows `chrono::Duration`, or pushes
+    /// `now` past what `DateTime<Utc>` can represent) falls back to `now`
+    /// itself — an immediate forced shutdown — rather than silently failing
+    /// to record the drain at all.
     ///
     /// `send_if_modified` is infallible (unlike the poisoned-lock recovery
     /// a `RwLock`-based version would need), so there is nothing here to
     /// `unwrap`.
-    pub fn begin(&self, now: DateTime<Utc>) {
+    pub fn begin(&self, now: DateTime<Utc>, timeout: Duration) {
+        let deadline = chrono::Duration::from_std(timeout)
+            .ok()
+            .and_then(|delta| now.checked_add_signed(delta))
+            .unwrap_or(now);
         self.started.send_if_modified(|current| {
             if current.is_some() {
                 false
             } else {
-                *current = Some(now);
+                *current = Some(DrainStart {
+                    started_at: now,
+                    deadline,
+                });
                 true
             }
         });
@@ -340,7 +371,7 @@ impl DrainToken {
 
     #[must_use]
     pub fn started_at(&self) -> Option<DateTime<Utc>> {
-        *self.started.borrow()
+        (*self.started.borrow()).map(|start| start.started_at)
     }
 
     #[must_use]
@@ -348,12 +379,12 @@ impl DrainToken {
         self.started_at().is_some()
     }
 
-    /// Absolute deadline after which shutdown proceeds regardless.
+    /// Absolute deadline after which shutdown proceeds regardless, frozen at
+    /// [`begin`](Self::begin) against the `drain_timeout` in force then —
+    /// never recomputed from a possibly-since-retuned value.
     #[must_use]
-    pub fn deadline(&self, timeout: Duration) -> Option<DateTime<Utc>> {
-        let started = self.started_at()?;
-        let delta = chrono::Duration::from_std(timeout).ok()?;
-        started.checked_add_signed(delta)
+    pub fn deadline(&self) -> Option<DateTime<Utc>> {
+        (*self.started.borrow()).map(|start| start.deadline)
     }
 
     /// Signal that draining finished; wakes `main`'s shutdown arm.
@@ -638,7 +669,7 @@ mod tests {
     fn drain_token_starts_not_draining() {
         let t = DrainToken::new();
         assert!(!t.is_draining());
-        t.begin(Utc::now());
+        t.begin(Utc::now(), Duration::from_mins(30));
         assert!(t.is_draining());
     }
 
@@ -650,28 +681,55 @@ mod tests {
     fn drain_begin_keeps_first_start_time() {
         let t = DrainToken::new();
         let first = Utc::now();
-        t.begin(first);
+        t.begin(first, Duration::from_mins(30));
         // A later `begin` call must not push the deadline out.
-        t.begin(first + chrono::Duration::seconds(30));
+        t.begin(
+            first + chrono::Duration::seconds(30),
+            Duration::from_mins(30),
+        );
         assert_eq!(t.started_at(), Some(first));
+    }
+
+    /// Ruling Q: a repeated `begin` must not move the deadline either — not
+    /// just the start time. This covers the half of first-write-wins that
+    /// `drain_begin_keeps_first_start_time` above does not: a *different*,
+    /// smaller `timeout` supplied on the second call must be ignored just
+    /// like a different `now` is.
+    #[test]
+    fn drain_begin_freezes_deadline_against_later_timeout_change() {
+        let t = DrainToken::new();
+        let t0 = Utc::now();
+        t.begin(t0, Duration::from_mins(30));
+
+        let t1 = t0
+            .checked_add_signed(chrono::Duration::seconds(5))
+            .expect("in range");
+        // A later `begin` with a much shorter timeout must not truncate the
+        // deadline already frozen by the first call.
+        t.begin(t1, Duration::from_mins(1));
+
+        let expected = t0
+            .checked_add_signed(chrono::Duration::seconds(1800))
+            .expect("no overflow");
+        assert_eq!(t.deadline(), Some(expected));
     }
 
     #[test]
     fn drain_deadline_is_start_plus_timeout() {
         let t = DrainToken::new();
         let now = Utc::now();
-        t.begin(now);
         let timeout = Duration::from_mins(30);
+        t.begin(now, timeout);
         let expected = now
             .checked_add_signed(chrono::Duration::from_std(timeout).expect("valid duration"))
             .expect("no overflow");
-        assert_eq!(t.deadline(timeout), Some(expected));
+        assert_eq!(t.deadline(), Some(expected));
     }
 
     #[test]
     fn drain_deadline_is_none_before_begin() {
         let t = DrainToken::new();
-        assert_eq!(t.deadline(Duration::from_mins(1)), None);
+        assert_eq!(t.deadline(), None);
     }
 
     #[tokio::test]

@@ -228,7 +228,7 @@ pub async fn get_system_status(State(state): State<AppState>, auth: Auth) -> imp
     };
 
     let pause = PauseSummaryResponse::from_settings(&settings, now);
-    let drain = DrainStatusResponse::new(&state.drain, settings.drain_timeout.value, now);
+    let drain = DrainStatusResponse::new(&state.drain, now);
 
     (
         StatusCode::OK,
