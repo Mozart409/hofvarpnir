@@ -13,3 +13,5 @@ crates/*/.sqlx/
 /result-ffmpeg-bin
 /result-ffmpeg-man
 /result-ytdlp
+
+docs/superpowers/
