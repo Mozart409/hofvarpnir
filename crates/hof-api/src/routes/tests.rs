@@ -632,23 +632,31 @@ mod health_tests {
 mod system_tests {
     use chrono::Utc;
 
-    use crate::routes::system::{
-        CleanupResultResponse, CleanupStatusResponse, CleanupTriggerResponse,
-        DownloadsStatusResponse, SchedulerStatusResponse, StatisticsResponse, SystemStatusResponse,
+    use crate::routes::{
+        settings::{DrainStatusResponse, PauseStateResponse, PauseSummaryResponse},
+        system::{
+            CleanupResultResponse, CleanupStatusResponse, CleanupTriggerResponse,
+            DownloadsStatusResponse, SchedulerStatusResponse, StatisticsResponse,
+            SystemStatusResponse,
+        },
     };
 
     #[test]
     fn test_system_status_response_schema() {
+        let now = Utc::now();
         let response = SystemStatusResponse {
             scheduler: SchedulerStatusResponse {
                 running: true,
                 active_indexers: 2,
                 check_interval_secs: 60,
+                max_indexers_per_tick: 5,
             },
             downloads: DownloadsStatusResponse {
                 active_downloads: 3,
+                dispatching: 1,
                 available_permits: 2,
                 rate_limit_backoff: 0,
+                max_concurrent_downloads: 4,
             },
             cleanup: CleanupStatusResponse {
                 running: true,
@@ -666,7 +674,17 @@ mod system_tests {
                 skipped: 0,
                 cleaned: 0,
             },
-            timestamp: Utc::now(),
+            pause: PauseSummaryResponse {
+                indexing: PauseStateResponse::new(None, now),
+                downloads: PauseStateResponse::new(None, now),
+            },
+            drain: DrainStatusResponse {
+                draining: false,
+                started_at: None,
+                deadline: None,
+                remaining_secs: None,
+            },
+            timestamp: now,
         };
 
         let json = serde_json::to_string(&response).unwrap();

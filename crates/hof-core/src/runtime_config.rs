@@ -47,7 +47,7 @@ pub fn indefinite_pause() -> DateTime<Utc> {
 }
 
 /// Which layer supplied a resolved value.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum Provenance {
     Default,

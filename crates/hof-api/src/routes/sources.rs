@@ -16,7 +16,7 @@ use utoipa_axum::{router::OpenApiRouter, routes};
 
 use hof_core::{
     actors::jellyfin_metadata::TriggerSourceMetadata,
-    actors::scheduler::IndexSource,
+    actors::scheduler::{DRAINING_REFUSAL_MESSAGE, IndexSource, PAUSED_REFUSAL_PREFIX},
     db::{self, CreateSource, UpdateSource},
     domain::{
         api_key::ApiKeyScope,
@@ -547,8 +547,9 @@ pub async fn delete_source(
         (status = 401, description = "Unauthorized", body = ApiErrorResponse),
         (status = 403, description = "Forbidden - insufficient scope", body = ApiErrorResponse),
         (status = 404, description = "Source not found", body = ErrorResponse),
-        (status = 409, description = "Source already being indexed", body = ErrorResponse),
-        (status = 500, description = "Internal server error", body = ErrorResponse)
+        (status = 409, description = "Source already being indexed, or indexing is paused", body = ErrorResponse),
+        (status = 500, description = "Internal server error", body = ErrorResponse),
+        (status = 503, description = "System is draining for shutdown", body = ErrorResponse)
     )
 )]
 pub async fn trigger_index(
@@ -599,21 +600,54 @@ pub async fn trigger_index(
         Err(send_err) => {
             // Extract the error message from SendError
             let error_msg = send_err.to_string();
-            if error_msg.contains("already being indexed") {
-                (
-                    StatusCode::CONFLICT,
-                    Json(ErrorResponse { error: error_msg }),
-                )
-                    .into_response()
-            } else {
+            let status = index_trigger_error_status(&error_msg);
+            // Only genuinely unexpected failures (e.g. a DB error bubbling
+            // up from `reset_source_indexing_errors`/`get_source`) are
+            // logged as errors here — the already-indexed/paused/draining
+            // refusals are expected, operator-visible outcomes, not server
+            // faults.
+            if status == StatusCode::INTERNAL_SERVER_ERROR {
                 tracing::error!(error = %send_err, "Failed to trigger indexing");
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ErrorResponse { error: error_msg }),
-                )
-                    .into_response()
             }
+            (status, Json(ErrorResponse { error: error_msg })).into_response()
         }
+    }
+}
+
+/// Map an `IndexSource` handler refusal message to the HTTP status that best
+/// describes it.
+///
+/// Kept as a small pure function on the raw message (rather than inlined in
+/// the handler) so it can be unit-tested directly — the real path is only
+/// reachable through a live actor `SendError`, which this crate cannot spin
+/// up in a unit test.
+///
+/// Matches `DRAINING_REFUSAL_MESSAGE` and `PAUSED_REFUSAL_PREFIX` from
+/// `hof_core::actors::scheduler`, the same constants
+/// `SchedulerActor::indexing_refusal_for` builds its refusal messages from,
+/// so the producer and this matcher cannot silently drift apart. The
+/// "already being indexed" check remains a literal match, matching that
+/// existing (pre-Task-6) message's style.
+///
+/// - Already indexing: 409 — a conflict with an in-progress operation.
+/// - Paused: 409 — a conflict with a currently-configured, operator-
+///   controlled state that can be resolved by resuming (same status as the
+///   already-indexing case, and for the same reason: it is not a server
+///   fault, and it is resolvable by the operator without retrying blindly).
+/// - Draining: 503 — the server is deliberately refusing new work because
+///   it is going away; unlike a pause, this cannot be resolved by resuming
+///   in the current process, so it gets the "temporarily unavailable"
+///   status rather than "conflict".
+/// - Anything else (e.g. a DB error surfaced as a string): 500.
+fn index_trigger_error_status(error_msg: &str) -> StatusCode {
+    if error_msg.contains("already being indexed") {
+        StatusCode::CONFLICT
+    } else if error_msg.contains(DRAINING_REFUSAL_MESSAGE) {
+        StatusCode::SERVICE_UNAVAILABLE
+    } else if error_msg.starts_with(PAUSED_REFUSAL_PREFIX) {
+        StatusCode::CONFLICT
+    } else {
+        StatusCode::INTERNAL_SERVER_ERROR
     }
 }
 
@@ -833,5 +867,51 @@ mod tests {
         };
         assert_eq!(response.message, "Indexing started");
         assert_eq!(response.source_id, "01ARZ3NDEKTSV4RRFFQ69G5FAV");
+    }
+
+    // `index_trigger_error_status` is the pure string->status mapping behind
+    // `trigger_index`'s error branch. The real path is only reachable
+    // through a live actor `SendError`, which these tests do not attempt to
+    // construct — they exercise the mapping function directly instead, on
+    // exactly the message shapes `SchedulerActor::indexing_refusal_for`
+    // (and the pre-existing "already being indexed" refusal) produce.
+    #[test]
+    fn already_indexing_maps_to_conflict() {
+        assert_eq!(
+            index_trigger_error_status("Source is already being indexed"),
+            StatusCode::CONFLICT
+        );
+    }
+
+    #[test]
+    fn draining_refusal_maps_to_service_unavailable() {
+        assert_eq!(
+            index_trigger_error_status(DRAINING_REFUSAL_MESSAGE),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+    }
+
+    #[test]
+    fn paused_refusal_variants_map_to_conflict() {
+        assert_eq!(
+            index_trigger_error_status(PAUSED_REFUSAL_PREFIX),
+            StatusCode::CONFLICT
+        );
+        assert_eq!(
+            index_trigger_error_status("Indexing is paused indefinitely"),
+            StatusCode::CONFLICT
+        );
+        assert_eq!(
+            index_trigger_error_status("Indexing is paused until 2026-09-03T00:00:00Z"),
+            StatusCode::CONFLICT
+        );
+    }
+
+    #[test]
+    fn unrecognized_error_maps_to_internal_server_error() {
+        assert_eq!(
+            index_trigger_error_status("relation \"videos\" does not exist"),
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
     }
 }

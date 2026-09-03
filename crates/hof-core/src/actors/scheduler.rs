@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use kameo::Reply;
 use kameo::prelude::*;
 use sqlx::PgPool;
@@ -19,7 +19,7 @@ use crate::db;
 use crate::db::ActivityBroadcaster;
 use crate::domain::activity::{ActivityEventType, ActivitySeverity};
 use crate::domain::source::Source;
-use crate::runtime_config::{DrainToken, EffectiveSettings};
+use crate::runtime_config::{DrainToken, EffectiveSettings, indefinite_pause};
 use crate::ytdlp::YtdlpClient;
 
 use super::download_supervisor::{DownloadSupervisor, ProcessPendingDownloads};
@@ -50,6 +50,25 @@ const TICK_SEND_TIMEOUT: Duration = Duration::from_secs(10);
 /// unbounded cap is exactly the runaway-indexer load this feature exists to
 /// prevent. Mirrors `runtime_config::DEFAULT_MAX_INDEXERS_PER_TICK`.
 const DEFAULT_MAX_INDEXERS_PER_TICK: usize = 5;
+
+/// Exact message returned by [`IndexSource`]'s refusal when the system is
+/// draining for shutdown (see `SchedulerActor::indexing_refusal_for`).
+///
+/// `hof-api`'s `routes::sources::trigger_index` maps this refusal to an HTTP
+/// status by matching against this constant rather than duplicating the
+/// literal string, so the producer here and the matcher there cannot drift
+/// apart.
+pub const DRAINING_REFUSAL_MESSAGE: &str =
+    "Indexing is unavailable: the system is draining for shutdown";
+
+/// Shared prefix of every "indexing is paused" refusal message returned by
+/// [`IndexSource`] ("Indexing is paused", "...indefinitely", "...until
+/// {timestamp}"; see `SchedulerActor::indexing_refusal_for`).
+///
+/// `hof-api`'s `routes::sources::trigger_index` matches refusal messages
+/// against this constant with `starts_with` rather than duplicating the
+/// literal string.
+pub const PAUSED_REFUSAL_PREFIX: &str = "Indexing is paused";
 
 /// The scheduler actor.
 ///
@@ -278,8 +297,8 @@ impl Message<CheckSources> for SchedulerActor {
             return;
         }
 
-        if self.config_rx.borrow().indexing_paused(Utc::now()) || self.drain.is_draining() {
-            debug!("Indexing paused or draining; skipping this tick");
+        if let Some(reason) = self.indexing_refusal(Utc::now()) {
+            debug!(reason = %reason, "Skipping this tick");
         } else {
             self.spawn_due_indexers(ctx.actor_ref()).await;
         }
@@ -316,9 +335,20 @@ impl Message<IndexSource> for SchedulerActor {
         msg: IndexSource,
         ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
-        // Check if already being indexed
+        // Check if already being indexed. This is a more specific answer than
+        // a pause or drain refusal, and it must be checked first: an index
+        // already in flight for this source shouldn't be reported as
+        // "paused" or "draining" when it is neither — it is already running.
         if self.active_indexers.contains_key(&msg.source_id) {
             return Err("Source is already being indexed".to_string());
+        }
+
+        // Refuse before any side effects. In particular, this must run
+        // before `reset_source_indexing_errors` below: that call mutates the
+        // source's row, and a request refused here must not have quietly
+        // reset the source's error count anyway.
+        if let Some(reason) = self.indexing_refusal(Utc::now()) {
+            return Err(reason);
         }
 
         // Reset error count for manual indexing (gives fresh retry attempts)
@@ -439,6 +469,48 @@ impl Message<IndexingCompleted> for SchedulerActor {
 }
 
 impl SchedulerActor {
+    /// Why new indexing work must not start right now, if it must not.
+    ///
+    /// Both the periodic `CheckSources` sweep and the manual `IndexSource`
+    /// trigger consult this; a manual index that skipped it would keep
+    /// spawning indexers during a drain and hold up quiescence.
+    fn indexing_refusal(&self, now: DateTime<Utc>) -> Option<String> {
+        let settings = self.config_rx.borrow();
+        let settings: &EffectiveSettings = &settings;
+        Self::indexing_refusal_for(settings, self.drain.is_draining(), now)
+    }
+
+    /// Pure decision behind [`Self::indexing_refusal`], split out so it can
+    /// be unit-tested directly against constructed `EffectiveSettings` and a
+    /// `draining` flag, without standing up a full `SchedulerActor` (which
+    /// would need a live `PgPool`, a spawned download supervisor, etc.).
+    ///
+    /// Drain takes priority when both a drain and a pause are in effect:
+    /// once the process is draining for shutdown it is going away regardless
+    /// of when the pause would have lifted, so the drain is the more useful
+    /// (and more urgent) thing to tell the operator.
+    fn indexing_refusal_for(
+        settings: &EffectiveSettings,
+        draining: bool,
+        now: DateTime<Utc>,
+    ) -> Option<String> {
+        if draining {
+            return Some(DRAINING_REFUSAL_MESSAGE.to_string());
+        }
+
+        if settings.indexing_paused(now) {
+            return Some(match settings.indexing_paused_until {
+                Some(until) if until == indefinite_pause() => {
+                    format!("{PAUSED_REFUSAL_PREFIX} indefinitely")
+                }
+                Some(until) => format!("{PAUSED_REFUSAL_PREFIX} until {until}"),
+                None => PAUSED_REFUSAL_PREFIX.to_string(),
+            });
+        }
+
+        None
+    }
+
     /// Find sources due for indexing and spawn indexers for them, staggered
     /// across ticks by `max_indexers_per_tick`.
     ///
@@ -674,5 +746,94 @@ mod tests {
         };
         let s = resolve(&row, &EnvOverrides::default());
         assert!(s.indexing_paused(Utc::now()));
+    }
+
+    // These test `SchedulerActor::indexing_refusal_for` — the pure decision
+    // function behind `indexing_refusal` — directly against constructed
+    // `EffectiveSettings` and a `draining` flag. This is real coverage of
+    // the gate logic itself (unlike `paused_indexing_blocks_new_indexers`
+    // above), but it is still not an actor-level test: it does not drive
+    // `SchedulerActor::handle` for `CheckSources` or `IndexSource`, which
+    // would require spawning a full actor with a live `PgPool` and download
+    // supervisor. The `IndexSource` handler path remains unverified beyond
+    // this predicate; see the task report for why.
+    mod indexing_refusal_tests {
+        use crate::db::RuntimeSettingsRow;
+        use crate::runtime_config::{EnvOverrides, resolve};
+
+        use super::*;
+
+        fn settings_with_indexing_paused_until(
+            until: Option<chrono::DateTime<Utc>>,
+        ) -> EffectiveSettings {
+            let row = RuntimeSettingsRow {
+                indexing_paused_until: until,
+                ..RuntimeSettingsRow::default()
+            };
+            resolve(&row, &EnvOverrides::default())
+        }
+
+        #[test]
+        fn not_paused_not_draining_allows_indexing() {
+            let now = Utc::now();
+            let settings = settings_with_indexing_paused_until(None);
+            assert_eq!(
+                SchedulerActor::indexing_refusal_for(&settings, false, now),
+                None
+            );
+        }
+
+        #[test]
+        fn paused_refuses_naming_the_pause() {
+            let now = Utc::now();
+            let until = now
+                .checked_add_signed(chrono::Duration::hours(1))
+                .expect("in range");
+            let settings = settings_with_indexing_paused_until(Some(until));
+
+            let reason = SchedulerActor::indexing_refusal_for(&settings, false, now)
+                .expect("paused settings must refuse");
+            assert!(reason.contains("paused"), "reason was: {reason}");
+            assert!(!reason.contains("drain"), "reason was: {reason}");
+        }
+
+        #[test]
+        fn indefinite_pause_refuses_without_leaking_the_sentinel() {
+            let now = Utc::now();
+            let settings = settings_with_indexing_paused_until(Some(indefinite_pause()));
+
+            let reason = SchedulerActor::indexing_refusal_for(&settings, false, now)
+                .expect("indefinitely paused settings must refuse");
+            assert!(reason.contains("indefinitely"), "reason was: {reason}");
+            assert!(!reason.contains("9999"), "reason was: {reason}");
+        }
+
+        #[test]
+        fn draining_refuses_naming_the_drain() {
+            let now = Utc::now();
+            let settings = settings_with_indexing_paused_until(None);
+
+            let reason = SchedulerActor::indexing_refusal_for(&settings, true, now)
+                .expect("draining must refuse");
+            assert!(reason.contains("drain"), "reason was: {reason}");
+            assert!(!reason.contains("paused"), "reason was: {reason}");
+        }
+
+        #[test]
+        fn both_paused_and_draining_the_drain_reason_wins() {
+            // Drain takes priority: once the process is shutting down, the
+            // pause deadline is moot, so the drain refusal is the more
+            // useful thing to tell the operator.
+            let now = Utc::now();
+            let until = now
+                .checked_add_signed(chrono::Duration::hours(1))
+                .expect("in range");
+            let settings = settings_with_indexing_paused_until(Some(until));
+
+            let reason = SchedulerActor::indexing_refusal_for(&settings, true, now)
+                .expect("both paused and draining must refuse");
+            assert!(reason.contains("drain"), "reason was: {reason}");
+            assert!(!reason.contains("paused"), "reason was: {reason}");
+        }
     }
 }
