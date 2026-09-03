@@ -14,7 +14,7 @@ use chrono::{DateTime, Utc};
 use hof_core::runtime_config::{Provenance, indefinite_pause};
 use maud::Markup;
 
-use super::{PanelView, panel_section};
+use super::{PanelView, badge, humanize, panel_section};
 
 /// Render the Timings section.
 pub(crate) fn section(view: &PanelView) -> Markup {
@@ -74,8 +74,9 @@ pub(crate) fn section(view: &PanelView) -> Markup {
                             "Minimum re-index interval",
                             view.min_index_interval,
                             Provenance::Default,
-                            "Floor between re-indexing the same source, regardless of its \
-                             configured index frequency.",
+                            "Floor between periodic re-indexings of the same source, \
+                             regardless of its configured index frequency. A manual \
+                             \"Index now\" bypasses this.",
                         ))
                         (plain_row(
                             "Inter-invocation rate-limit delay",
@@ -324,55 +325,6 @@ fn plain_row(label: &str, value: &str, detail: &str) -> Markup {
         &maud::html! {},
         detail,
     )
-}
-
-/// Read-only provenance badge, matching `settings_table`'s visual idiom.
-///
-/// Colour alone would fail for colour-blind readers and in monochrome, so
-/// the layer name is always spelled out in the badge text too.
-fn badge(provenance: Provenance) -> Markup {
-    let (text, classes) = match provenance {
-        Provenance::Default => (
-            "default",
-            "bg-slate-100 text-slate-700 dark:bg-slate-700 dark:text-slate-200",
-        ),
-        Provenance::Env => (
-            "env",
-            "bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200",
-        ),
-        Provenance::Database => (
-            "database",
-            "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-200",
-        ),
-    };
-    maud::html! {
-        span class={ "inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium " (classes) } {
-            (text)
-        }
-    }
-}
-
-/// Render a duration the way an operator reads it: "45s", "1m 30s", "3h".
-fn humanize(d: Duration) -> String {
-    let total = d.as_secs();
-    if total == 0 {
-        return "0s".to_string();
-    }
-    let hours = total / 3600;
-    let minutes = (total % 3600) / 60;
-    let seconds = total % 60;
-
-    let mut parts: Vec<String> = Vec::new();
-    if hours > 0 {
-        parts.push(format!("{hours}h"));
-    }
-    if minutes > 0 {
-        parts.push(format!("{minutes}m"));
-    }
-    if seconds > 0 {
-        parts.push(format!("{seconds}s"));
-    }
-    parts.join(" ")
 }
 
 #[cfg(test)]
