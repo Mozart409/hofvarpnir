@@ -435,12 +435,37 @@
           ++ pkgs.lib.optionals pkgs.stdenv.isDarwin darwinDevPackages;
         shellHook = ''
           export COMPOSE_BAKE=true
-          # sccache caches compiled artifacts across the feature-set and
-          # build-script churn that repeatedly rebuilt the expensive
-          # aws-lc-sys -> aws-lc-rs -> rustls chain. Dependencies are cached;
-          # workspace crates keep cargo's incremental compilation (sccache
+          # sccache caches rustc invocations for dependencies. Workspace
+          # crates keep cargo's incremental compilation instead (sccache
           # declines to cache incremental units, which is the right trade
           # here). Unset RUSTC_WRAPPER to opt out for a single shell.
+          #
+          # CORRECTION (measured 2026-09-03): an earlier version of this
+          # comment claimed sccache absorbed the churn that repeatedly
+          # rebuilt the expensive aws-lc-sys -> aws-lc-rs -> rustls chain.
+          # It does not, and largely cannot. Two reasons:
+          #
+          #   1. RUSTC_WRAPPER wraps rustc only. aws-lc-sys's cost is its
+          #      build script compiling the vendored AWS-LC *C* sources via
+          #      `cc`, which this wrapper never sees.
+          #   2. Measured over a normal edit/lint/test cycle, sccache served
+          #      2 hits against 1503 compile requests (~0.1%). The chain was
+          #      rebuilding on every single `just lint` while sccache was
+          #      active.
+          #
+          # What actually stopped that churn was making the invalidation go
+          # away rather than caching it: `SQLX_OFFLINE=true` on the clippy
+          # recipes (justfile) so lint and test no longer differ in the
+          # sqlx env vars that build scripts declare `rerun-if-env-changed`
+          # on, plus rust-analyzer.toml pinning RA to the same feature set
+          # and its own targetDir. Lint-after-test went from ~100s and six
+          # rebuilt crates to ~3s and zero.
+          #
+          # sccache is kept because it still pays where the local loop does
+          # not: genuinely cold builds (after `cargo clean`, a profile
+          # change, or a branch switch) and CI. Do not expect it to help a
+          # warm incremental loop -- cargo's own fingerprinting already
+          # covers that ground.
           export RUSTC_WRAPPER=sccache
           export PLAYWRIGHT_BROWSERS_PATH=${pkgs.playwright-driver.browsers}
           export PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS=true
