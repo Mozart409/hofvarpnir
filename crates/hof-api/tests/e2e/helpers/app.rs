@@ -69,9 +69,11 @@ impl TestApp {
             .await
             .expect("Failed to load runtime settings");
 
-        // Process-local drain signal. Not yet triggerable through this test
-        // app (the HTTP endpoint is a later task); constructed fresh here
-        // purely to satisfy the actors' constructors.
+        // Process-local drain signal (see ADR-0004). Triggerable through
+        // this test app via `POST /api/v1/system/shutdown`, which calls
+        // `drain.begin(..)`; actor gates and the shutdown poller read
+        // `drain.is_draining()` to stop taking new work and detect
+        // quiescence.
         let drain = DrainToken::new();
 
         let supervisor = DownloadSupervisor::spawn(DownloadSupervisorArgs {
