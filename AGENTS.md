@@ -528,7 +528,7 @@ Required for development:
 
 - `DATABASE_URL` - PostgreSQL connection string
 - `PORT` - Server port (default: 3000)
-- `YT_DLP_PATH` - Path to yt-dlp binary
+- `YTDLP_PATH` - Path to yt-dlp binary (no underscore between `YT` and `DLP`)
 - `SQLX_OFFLINE` - Set to `true` for offline builds
 
 Optional (observability):

@@ -92,15 +92,34 @@ Configuration is loaded from environment variables:
 | Variable                      | Description                            | Default      |
 | ----------------------------- | -------------------------------------- | ------------ |
 | `DATABASE_URL`                | PostgreSQL connection string           | -            |
+| `HOST`                        | Server bind address                    | 127.0.0.1    |
 | `PORT`                        | Server port                            | 3000         |
-| `YT_DLP_PATH`                 | Path to yt-dlp binary                  | yt-dlp       |
-| `DOWNLOAD_CONCURRENCY`        | Max simultaneous downloads             | 3            |
-| `DOWNLOAD_TIMEOUT`            | Per-download timeout (hours)           | 4            |
+| `YTDLP_PATH`                  | Path to yt-dlp binary                  | yt-dlp       |
+| `MAX_CONCURRENT_DOWNLOADS`¹   | Max simultaneous downloads             | 3            |
+| `DOWNLOAD_TIMEOUT_HOURS`      | Per-download timeout (hours)           | 4            |
+| `MAX_DOWNLOAD_ATTEMPTS`       | Retries before permanently-failed      | 5            |
+| `RATE_LIMIT_DELAY_SECS`¹      | Delay between yt-dlp invocations       | 5            |
+| `DEFAULT_OUTPUT_DIR`          | Default download output directory      | /var/lib/hofvarpnir/downloads |
+| `RETENTION_DAYS`              | Global retention policy, in days       | - (no cleanup unless set) |
+| `MAX_INDEXERS_PER_TICK`¹      | Max sources indexed per scheduler tick | 5            |
+| `CHECK_INTERVAL_SECS`¹        | Scheduler tick interval, in seconds    | 60           |
+| `CLEANUP_INTERVAL_SECS`¹      | Cleanup actor run interval, in seconds | 10800 (3h)   |
+| `DRAIN_TIMEOUT_SECS`¹         | Max time to wait for graceful shutdown | 1800 (30m)   |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP gRPC endpoint for traces          | - (disabled) |
 | `OTEL_SERVICE_NAME`           | Service name for traces/logs           | hofvarpnir   |
 | `LOKI_URL`                    | Grafana Loki endpoint for log shipping | - (disabled) |
 | `METRICS_ENABLED`             | Enable Prometheus metrics endpoint     | false        |
 | `LOG_FORMAT`                  | Log output format (`json` or default)  | default      |
+
+¹ **Runtime-tunable.** These six values can also be set from the
+`/settings/runtime` control panel (or `PATCH /api/v1/system/settings`). A
+value stored in the database **overrides the environment variable**, which
+is itself only the fallback used when the database column is `NULL` — the
+environment variable does not "win" once a database value exists. The
+control panel shows a `default` / `env` / `database` badge next to each
+value indicating which layer it actually resolved from. Every other
+variable above is read once at startup with no runtime override. See
+[Runtime control](#runtime-control) below.
 
 ### OIDC Authentication (Optional)
 
@@ -116,6 +135,39 @@ To enable OIDC single sign-on, set these environment variables:
 | `OIDC_REDIRECT_BASE_URL`  | Override base URL for callback (e.g., `https://hof.example.com`) | - (derived from request) |
 | `OIDC_LOGOUT_REDIRECT`    | Enable RP-initiated logout                              | `false`                   |
 | `OIDC_DISCOVERY_TIMEOUT`  | Discovery HTTP timeout in seconds                       | `30`                      |
+
+## Runtime control
+
+The control panel at `/settings/runtime` lets an operator adjust the six
+runtime-tunable settings above without restarting, pause indexing and/or
+downloads, and trigger a graceful shutdown. The equivalent endpoints exist
+under `/api/v1/system/` (`settings`, `pause`, `shutdown`, `status`) for
+scripted use.
+
+- **Pause is per-module**: indexing and downloads are gated independently, so
+  you can pause one without stopping the other. Choose a duration — 1h, 6h,
+  12h, 24h, 3d, 7d, or indefinite — and it auto-resumes on its own when the
+  duration elapses (indefinite pauses require an explicit resume). Pause is
+  a database column, so it **survives a restart**.
+- **Drain deliberately does not survive a restart.** Draining is process-local
+  by design: a restarted container must never come back up silently refusing
+  all work with no visible cause. See
+  [ADR-0004](docs/adr/0004-drain-state-not-persisted.md).
+
+### The "Shut down" button and `restart: always`
+
+Draining is a *graceful shutdown*, not a crash: the process stops accepting
+new work, finishes in-flight downloads and indexing (or gives up once
+`DRAIN_TIMEOUT_SECS` elapses), and then **returns from `main` with exit code
+0**. Under a container `restart` policy of `always` or `unless-stopped`, the
+container runtime treats exit code 0 as a normal stop and **starts the
+container straight back up** — so from the operator's point of view, the
+"Shut down" button appears to do nothing.
+
+This is the one place the control panel cannot do what its label implies,
+and the fix is deployment-side, not application-side: a deployment that
+wants the process to actually stay down after using this button must run
+with `restart: on-failure` instead.
 
 ## Development
 
