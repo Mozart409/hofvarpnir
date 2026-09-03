@@ -119,6 +119,7 @@ impl TestApp {
             vec![],
             broadcaster,
             None,
+            runtime_config,
             drain,
         );
 
