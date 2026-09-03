@@ -1272,7 +1272,7 @@ mod tests {
         let (_settings_tx, config_rx) = watch::channel(settings);
 
         let drain = DrainToken::new();
-        drain.begin(Utc::now());
+        drain.begin(Utc::now(), Duration::from_mins(30));
 
         let supervisor = spawn_test_supervisor(pool.clone(), config_rx, drain).await;
         let (video, profile, source) = seed_pending_video(&pool).await;

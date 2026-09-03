@@ -1,8 +1,6 @@
 //! Runtime settings, pause, and shutdown endpoints.
 #![deny(clippy::arithmetic_side_effects, clippy::string_slice)]
 
-use std::time::Duration;
-
 use axum::{
     Json,
     extract::{Query, State},
@@ -125,11 +123,13 @@ impl PauseSummaryResponse {
 }
 
 impl DrainStatusResponse {
-    /// `deadline` comes from `DrainToken::deadline(timeout)`, which derives it
-    /// from the stored drain start time — never from `now` (see R-N).
+    /// `deadline` comes from `DrainToken::deadline()`, which was frozen once
+    /// at `begin` against the `drain_timeout` in force then — never
+    /// recomputed here from `now` or from a possibly-since-retuned
+    /// `drain_timeout` (see R-N and Ruling Q).
     #[must_use]
-    pub fn new(drain: &DrainToken, drain_timeout: Duration, now: DateTime<Utc>) -> Self {
-        let deadline = drain.deadline(drain_timeout);
+    pub fn new(drain: &DrainToken, now: DateTime<Utc>) -> Self {
+        let deadline = drain.deadline();
         let remaining_secs = deadline.map(|d| sleep_duration_until(d, now).as_secs());
         Self {
             draining: drain.is_draining(),
@@ -697,10 +697,13 @@ pub async fn resume(
 
 /// Begin draining the process for a clean shutdown.
 ///
-/// Idempotent: `DrainToken::begin` is first-write-wins, so a repeated call
-/// reports the deadline derived from the ORIGINAL drain start time, never a
-/// freshly recomputed `now + timeout` (see `DrainStatusResponse::new`, which
-/// reads the deadline back from the token rather than being handed one).
+/// Idempotent: `DrainToken::begin` is first-write-wins for both the start
+/// time AND the deadline it freezes from `drain_timeout` at that moment, so
+/// a repeated call — even after an operator has retuned
+/// `drain_timeout_secs` in between — reports the deadline derived from the
+/// ORIGINAL drain start, never a freshly recomputed `now + timeout` (see
+/// `DrainStatusResponse::new`, which reads the deadline back from the token
+/// rather than being handed one).
 #[utoipa::path(
     post,
     path = "/shutdown",
@@ -717,9 +720,13 @@ pub async fn shutdown(State(state): State<AppState>, auth: Auth) -> impl IntoRes
     }
 
     let now = Utc::now();
-    state.drain.begin(now);
-    let timeout = state.runtime_config.current().drain_timeout.value;
-    let drain = DrainStatusResponse::new(&state.drain, timeout, now);
+    // Reading `current()` here is correct — this IS the `drain_timeout` in
+    // force at drain start, which `begin` freezes into the deadline it
+    // records. A later `PATCH /settings` cannot move it (see Ruling Q).
+    state
+        .drain
+        .begin(now, state.runtime_config.current().drain_timeout.value);
+    let drain = DrainStatusResponse::new(&state.drain, now);
 
     tracing::info!(deadline = ?drain.deadline, "Drain triggered");
 
@@ -741,6 +748,10 @@ mod tests {
     // comes from `RuntimeConfig::current()` or `resolve()`), so importing
     // this at file scope would be flagged as unused outside `#[cfg(test)]`.
     use hof_core::runtime_config::Resolved;
+    // Likewise test-only: `DrainToken::begin` now takes the timeout, and
+    // every `std::time::Duration` literal in this file is a test fixture.
+    // Production code here uses `chrono::Duration`, fully qualified.
+    use std::time::Duration;
 
     fn now() -> DateTime<Utc> {
         Utc::now()
@@ -828,7 +839,7 @@ mod tests {
     #[test]
     fn drain_status_fresh_token_is_not_draining() {
         let drain = DrainToken::new();
-        let status = DrainStatusResponse::new(&drain, Duration::from_mins(30), now());
+        let status = DrainStatusResponse::new(&drain, now());
         assert!(!status.draining);
         assert_eq!(status.started_at, None);
         assert_eq!(status.deadline, None);
@@ -839,10 +850,10 @@ mod tests {
     fn drain_status_after_begin_reports_deadline_and_saturates_remaining() {
         let drain = DrainToken::new();
         let t0 = now();
-        drain.begin(t0);
         let timeout = Duration::from_mins(30);
+        drain.begin(t0, timeout);
 
-        let status = DrainStatusResponse::new(&drain, timeout, t0);
+        let status = DrainStatusResponse::new(&drain, t0);
         assert!(status.draining);
         assert_eq!(status.started_at, Some(t0));
         let expected_deadline = t0
@@ -856,8 +867,42 @@ mod tests {
         let long_after_deadline = expected_deadline
             .checked_add_signed(chrono::Duration::seconds(3600))
             .expect("in range");
-        let status_after = DrainStatusResponse::new(&drain, timeout, long_after_deadline);
+        let status_after = DrainStatusResponse::new(&drain, long_after_deadline);
         assert_eq!(status_after.remaining_secs, Some(0));
+    }
+
+    /// Ruling Q: the deadline reported by `DrainStatusResponse` must not
+    /// move if `drain_timeout` changes after the drain has already begun.
+    /// `DrainStatusResponse::new` no longer even has access to
+    /// `RuntimeConfig` — reading `drain_timeout` itself is now structurally
+    /// impossible, not just untested — so this pins the remaining
+    /// contract: `new` reports the token's frozen `deadline()` verbatim,
+    /// with no recomputation of its own, both before and after a second
+    /// `begin` call with a different timeout. The `runtime_config` unit
+    /// test `drain_begin_freezes_deadline_against_later_timeout_change`
+    /// covers the freezing itself at the `DrainToken` level. An e2e test
+    /// would need to PATCH settings mid-drain via HTTP, which is awkward to
+    /// sequence reliably against the drain watcher; this unit-level test
+    /// plus the `runtime_config` one together are sufficient to pin the
+    /// behavior.
+    #[test]
+    fn drain_status_deadline_unaffected_by_later_timeout_change() {
+        let drain = DrainToken::new();
+        let t0 = now();
+        drain.begin(t0, Duration::from_mins(30));
+        let before_change = DrainStatusResponse::new(&drain, t0);
+
+        // Simulate an operator retuning `drain_timeout_secs` mid-drain: a
+        // second `begin` call with a much shorter timeout must not move the
+        // reported deadline.
+        drain.begin(t0, Duration::from_mins(1));
+        let after_change = DrainStatusResponse::new(&drain, t0);
+
+        assert_eq!(before_change.deadline, after_change.deadline);
+        let expected_deadline = t0
+            .checked_add_signed(chrono::Duration::seconds(1800))
+            .expect("no overflow");
+        assert_eq!(after_change.deadline, Some(expected_deadline));
     }
 
     // ------------------------------------------------------------------
@@ -1125,8 +1170,8 @@ mod tests {
     fn shutdown_response_serializes() {
         let drain = DrainToken::new();
         let t0 = now();
-        drain.begin(t0);
-        let status = DrainStatusResponse::new(&drain, Duration::from_mins(30), t0);
+        drain.begin(t0, Duration::from_mins(30));
+        let status = DrainStatusResponse::new(&drain, t0);
         let response = ShutdownResponse {
             message: "Draining".to_string(),
             drain: status,
@@ -1143,15 +1188,15 @@ mod tests {
     fn repeated_begin_leaves_deadline_anchored_to_first_start() {
         let drain = DrainToken::new();
         let t0 = now();
-        drain.begin(t0);
         let timeout = Duration::from_mins(30);
-        let first = DrainStatusResponse::new(&drain, timeout, t0);
+        drain.begin(t0, timeout);
+        let first = DrainStatusResponse::new(&drain, t0);
 
         let t1 = t0
             .checked_add_signed(chrono::Duration::seconds(30))
             .expect("in range");
-        drain.begin(t1); // second call must not move the deadline
-        let second = DrainStatusResponse::new(&drain, timeout, t1);
+        drain.begin(t1, timeout); // second call must not move the deadline
+        let second = DrainStatusResponse::new(&drain, t1);
 
         assert_eq!(second.started_at, Some(t0));
         assert_eq!(first.deadline, second.deadline);

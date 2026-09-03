@@ -155,12 +155,7 @@ pub async fn initialize(pool: PgPool, config: &Config) -> Result<ActorSystem> {
         broadcaster.clone(),
         drain.clone(),
     );
-    spawn_drain_watcher(
-        drain.clone(),
-        supervisor.clone(),
-        scheduler.clone(),
-        runtime_config.clone(),
-    );
+    spawn_drain_watcher(drain.clone(), supervisor.clone(), scheduler.clone());
     let cleanup = start_cleanup(
         pool.clone(),
         config,
@@ -606,11 +601,14 @@ impl QuiescenceCounts {
 /// on the next boot, so a forced shutdown mid-download is recoverable, not
 /// corrupting.
 ///
-/// Callers must have already called `drain.begin(..)` and computed
-/// `deadline` once, at drain start — this function does not re-read
-/// `drain_timeout` and does not call `begin` itself, so an operator
-/// retuning `drain_timeout_secs` mid-drain cannot silently extend or
-/// truncate a shutdown already in progress.
+/// Callers pass a `deadline` obtained from `drain.deadline()`, which
+/// `begin` froze once, at drain start, against the `drain_timeout` in force
+/// then; this function never re-derives it, so an operator retuning
+/// `drain_timeout_secs` mid-drain cannot silently extend or truncate a
+/// shutdown already in progress. That contract used to rest on convention
+/// alone; it is now enforced by `DrainToken`'s own type (see `DrainStart`),
+/// since there is no longer any way to ask for "the deadline" without first
+/// having called `begin`.
 ///
 /// `probe` is injectable so this is unit-testable with a pure,
 /// virtual-clock-friendly closure instead of a live actor system: the real
@@ -686,30 +684,28 @@ async fn live_quiescence_counts(
 /// Spawn the background task that waits for a drain to start, then polls
 /// the real actor system until quiescence or `drain_timeout` elapses.
 ///
-/// `drain_timeout` is read from `runtime_config` exactly once, when the
-/// drain starts (not re-borrowed per poll) — see `poll_until_quiescent`'s
-/// doc comment for why.
+/// Whoever calls `drain.begin(..)` (the production caller is the
+/// `POST /system/shutdown` handler) supplies the `drain_timeout` in force at
+/// that moment; `DrainToken` freezes the resulting deadline right there.
+/// This watcher only ever reads that frozen value back — it never reads
+/// `drain_timeout` itself and never re-derives a deadline — see
+/// `poll_until_quiescent`'s doc comment for why.
 fn spawn_drain_watcher(
     drain: DrainToken,
     supervisor: ActorRef<DownloadSupervisor>,
     scheduler: ActorRef<SchedulerActor>,
-    runtime_config: RuntimeConfig,
 ) {
     tokio::spawn(async move {
         drain.wait_started().await;
 
-        let timeout = runtime_config.current().drain_timeout.value;
         // `deadline()` can only return `None` if `started_at()` is `None`,
         // which cannot be true here: `wait_started` only resolves once
         // `begin` has set it. Fall back to "now" (i.e. an immediate forced
         // shutdown) rather than unwrapping, since it is unreachable rather
         // than provably impossible to the compiler.
-        let deadline = drain.deadline(timeout).unwrap_or_else(Utc::now);
+        let deadline = drain.deadline().unwrap_or_else(Utc::now);
 
-        info!(
-            timeout_secs = timeout.as_secs(),
-            "Drain started; watching for quiescence"
-        );
+        info!(?deadline, "Drain started; watching for quiescence");
 
         poll_until_quiescent(
             // Clone per call rather than capturing `&supervisor`/`&scheduler`:
@@ -796,7 +792,10 @@ mod tests {
     async fn drain_times_out_and_still_shuts_down() {
         let drain = DrainToken::new();
         let started = Utc::now();
-        drain.begin(started);
+        // The timeout passed to `begin` here is irrelevant to this test:
+        // `poll_until_quiescent` is called below with an explicitly
+        // constructed, already-elapsed `deadline`, not `drain.deadline()`.
+        drain.begin(started, Duration::from_mins(30));
 
         // Already elapsed at call time (see the module-level note above on
         // why this test does not wait for a future deadline instead).
@@ -834,7 +833,9 @@ mod tests {
     async fn drain_signals_complete_on_reaching_quiescence() {
         let drain = DrainToken::new();
         let started = Utc::now();
-        drain.begin(started);
+        // As above, the timeout here is irrelevant: `poll_until_quiescent`
+        // is called below with an explicitly constructed `deadline`.
+        drain.begin(started, Duration::from_mins(30));
 
         // Far enough in the future that the elapsed-deadline branch cannot
         // fire during this test; quiescence must be what ends the loop.
