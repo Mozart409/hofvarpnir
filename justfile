@@ -102,10 +102,10 @@ fmt: clear
     cargo fmt --all
 
 fix: clear
-    cargo clippy --fix --allow-dirty --allow-staged --all-targets --all-features
+    SQLX_OFFLINE=true cargo clippy --fix --allow-dirty --allow-staged --all-targets --all-features
 
 lint: clear
-    cargo clippy --workspace --all-targets --all-features -- -D warnings
+    SQLX_OFFLINE=true cargo clippy --workspace --all-targets --all-features -- -D warnings
 
 # Development
 dev: clear up
@@ -148,7 +148,7 @@ e2e-only: clear
 ci: clear up
     SQLX_OFFLINE=true cargo build --release
     SQLX_OFFLINE=true DATABASE_URL={{ test_database_url }} cargo test --all-features -- --include-ignored --test-threads=4
-    cargo clippy --workspace --all-targets --all-features -- -D warnings
+    SQLX_OFFLINE=true cargo clippy --workspace --all-targets --all-features -- -D warnings
 
 # Check Nix cache availability
 cache-check-x86: clear
