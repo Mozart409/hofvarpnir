@@ -22,7 +22,7 @@ use hof_core::{
         cleanup::{GetCleanupStatus, RunCleanup},
         download_supervisor::{CancelDownload, EnqueueDownload},
         jellyfin_metadata::TriggerSourceMetadata,
-        scheduler::IndexSource,
+        scheduler::{DRAINING_REFUSAL_MESSAGE, IndexSource, PAUSED_REFUSAL_PREFIX},
     },
     auth::generate_api_key,
     db::{self, CreateApiKey, CreateProfile, CreateSource, UpdateProfile, UpdateSource},
@@ -1897,6 +1897,20 @@ async fn trigger_index(
             Redirect::to(redirect_to).into_response()
         }
         Err(error) => {
+            // A pause or drain refusal is an expected operator condition, not a
+            // server fault: the scheduler already produced a message saying
+            // exactly why ("Indexing is paused until ..."). Surfacing it as a
+            // flash and returning the operator to where they were beats a 500
+            // error page that throws that message away. Anything else really
+            // is a failure and keeps the error page.
+            let message = error.to_string();
+            if message.starts_with(PAUSED_REFUSAL_PREFIX)
+                || message.contains(DRAINING_REFUSAL_MESSAGE)
+                || message.contains("already being indexed")
+            {
+                set_flash(&session, "error", &message).await;
+                return Redirect::to(redirect_to).into_response();
+            }
             tracing::error!(%error, "failed to trigger source index from web form");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,

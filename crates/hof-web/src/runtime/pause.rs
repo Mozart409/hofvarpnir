@@ -439,6 +439,7 @@ mod tests {
             scheduler: None,
             cleanup: None,
             download_timeout: StdDuration::from_secs(30),
+            download_timeout_provenance: Provenance::Default,
             ytdlp_timeout: StdDuration::from_secs(30),
             min_index_interval: StdDuration::from_mins(1),
         }

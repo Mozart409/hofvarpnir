@@ -111,8 +111,10 @@ Configuration is loaded from environment variables:
 | `METRICS_ENABLED`             | Enable Prometheus metrics endpoint     | false        |
 | `LOG_FORMAT`                  | Log output format (`json` or default)  | default      |
 
-¹ **Runtime-tunable.** These six values can also be set from the
-`/settings/runtime` control panel (or `PATCH /api/v1/system/settings`). A
+¹ **Runtime-tunable.** These six values can be changed at runtime via
+`PATCH /api/v1/system/settings`, without a restart. The `/settings/runtime`
+control panel **displays** them with their resolved provenance; editing them
+is currently API-only. A
 value stored in the database **overrides the environment variable**, which
 is itself only the fallback used when the database column is `NULL` — the
 environment variable does not "win" once a database value exists. The
@@ -138,11 +140,16 @@ To enable OIDC single sign-on, set these environment variables:
 
 ## Runtime control
 
-The control panel at `/settings/runtime` lets an operator adjust the six
-runtime-tunable settings above without restarting, pause indexing and/or
-downloads, and trigger a graceful shutdown. The equivalent endpoints exist
-under `/api/v1/system/` (`settings`, `pause`, `shutdown`, `status`) for
-scripted use.
+The control panel at `/settings/runtime` lets an operator pause indexing
+and/or downloads, trigger a graceful shutdown, and see every runtime value
+currently in force — each tunable alongside a `default` / `env` / `database`
+badge showing which layer it resolved from, plus every active timeout and
+countdown.
+
+**Changing the six tunable values is API-only today** —
+`PATCH /api/v1/system/settings`. The panel renders them read-only; pause and
+shutdown are the two actions it can perform. The full endpoint set lives
+under `/api/v1/system/` (`settings`, `pause`, `shutdown`, `status`).
 
 - **Pause is per-module**: indexing and downloads are gated independently, so
   you can pause one without stopping the other. Choose a duration — 1h, 6h,
