@@ -14,26 +14,16 @@
 
 ## Session Handoff — start here
 
-**State as of 2026-09-02 (end of session), branch `feat/2026-09-01-429-handling`
+**State as of 2026-09-03, branch `feat/2026-09-01-429-handling`
 (not pushed, no upstream):**
 
-- **Tasks 0, 1, 2, 3, 4 are done, committed, reviewed, and green.**
-- **Task 5 is written, lint-clean and test-green (387 passing), and committed —
-  but it has NOT been through task review yet.** That is the next action.
-- **Next action: dispatch the Task 5 task review**, then Task 6 (API endpoints).
-
-**Two things Task 5's review MUST carry (both are already argued in the ledger):**
-
-1. **The Ruling F mutation check was never run.** The implementer was barred from
-   running cargo, so it supplied an exact two-mutation recipe instead
-   (`task-5-report.md`, "The recipe to confirm this empirically"). Running it is the
-   whole point of the ruling — Task 4's tests passed with their gate deleted, and this
-   is the repayment. Note the trap the report calls out: the gate line appears twice in
-   `download_supervisor.rs`, and mutating the `ProcessPendingDownloads` copy instead of
-   the `dispatch_download` one yields a false confirmation.
-2. **Gate mutation coverage is scoped to ONE of the three extended gates**
-   (`dispatch_download`). The `ProcessPendingDownloads` sweep gate and `CheckSources`
-   gate have no actor-level test. Disclosed, not hidden.
+- **Tasks 0-6 are done, committed, and green.** HEAD `2d75b5d`.
+  `just lint` exits 0; `just test` passes **440**, 0 failed.
+- **Task 5 was never task-reviewed** (Ruling H — the user declared it done and
+  directed the session to Task 6). See "Outstanding items" below; this is the
+  one deliberate gap in the plan's review coverage.
+- **Next action: Task 7 (UI control panel).** It consumes Task 6's response
+  shapes, which are now fixed and tested.
 
 **Commits this branch (newest last):**
 
@@ -49,12 +39,106 @@
 | `25b2004` | Task 2 fix — listener republish test over the watch channel |
 | `219431d` | Task 3 fix — converge semaphore shrink as downloads complete |
 | `2be0653` | Task 4 — gate indexing and downloads on pause state |
+| `76ad5af` | Task 5 — drain-then-exit with bounded drain window |
+| `dac8a47` | Tooling — sccache + rust-analyzer feature pin |
+| `e6c15bd` | Docs — task 5 completion, build tooling handoff |
+| `1b80177` | Task 6 — runtime settings, pause, and shutdown endpoints |
+| `2d75b5d` | Task 6 fix — route registration + shutdown idempotence over HTTP |
 
-**Full execution record — read this before anything else:**
-`.superpowers/sdd/2026-09-01-runtime-control-plane/progress.md` (git-ignored). It holds
-every ruling made, why, and what each costs if wrong. Per-task briefs, reports, context
-files, and review diffs sit beside it. `task-3-brief.md` and `task-3-context.md` are
-already prepared, the latter carrying Task 2's exact public API surface.
+**Full execution record:**
+`.superpowers/sdd/2026-09-01-runtime-control-plane/progress.md` (git-ignored).
+Every ruling, why, and what it costs if wrong. Task 6 was executed by four
+parallel implementers with disjoint file ownership; briefs and reports are
+`task-6a0/6a/6b/6c-{brief,report}.md`, shared constraints in
+`task-6-context.md`.
+
+### What Task 6 shipped
+
+- `GET`/`PATCH /api/v1/system/settings` — six tunable knobs with
+  `{value, provenance}` per field. PATCH is three-state: field absent = leave
+  alone, explicit JSON `null` = reset to the env/default fallback, value = set.
+  Validation mirrors the DB CHECK constraints (incl. `i32` width) and rejects
+  with 400 before touching the database.
+- `POST`/`DELETE /api/v1/system/pause` — `{module, duration_secs}`, module one
+  of `indexing`/`downloads`/`all`. Omitted duration = indefinite via
+  `indefinite_pause()`. DELETE takes `?module=` defaulting to `all`.
+- `POST /api/v1/system/shutdown` — 202 with the drain deadline; idempotent,
+  repeat calls return the ORIGINAL deadline.
+- `GET /api/v1/system/status` extended with `pause` and `drain`, plus
+  `dispatching`, `max_indexers_per_tick`, `max_concurrent_downloads`.
+- `IndexSource`'s drain-gate bypass CLOSED. `CheckSources` and `IndexSource`
+  now share one `indexing_refusal_for` predicate; the gate precedes
+  `reset_source_indexing_errors`, so a refused manual index mutates nothing.
+  `trigger_index` maps drain -> 503 and pause -> 409 (was 500 for both).
+- `patch_runtime_settings` covered by `#[sqlx::test]`, including the
+  `Some(None)` -> NULL -> resolver-falls-back path that a `COALESCE`
+  implementation would silently fail.
+
+### Outstanding items
+
+- **Task 5 was never reviewed (Ruling H).** The Ruling F two-mutation recipe in
+  `task-5-report.md` has still never been run. Trap: the gate line appears twice
+  in `download_supervisor.rs`; mutating the `ProcessPendingDownloads` copy
+  instead of the `dispatch_download` one gives a FALSE confirmation. Gate
+  mutation coverage reaches only `dispatch_download`, not the sweep gate or
+  `CheckSources`. **Discharge this at the final whole-branch review.**
+- **Drain-deadline timeout drift (Ruling Q, Important).** `shutdown`
+  (`settings.rs:705`) and `get_system_status` (`system.rs:231`) re-read
+  `current().drain_timeout.value` per request, but Task 5 deliberately freezes
+  the timeout ONCE at drain start (`startup.rs:689-701`, rationale at
+  `startup.rs:609-612`). Nothing gates `PATCH /settings` during a drain, so:
+  drain at T0 with 1800s -> PATCH to 60 -> `/status` reports `remaining_secs: 0`
+  while the watcher forces at T0+1800. **Actual shutdown behavior is correct;
+  only the reported deadline lies.** Fix is a Task 5 API change — snapshot the
+  timeout inside `DrainToken::begin` and expose it so watcher and API read one
+  frozen value.
+- **PRE-EXISTING BUG, worth its own fix: `sources.rs:775` declares
+  `path = "/api/sources/{id}/reset-order"` — an ABSOLUTE path on a handler in a
+  router nested at `/api/v1/sources`.** The effective route is
+  `/api/v1/sources/api/sources/{id}/reset-order`. It survives only because the
+  e2e reachability probe is GET-only and the path happens to start with `/api`.
+  Task 6 added `openapi_spec_includes_new_settings_paths` to pin its own paths
+  against this class of mistake.
+- `lib.rs:114` carries a bare `#[allow(clippy::too_many_arguments)]` with no
+  justifying comment, violating the plan's own Global Constraints. Task 6 added
+  an 11th argument without addressing it.
+- `patch_runtime_settings` does `UPDATE` then a separate `SELECT` with no
+  transaction, so the read-your-write guarantee motivating "return the patched
+  row rather than `current()`" does not strictly hold under concurrent PATCHes.
+- Deferred minors from Task 6's re-review: `resume`'s newly-documented 400
+  declares a `SettingsErrorResponse` body that its only 400 path (axum's
+  `Query` extractor rejection, plain text) never returns; and the rewritten
+  comment at `tests/e2e/helpers/app.rs:72-76` borrows production wording about a
+  "shutdown poller" that `TestApp` does not actually wire.
+
+### Operational notes
+
+- **The podman machine goes down between sessions.** `just lint` does NOT set
+  `SQLX_OFFLINE` (justfile:107-108) — it compiles `query!` macros against the
+  LIVE dev DB on 5432 — so a stopped machine surfaces as
+  "error communicating with database: Connection refused" PLUS spurious
+  "unused import" errors in files whose imports are only used inside macro
+  bodies. Those unused-import errors are ARTIFACTS; do not chase them into
+  untouched code. Fix: `podman machine start`, then `just up`.
+- **Never trust a wrapper's exit code.** `{ just lint; just test; } > log`
+  reported exit 0 while `LINT_EXIT=101` and `TEST_EXIT=125` — this happened
+  again on 2026-09-03. Always emit and grep explicit `### *_EXIT` markers.
+- **`git status` reports `.env.example` as a 50-line deletion.** This is a
+  sandbox artifact — the deny list covers `.env.*`, so git cannot read it.
+  Verified with the sandbox disabled: the real diff is empty. **Stage explicit
+  paths (`git add crates/`), never `-A` or `commit -a`.**
+- **The file-level `#![deny(clippy::arithmetic_side_effects)]` reaches INTO
+  `#[cfg(test)]`.** `clippy.toml` exempts tests from unwrap/expect/panic/
+  indexing but NOT from that lint. Two of three Task 6 implementers tripped on
+  it independently. Use `checked_add_signed` in test fixtures too.
+- Postgres and podman need the Bash sandbox DISABLED. So does `git commit`
+  (lefthook hooks); use `timeout: 600000` — pre-commit clippy alone is ~30s.
+- **Have the controller own long cargo runs.** Never run two at once.
+- **Do NOT drop `aarch64-linux` from the flake's `eachSystem` list** — CI runs
+  `nix develop .#ci` and `nix build .#containerFromBinary` on `ubuntu-24.04-arm`
+  runners. Attempted and reverted on 2026-09-02.
+- If `#[sqlx::test]` fails with Postgres `XX002` on `databases_pkey`, that is
+  test-registry corruption: `REINDEX TABLE _sqlx_test.databases;` against 5433.
 
 ### Corrections to this plan, established by execution
 
@@ -1089,7 +1173,12 @@ git commit -m "feat(shutdown): add drain-then-exit with bounded drain window"
 
 ---
 
-## Task 6: API endpoints
+## Task 6: API endpoints — ✅ DONE (2026-09-03)
+
+Commits `1b80177` (endpoints) and `2d75b5d` (HTTP-level tests). Reviewed:
+spec ✅, quality approved. See the Session Handoff for what shipped, and for the
+two carried-forward items (Ruling Q drain-deadline drift; the `sources.rs:775`
+absolute-path bug found during review).
 
 **Files:** Create `crates/hof-api/src/routes/settings.rs`; modify `routes/system.rs`, `routes/mod.rs` (or `lib.rs` router assembly), `lib.rs` (`AppState`)
 
