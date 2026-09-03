@@ -104,7 +104,7 @@ async fn serve_asset(Path(path): Path<String>) -> Response {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum NavItem {
+pub(crate) enum NavItem {
     Dashboard,
     Profiles,
     Sources,
@@ -112,6 +112,7 @@ enum NavItem {
     Activity,
     Schedule,
     ApiKeys,
+    Runtime,
 }
 
 #[derive(Debug, Deserialize)]
@@ -237,12 +238,12 @@ pub struct RegisterForm {
 const FLASH_KEY: &str = "flash_message";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct FlashMessage {
-    level: String,
-    message: String,
+pub(crate) struct FlashMessage {
+    pub(crate) level: String,
+    pub(crate) message: String,
 }
 
-async fn set_flash(session: &Session, level: &str, message: &str) {
+pub(crate) async fn set_flash(session: &Session, level: &str, message: &str) {
     let flash = FlashMessage {
         level: level.to_string(),
         message: message.to_string(),
@@ -250,7 +251,7 @@ async fn set_flash(session: &Session, level: &str, message: &str) {
     let _ = session.insert(FLASH_KEY, flash).await;
 }
 
-async fn take_flash(session: &Session) -> Option<FlashMessage> {
+pub(crate) async fn take_flash(session: &Session) -> Option<FlashMessage> {
     let flash: Option<FlashMessage> = session.get(FLASH_KEY).await.ok().flatten();
     if flash.is_some() {
         let _ = session.remove::<FlashMessage>(FLASH_KEY).await;
@@ -330,6 +331,7 @@ pub fn router(state: AppState, oidc_enabled: bool) -> Router {
         .route("/settings/api-keys/{id}/delete", post(delete_api_key))
         .route("/settings/api-keys/{id}/events", get(api_key_events))
         // Static assets (embedded at compile time)
+        .merge(crate::runtime::routes())
         .route("/assets/{*path}", get(serve_asset))
         // Fallback for unmatched routes
         .fallback(not_found)
@@ -5932,7 +5934,7 @@ fn parse_optional_i32(raw: Option<&str>, field_name: &str) -> Result<Option<i32>
     }
 }
 
-fn error_page(message: &str) -> Markup {
+pub(crate) fn error_page(message: &str) -> Markup {
     layout(
         "Error",
         NavItem::Dashboard,
@@ -5998,7 +6000,7 @@ fn layout(title: &str, active: NavItem, content: impl Render) -> Markup {
 }
 
 #[allow(clippy::needless_pass_by_value, clippy::too_many_lines)]
-fn layout_with_flash(
+pub(crate) fn layout_with_flash(
     title: &str,
     active: NavItem,
     flash: Option<FlashMessage>,
@@ -6068,6 +6070,7 @@ fn layout_with_flash(
                                 (nav_link("/activity", "Activity", active == NavItem::Activity))
                                 (nav_link("/schedule", "Schedule", active == NavItem::Schedule))
                                 (nav_link("/settings/api-keys", "API Keys", active == NavItem::ApiKeys))
+                                (nav_link("/settings/runtime", "Runtime", active == NavItem::Runtime))
                                 // Dark mode toggle
                                 button
                                     type="button"

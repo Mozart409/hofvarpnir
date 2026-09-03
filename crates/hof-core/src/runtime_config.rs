@@ -21,6 +21,13 @@ pub const DEFAULT_CHECK_INTERVAL_SECS: u64 = 60;
 pub const DEFAULT_CLEANUP_INTERVAL_SECS: u64 = 60 * 60 * 3;
 pub const DEFAULT_DRAIN_TIMEOUT_SECS: u64 = 1800;
 
+/// The per-invocation yt-dlp command timeout.
+///
+/// Mirrored from the vendored crate so callers (notably the runtime control
+/// panel) can display it without depending on `yt_dlp` directly. Read-only:
+/// compiled in, not part of the runtime-mutable set (design 7.1).
+pub const YTDLP_COMMAND_TIMEOUT: Duration = yt_dlp::client::DEFAULT_TIMEOUT;
+
 /// Whole-microsecond Unix timestamp for [`indefinite_pause`]:
 /// 9999-12-31T23:59:59Z.
 const INDEFINITE_PAUSE_MICROS: i64 = 253_402_300_799_000_000;

@@ -121,6 +121,7 @@ impl TestApp {
             vec![],
             broadcaster,
             None,
+            std::time::Duration::from_hours(2),
             runtime_config,
             drain,
         );
