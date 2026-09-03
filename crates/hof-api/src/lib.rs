@@ -97,6 +97,11 @@ pub struct AppState {
     /// Global retention fallback in days (`RETENTION_DAYS`), used to preview
     /// upcoming retention deletions. `None` means no global retention.
     pub global_retention_days: Option<i32>,
+    /// Per-download timeout (`DOWNLOAD_TIMEOUT_HOURS`). Read-only and
+    /// env-derived, threaded through only so the runtime control panel can
+    /// display it alongside the mutable knobs (design 7.1) — the same reason
+    /// `global_retention_days` is here.
+    pub download_timeout: std::time::Duration,
     /// Handle to the runtime-mutable settings (see ADR-0002). Handlers read
     /// `current()` for the effective values and their provenance; writes go
     /// through `db::patch_runtime_settings`, which the listener picks up.
@@ -122,6 +127,7 @@ impl AppState {
         startup_issues: Vec<SystemIssue>,
         broadcaster: ActivityBroadcaster,
         global_retention_days: Option<i32>,
+        download_timeout: std::time::Duration,
         runtime_config: RuntimeConfig,
         drain: DrainToken,
     ) -> Self {
@@ -135,6 +141,7 @@ impl AppState {
             startup_issues: startup_issues.into(),
             broadcaster,
             global_retention_days,
+            download_timeout,
             runtime_config,
             drain,
         }

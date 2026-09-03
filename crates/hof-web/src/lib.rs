@@ -2,6 +2,7 @@ pub mod auth;
 pub mod middleware;
 pub mod oidc;
 pub mod pages;
+pub mod runtime;
 
 use std::sync::Arc;
 

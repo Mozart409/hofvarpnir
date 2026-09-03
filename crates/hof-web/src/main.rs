@@ -77,6 +77,7 @@ async fn main() -> Result<()> {
             .storage
             .retention_days
             .map(|d| i32::try_from(d).unwrap_or(i32::MAX)),
+        config.download.timeout,
         runtime_config,
         drain.clone(),
     );
