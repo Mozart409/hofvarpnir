@@ -6,28 +6,36 @@
 //! - Initializing and hydrating the actor system from database state
 
 use std::env;
+use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
+use chrono::{DateTime, Utc};
 use color_eyre::eyre::{Result, WrapErr};
 use sqlx::PgPool;
 use tokio::sync::mpsc;
+use tokio::sync::watch;
 use tracing::{debug, error, info, warn};
 
 use crate::actors::cleanup::{CleanupActor, CleanupActorArgs, CleanupPartFiles};
 use crate::actors::download_supervisor::{
-    DownloadSupervisor, DownloadSupervisorArgs, ProcessPendingDownloads,
+    DownloadSupervisor, DownloadSupervisorArgs, GetSupervisorStatus, ProcessPendingDownloads,
 };
 use crate::actors::jellyfin_metadata::{JellyfinMetadataActor, JellyfinMetadataActorArgs};
-use crate::actors::scheduler::{SchedulerActor, SchedulerArgs};
+use crate::actors::scheduler::{GetSchedulerStatus, SchedulerActor, SchedulerArgs};
 use crate::config::Config;
 use crate::db;
 use crate::db::ActivityBroadcaster;
 use crate::domain::system::SystemIssue;
 use crate::domain::video::DownloadProgress;
+use crate::runtime_config::{DrainToken, EffectiveSettings, RuntimeConfig};
 use crate::ytdlp::YtdlpClient;
 
 use kameo::prelude::*;
+
+/// Shorthand for the live-settings receiver threaded into each actor's `Args`.
+type ConfigRx = watch::Receiver<Arc<EffectiveSettings>>;
 
 /// Actors created during startup.
 pub struct ActorSystem {
@@ -45,6 +53,12 @@ pub struct ActorSystem {
     pub startup_issues: Vec<SystemIssue>,
     /// Broadcaster for real-time SSE notifications.
     pub broadcaster: ActivityBroadcaster,
+    /// Handle to the live runtime settings (pacing/concurrency knobs).
+    pub runtime_config: RuntimeConfig,
+    /// Process-local drain signal (see ADR-0004). Triggering this stops new
+    /// dispatch/indexing work and, once the system reaches quiescence (or
+    /// `drain_timeout` elapses), signals `main`'s shutdown select arm.
+    pub drain: DrainToken,
 }
 
 /// Initialize the actor system and perform crash recovery.
@@ -110,21 +124,44 @@ pub async fn initialize(pool: PgPool, config: &Config) -> Result<ActorSystem> {
     // Create broadcaster for SSE real-time notifications
     let broadcaster = ActivityBroadcaster::new();
 
+    // Phase 3.5: Load runtime-mutable settings and start the change listener.
+    // `spawn_listener` consumes the handle, so keep a clone to return on
+    // `ActorSystem` for callers that want to read/patch settings later.
+    let runtime_config =
+        RuntimeConfig::new(pool.clone(), crate::config::EnvOverrides::from_env()).await?;
+    let _listener = runtime_config.clone().spawn_listener();
+
+    // Process-local drain signal (see ADR-0004: deliberately not persisted).
+    // Threaded into the supervisor and scheduler so their dispatch/indexing
+    // gates can refuse new work; `spawn_drain_watcher` below watches for it
+    // to start and polls both actors for quiescence.
+    let drain = DrainToken::new();
+
     // Phase 4: Start actors
     let supervisor = start_supervisor(
         pool.clone(),
         ytdlp.clone(),
         config,
         progress_tx,
+        runtime_config.subscribe(),
         broadcaster.clone(),
+        drain.clone(),
     );
     let scheduler = start_scheduler(
         pool.clone(),
         ytdlp.clone(),
         supervisor.clone(),
+        runtime_config.subscribe(),
+        broadcaster.clone(),
+        drain.clone(),
+    );
+    spawn_drain_watcher(drain.clone(), supervisor.clone(), scheduler.clone());
+    let cleanup = start_cleanup(
+        pool.clone(),
+        config,
+        runtime_config.subscribe(),
         broadcaster.clone(),
     );
-    let cleanup = start_cleanup(pool.clone(), config, broadcaster.clone());
     let jellyfin_metadata = start_jellyfin_metadata(pool.clone(), broadcaster.clone());
 
     // Phase 4.5: Kick pending/retry-eligible downloads after startup recovery.
@@ -165,6 +202,8 @@ pub async fn initialize(pool: PgPool, config: &Config) -> Result<ActorSystem> {
         progress_rx,
         startup_issues,
         broadcaster,
+        runtime_config,
+        drain,
     })
 }
 
@@ -239,14 +278,18 @@ fn start_supervisor(
     ytdlp: Arc<YtdlpClient>,
     config: &Config,
     progress_tx: mpsc::Sender<DownloadProgress>,
+    config_rx: ConfigRx,
     broadcaster: ActivityBroadcaster,
+    drain: DrainToken,
 ) -> ActorRef<DownloadSupervisor> {
     let args = DownloadSupervisorArgs {
         pool,
         ytdlp,
         config: config.download.clone(),
         progress_tx,
+        config_rx,
         broadcaster,
+        drain,
     };
 
     let supervisor = DownloadSupervisor::spawn(args);
@@ -260,15 +303,17 @@ fn start_scheduler(
     pool: PgPool,
     ytdlp: Arc<YtdlpClient>,
     supervisor: ActorRef<DownloadSupervisor>,
+    config_rx: ConfigRx,
     broadcaster: ActivityBroadcaster,
+    drain: DrainToken,
 ) -> ActorRef<SchedulerActor> {
     let args = SchedulerArgs {
         pool,
         ytdlp,
         supervisor,
-        check_interval: None,        // Use default
-        max_indexers_per_tick: None, // Use default
+        config_rx,
         broadcaster,
+        drain,
     };
 
     let scheduler = SchedulerActor::spawn(args);
@@ -281,12 +326,13 @@ fn start_scheduler(
 fn start_cleanup(
     pool: PgPool,
     config: &Config,
+    config_rx: ConfigRx,
     broadcaster: ActivityBroadcaster,
 ) -> ActorRef<CleanupActor> {
     let args = CleanupActorArgs {
         pool,
         global_retention_days: config.storage.retention_days,
-        cleanup_interval: None, // Use default
+        config_rx,
         broadcaster,
     };
 
@@ -522,6 +568,160 @@ pub async fn shutdown(system: ActorSystem) -> Result<()> {
     Ok(())
 }
 
+/// How often the drain watcher re-checks quiescence while a drain is in
+/// progress and its deadline has not yet passed.
+const DRAIN_POLL_INTERVAL: Duration = Duration::from_millis(500);
+
+/// Active-work counts the drain watcher polls for quiescence.
+///
+/// `dispatching` matters as much as `active_downloads`: a video can be
+/// reserved (`dispatching`, set synchronously in `dispatch_download`) before
+/// its spawned task sleeps out the rate-limit delay, acquires a semaphore
+/// permit, and only then registers as `active`. A watcher that checked only
+/// `active_downloads` could read zero and shut down on top of a download
+/// that is about to start.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct QuiescenceCounts {
+    active_downloads: usize,
+    dispatching: usize,
+    active_indexers: usize,
+}
+
+impl QuiescenceCounts {
+    const fn is_quiescent(self) -> bool {
+        self.active_downloads == 0 && self.dispatching == 0 && self.active_indexers == 0
+    }
+}
+
+/// Poll `probe` until it reports quiescence or `deadline` passes, then
+/// signal drain completion either way.
+///
+/// Forcing past the deadline is safe: `recover_from_crash` already resets
+/// `downloading` rows back to `pending` and removes orphaned `.part` files
+/// on the next boot, so a forced shutdown mid-download is recoverable, not
+/// corrupting.
+///
+/// Callers pass a `deadline` obtained from `drain.deadline()`, which
+/// `begin` froze once, at drain start, against the `drain_timeout` in force
+/// then; this function never re-derives it, so an operator retuning
+/// `drain_timeout_secs` mid-drain cannot silently extend or truncate a
+/// shutdown already in progress. That contract used to rest on convention
+/// alone; it is now enforced by `DrainToken`'s own type (see `DrainStart`),
+/// since there is no longer any way to ask for "the deadline" without first
+/// having called `begin`.
+///
+/// `probe` is injectable so this is unit-testable with a pure,
+/// virtual-clock-friendly closure instead of a live actor system: the real
+/// probe (`live_quiescence_counts`) asks two live `ActorRef`s, which needs a
+/// running actor system and a yt-dlp binary that a `start_paused` test
+/// cannot provide.
+async fn poll_until_quiescent<F, Fut>(mut probe: F, drain: DrainToken, deadline: DateTime<Utc>)
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = QuiescenceCounts>,
+{
+    loop {
+        if probe().await.is_quiescent() {
+            info!("Drain reached quiescence; signalling shutdown");
+            drain.signal_complete();
+            return;
+        }
+
+        let now = Utc::now();
+        if now >= deadline {
+            warn!("Drain timeout elapsed with work still in flight; forcing shutdown");
+            drain.signal_complete();
+            return;
+        }
+
+        let wait =
+            crate::runtime_config::sleep_duration_until(deadline, now).min(DRAIN_POLL_INTERVAL);
+        tokio::time::sleep(wait).await;
+    }
+}
+
+/// Query the live actor system for in-flight download/index work.
+///
+/// Takes owned `ActorRef`s (cheap to clone — see the call site in
+/// `spawn_drain_watcher`) rather than borrowing them, so the returned future
+/// owns everything it holds across its `.await` points instead of borrowing
+/// from an ancestor scope. That sidesteps needing `ActorRef: Sync` (which
+/// borrowing `&ActorRef` across an `.await` inside a `tokio::spawn`'d future
+/// would require, for `&ActorRef` itself to be `Send`) for a property this
+/// function has no reason to depend on.
+///
+/// A query failure (actor already stopped) is treated as quiescent rather
+/// than propagated: there is no work left to wait for if the actor that
+/// would be doing it is gone, and refusing to ever reach quiescence in that
+/// case would just burn the full `drain_timeout` for no reason.
+async fn live_quiescence_counts(
+    supervisor: ActorRef<DownloadSupervisor>,
+    scheduler: ActorRef<SchedulerActor>,
+) -> QuiescenceCounts {
+    let (active_downloads, dispatching) = match supervisor.ask(GetSupervisorStatus).await {
+        Ok(status) => (status.active_downloads, status.dispatching),
+        Err(error) => {
+            warn!(%error, "Drain watcher could not reach supervisor; treating as quiescent");
+            (0, 0)
+        }
+    };
+
+    let active_indexers = match scheduler.ask(GetSchedulerStatus).await {
+        Ok(status) => status.active_indexers,
+        Err(error) => {
+            warn!(%error, "Drain watcher could not reach scheduler; treating as quiescent");
+            0
+        }
+    };
+
+    QuiescenceCounts {
+        active_downloads,
+        dispatching,
+        active_indexers,
+    }
+}
+
+/// Spawn the background task that waits for a drain to start, then polls
+/// the real actor system until quiescence or `drain_timeout` elapses.
+///
+/// Whoever calls `drain.begin(..)` (the production caller is the
+/// `POST /system/shutdown` handler) supplies the `drain_timeout` in force at
+/// that moment; `DrainToken` freezes the resulting deadline right there.
+/// This watcher only ever reads that frozen value back — it never reads
+/// `drain_timeout` itself and never re-derives a deadline — see
+/// `poll_until_quiescent`'s doc comment for why.
+fn spawn_drain_watcher(
+    drain: DrainToken,
+    supervisor: ActorRef<DownloadSupervisor>,
+    scheduler: ActorRef<SchedulerActor>,
+) {
+    tokio::spawn(async move {
+        drain.wait_started().await;
+
+        // `deadline()` can only return `None` if `started_at()` is `None`,
+        // which cannot be true here: `wait_started` only resolves once
+        // `begin` has set it. Fall back to "now" (i.e. an immediate forced
+        // shutdown) rather than unwrapping, since it is unreachable rather
+        // than provably impossible to the compiler.
+        let deadline = drain.deadline().unwrap_or_else(Utc::now);
+
+        info!(?deadline, "Drain started; watching for quiescence");
+
+        poll_until_quiescent(
+            // Clone per call rather than capturing `&supervisor`/`&scheduler`:
+            // each resulting future then owns its `ActorRef`s outright
+            // instead of borrowing them across an `.await` — see
+            // `live_quiescence_counts`'s doc comment for why that matters
+            // for `Send`. `ActorRef` clones are cheap (an `Arc`-backed
+            // handle), so this costs nothing measurable per poll.
+            move || live_quiescence_counts(supervisor.clone(), scheduler.clone()),
+            drain,
+            deadline,
+        )
+        .await;
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -564,5 +764,127 @@ mod tests {
         assert!(dirs.contains(&PathBuf::from("/a/b")));
         assert!(dirs.contains(&PathBuf::from("/c/d")));
         assert!(dirs.contains(&PathBuf::from("/e/f")));
+    }
+
+    // ========================================================================
+    // Drain watcher tests (Ruling C).
+    //
+    // These exercise `poll_until_quiescent` directly with a pure, injected
+    // probe rather than a live actor system: `live_quiescence_counts` needs
+    // running `DownloadSupervisor`/`SchedulerActor` actors (and, for a real
+    // download, a yt-dlp binary), which `start_paused` cannot help with. The
+    // actor-level gates that feed into those live counts are covered
+    // separately in `download_supervisor.rs`'s `dispatch_download_respects_*`
+    // tests.
+    //
+    // Note on time sources: `chrono::Utc::now()` (used for `DrainToken`
+    // deadlines) reads the real OS clock and does NOT track tokio's paused
+    // virtual clock (only `tokio::time::*` does). So a test cannot rely on a
+    // *future* chrono deadline ever becoming "elapsed" by waiting out
+    // virtual-clock sleeps, the way `pause_deadline_computes_sleep_and_lapses`
+    // in `runtime_config.rs` relies on virtual time for `tokio::time::sleep`
+    // itself. The timeout test below sidesteps this by constructing an
+    // already-elapsed deadline up front, so the forced-shutdown branch fires
+    // on the very first poll with no sleep involved at all.
+    // ========================================================================
+
+    #[tokio::test(start_paused = true)]
+    async fn drain_times_out_and_still_shuts_down() {
+        let drain = DrainToken::new();
+        let started = Utc::now();
+        // The timeout passed to `begin` here is irrelevant to this test:
+        // `poll_until_quiescent` is called below with an explicitly
+        // constructed, already-elapsed `deadline`, not `drain.deadline()`.
+        drain.begin(started, Duration::from_mins(30));
+
+        // Already elapsed at call time (see the module-level note above on
+        // why this test does not wait for a future deadline instead).
+        let deadline = started
+            .checked_sub_signed(chrono::Duration::seconds(1))
+            .expect("no underflow");
+
+        // Never reaches quiescence: work is always reported in flight.
+        let probe = || async {
+            QuiescenceCounts {
+                active_downloads: 1,
+                dispatching: 0,
+                active_indexers: 0,
+            }
+        };
+
+        // Bounded by a real (not virtual) timeout as a safety net: if
+        // `poll_until_quiescent` had a bug that looped forever instead of
+        // observing the elapsed deadline, this fails the test instead of
+        // hanging the suite.
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            poll_until_quiescent(probe, drain.clone(), deadline),
+        )
+        .await
+        .expect("poll_until_quiescent did not return promptly for an already-elapsed deadline");
+
+        // `signal_complete` must have run despite work still being reported.
+        tokio::time::timeout(Duration::from_secs(1), drain.wait_complete())
+            .await
+            .expect("drain did not signal complete after its deadline elapsed");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn drain_signals_complete_on_reaching_quiescence() {
+        let drain = DrainToken::new();
+        let started = Utc::now();
+        // As above, the timeout here is irrelevant: `poll_until_quiescent`
+        // is called below with an explicitly constructed `deadline`.
+        drain.begin(started, Duration::from_mins(30));
+
+        // Far enough in the future that the elapsed-deadline branch cannot
+        // fire during this test; quiescence must be what ends the loop.
+        let deadline = started
+            .checked_add_signed(chrono::Duration::hours(1))
+            .expect("no overflow");
+
+        // Reports work in flight for the first two polls, then quiescent.
+        // `AtomicU32` rather than `Cell<u32>`: a plain `Cell` is `!Sync`, so
+        // `&Cell<u32>` captured by the probe closure is `!Send` — fine for
+        // this direct `.await` in a single test task, but it would poison
+        // `poll_until_quiescent`'s generic `F`/`Fut` for a future `Send`
+        // bound (needed once something like `clippy::future_not_send`
+        // requires one for the real `tokio::spawn`'d caller in
+        // `spawn_drain_watcher`) for no reason: this counter carries no
+        // requirement to stay unsynchronized.
+        let calls = std::sync::atomic::AtomicU32::new(0);
+        let probe = || {
+            let call = calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            async move {
+                if call < 2 {
+                    QuiescenceCounts {
+                        active_downloads: 1,
+                        dispatching: 0,
+                        active_indexers: 0,
+                    }
+                } else {
+                    QuiescenceCounts {
+                        active_downloads: 0,
+                        dispatching: 0,
+                        active_indexers: 0,
+                    }
+                }
+            }
+        };
+
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            poll_until_quiescent(probe, drain.clone(), deadline),
+        )
+        .await
+        .expect("poll_until_quiescent did not return promptly once quiescent");
+
+        tokio::time::timeout(Duration::from_secs(1), drain.wait_complete())
+            .await
+            .expect("drain did not signal complete after reaching quiescence");
+        assert!(
+            calls.load(std::sync::atomic::Ordering::Relaxed) >= 3,
+            "expected at least 3 probe polls"
+        );
     }
 }

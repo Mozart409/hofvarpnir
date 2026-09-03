@@ -22,7 +22,7 @@ use hof_core::{
         cleanup::{GetCleanupStatus, RunCleanup},
         download_supervisor::{CancelDownload, EnqueueDownload},
         jellyfin_metadata::TriggerSourceMetadata,
-        scheduler::IndexSource,
+        scheduler::{DRAINING_REFUSAL_MESSAGE, IndexSource, PAUSED_REFUSAL_PREFIX},
     },
     auth::generate_api_key,
     db::{self, CreateApiKey, CreateProfile, CreateSource, UpdateProfile, UpdateSource},
@@ -104,7 +104,7 @@ async fn serve_asset(Path(path): Path<String>) -> Response {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum NavItem {
+pub(crate) enum NavItem {
     Dashboard,
     Profiles,
     Sources,
@@ -112,6 +112,7 @@ enum NavItem {
     Activity,
     Schedule,
     ApiKeys,
+    Runtime,
 }
 
 #[derive(Debug, Deserialize)]
@@ -237,12 +238,12 @@ pub struct RegisterForm {
 const FLASH_KEY: &str = "flash_message";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct FlashMessage {
-    level: String,
-    message: String,
+pub(crate) struct FlashMessage {
+    pub(crate) level: String,
+    pub(crate) message: String,
 }
 
-async fn set_flash(session: &Session, level: &str, message: &str) {
+pub(crate) async fn set_flash(session: &Session, level: &str, message: &str) {
     let flash = FlashMessage {
         level: level.to_string(),
         message: message.to_string(),
@@ -250,7 +251,7 @@ async fn set_flash(session: &Session, level: &str, message: &str) {
     let _ = session.insert(FLASH_KEY, flash).await;
 }
 
-async fn take_flash(session: &Session) -> Option<FlashMessage> {
+pub(crate) async fn take_flash(session: &Session) -> Option<FlashMessage> {
     let flash: Option<FlashMessage> = session.get(FLASH_KEY).await.ok().flatten();
     if flash.is_some() {
         let _ = session.remove::<FlashMessage>(FLASH_KEY).await;
@@ -330,6 +331,7 @@ pub fn router(state: AppState, oidc_enabled: bool) -> Router {
         .route("/settings/api-keys/{id}/delete", post(delete_api_key))
         .route("/settings/api-keys/{id}/events", get(api_key_events))
         // Static assets (embedded at compile time)
+        .merge(crate::runtime::routes())
         .route("/assets/{*path}", get(serve_asset))
         // Fallback for unmatched routes
         .fallback(not_found)
@@ -1895,6 +1897,20 @@ async fn trigger_index(
             Redirect::to(redirect_to).into_response()
         }
         Err(error) => {
+            // A pause or drain refusal is an expected operator condition, not a
+            // server fault: the scheduler already produced a message saying
+            // exactly why ("Indexing is paused until ..."). Surfacing it as a
+            // flash and returning the operator to where they were beats a 500
+            // error page that throws that message away. Anything else really
+            // is a failure and keeps the error page.
+            let message = error.to_string();
+            if message.starts_with(PAUSED_REFUSAL_PREFIX)
+                || message.contains(DRAINING_REFUSAL_MESSAGE)
+                || message.contains("already being indexed")
+            {
+                set_flash(&session, "error", &message).await;
+                return Redirect::to(redirect_to).into_response();
+            }
             tracing::error!(%error, "failed to trigger source index from web form");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -3305,7 +3321,8 @@ async fn delete_download(
             .into_response();
     }
 
-    #[allow(clippy::cast_precision_loss)]
+    // Display-only MB figure; precision loss is immaterial below ~9 PB.
+    #[allow(clippy::cast_precision_loss, clippy::as_conversions)]
     let size_mb = video.file_size_bytes.unwrap_or(0) as f64 / 1_048_576.0;
     let title = &video.title;
     state
@@ -4992,14 +5009,18 @@ fn metric_card(title: &str, value: impl std::fmt::Display, description: &str) ->
 fn format_bytes_human(bytes: i64) -> String {
     const UNITS: [&str; 6] = ["B", "KB", "MB", "GB", "TB", "PB"];
 
-    #[allow(clippy::cast_precision_loss)]
+    // Display-only human-readable size; precision loss is immaterial.
+    #[allow(clippy::cast_precision_loss, clippy::as_conversions)]
     let mut value = bytes.max(0) as f64;
     let mut unit_index = 0usize;
     while value >= 1000.0 && unit_index < UNITS.len() - 1 {
         value /= 1000.0;
         unit_index += 1;
     }
-    format!("{value:.1} {}", UNITS[unit_index])
+    // The loop bounds `unit_index` to `UNITS.len() - 1`, so `get` always
+    // succeeds; the fallback exists only to avoid an indexing panic path.
+    let unit = UNITS.get(unit_index).copied().unwrap_or("B");
+    format!("{value:.1} {unit}")
 }
 
 /// Percentage of quota used, clamped to `0.0..=100.0`.
@@ -5012,7 +5033,8 @@ fn storage_usage_percent(used_bytes: i64, quota_bytes: i64) -> f64 {
         return if used_bytes > 0 { 100.0 } else { 0.0 };
     }
 
-    #[allow(clippy::cast_precision_loss)]
+    // Display-only percentage; precision loss is immaterial at these magnitudes.
+    #[allow(clippy::cast_precision_loss, clippy::as_conversions)]
     let percent = (used_bytes.max(0) as f64 / quota as f64) * 100.0;
     percent.clamp(0.0, 100.0)
 }
@@ -5105,6 +5127,20 @@ mod storage_usage_tests {
     #[test]
     fn format_bytes_human_mb_example() {
         assert_eq!(format_bytes_human(13 * 1000 * 1000), "13.0 MB");
+    }
+
+    #[test]
+    fn format_bytes_human_saturates_at_largest_unit() {
+        // Exercises the upper bound of the unit table: the scaling loop stops at
+        // the last unit (PB) rather than running past the end of `UNITS`.
+        assert_eq!(format_bytes_human(1_000_000_000_000_000), "1.0 PB");
+    }
+
+    #[test]
+    fn format_bytes_human_beyond_largest_unit_stays_in_pb() {
+        // Values larger than the biggest unit must keep scaling the number
+        // instead of advancing the index out of range.
+        assert_eq!(format_bytes_human(i64::MAX), "9223.4 PB");
     }
 
     #[test]
@@ -5912,7 +5948,7 @@ fn parse_optional_i32(raw: Option<&str>, field_name: &str) -> Result<Option<i32>
     }
 }
 
-fn error_page(message: &str) -> Markup {
+pub(crate) fn error_page(message: &str) -> Markup {
     layout(
         "Error",
         NavItem::Dashboard,
@@ -5978,7 +6014,7 @@ fn layout(title: &str, active: NavItem, content: impl Render) -> Markup {
 }
 
 #[allow(clippy::needless_pass_by_value, clippy::too_many_lines)]
-fn layout_with_flash(
+pub(crate) fn layout_with_flash(
     title: &str,
     active: NavItem,
     flash: Option<FlashMessage>,
@@ -6048,6 +6084,7 @@ fn layout_with_flash(
                                 (nav_link("/activity", "Activity", active == NavItem::Activity))
                                 (nav_link("/schedule", "Schedule", active == NavItem::Schedule))
                                 (nav_link("/settings/api-keys", "API Keys", active == NavItem::ApiKeys))
+                                (nav_link("/settings/runtime", "Runtime", active == NavItem::Runtime))
                                 // Dark mode toggle
                                 button
                                     type="button"

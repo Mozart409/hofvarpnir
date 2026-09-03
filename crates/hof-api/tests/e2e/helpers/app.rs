@@ -14,8 +14,9 @@ use hof_core::{
         jellyfin_metadata::{JellyfinMetadataActor, JellyfinMetadataActorArgs},
         scheduler::{SchedulerActor, SchedulerArgs},
     },
-    config::DownloadConfig,
+    config::{DownloadConfig, EnvOverrides},
     domain::video::DownloadProgress,
+    runtime_config::{DrainToken, RuntimeConfig},
     ytdlp::YtdlpClient,
 };
 use kameo::actor::{ActorRef, Spawn};
@@ -64,27 +65,40 @@ impl TestApp {
 
         let broadcaster = ActivityBroadcaster::new();
 
+        let runtime_config = RuntimeConfig::new(pool.clone(), EnvOverrides::default())
+            .await
+            .expect("Failed to load runtime settings");
+
+        // Process-local drain signal (see ADR-0004). Triggerable through
+        // this test app via `POST /api/v1/system/shutdown`, which calls
+        // `drain.begin(..)`; actor gates and the shutdown poller read
+        // `drain.is_draining()` to stop taking new work and detect
+        // quiescence.
+        let drain = DrainToken::new();
+
         let supervisor = DownloadSupervisor::spawn(DownloadSupervisorArgs {
             pool: pool.clone(),
             ytdlp: ytdlp.clone(),
             config: download_config,
             progress_tx,
+            config_rx: runtime_config.subscribe(),
             broadcaster: broadcaster.clone(),
+            drain: drain.clone(),
         });
 
         let scheduler = SchedulerActor::spawn(SchedulerArgs {
             pool: pool.clone(),
             ytdlp,
             supervisor: supervisor.clone(),
-            check_interval: None,
-            max_indexers_per_tick: None,
+            config_rx: runtime_config.subscribe(),
             broadcaster: broadcaster.clone(),
+            drain: drain.clone(),
         });
 
         let cleanup = CleanupActor::spawn(CleanupActorArgs {
             pool: pool.clone(),
             global_retention_days: None,
-            cleanup_interval: None,
+            config_rx: runtime_config.subscribe(),
             broadcaster: broadcaster.clone(),
         });
 
@@ -107,6 +121,9 @@ impl TestApp {
             vec![],
             broadcaster,
             None,
+            std::time::Duration::from_hours(2),
+            runtime_config,
+            drain,
         );
 
         // Build the API router with docs

@@ -31,19 +31,33 @@ cargo fmt --all
 # Check formatting without modifying
 cargo fmt --all -- --check
 
-# Run clippy (strict mode)
-cargo clippy --all-targets --all-features -- -D warnings
+# Run clippy. Lint levels live in Cargo.toml [workspace.lints.clippy] -- do NOT
+# add `-D clippy::pedantic -D clippy::nursery` here. Those flags are applied
+# after the manifest's lint levels and re-deny the whole group, silently
+# defeating the nine selective `allow` entries (option_if_let_else,
+# needless_pass_by_ref_mut, module_name_repetitions, ...). Cargo.toml is the
+# single source of truth. Test-only panic helpers are allowed via clippy.toml.
+cargo clippy --workspace --all-targets --all-features -- -D warnings
 
-# Run clippy with pedantic lints
+# Run strict clippy continuously
 bacon pedantic
 # Or manually:
-cargo clippy --workspace --all-targets -- -W clippy::pedantic
+cargo clippy --workspace --all-targets --all-features -- -D warnings
 
 # Fix auto-fixable clippy issues
 cargo clippy --fix --allow-dirty --allow-staged --all-targets --all-features
 
 # Check SQLx offline mode
 cargo sqlx prepare --workspace --check -- --all-targets --all-features
+
+# Lint/fix SQL (sqruff -- dialect=postgres, rules=all, see .sqruff).
+# `just lint` does NOT run this -- that recipe is cargo-clippy only, so SQL is
+# unchecked until commit/push time unless run explicitly. Hook-enforced:
+# pre-commit runs `sqruff fix` on staged SQL, pre-push runs `sqruff lint` on
+# pushed SQL. `rules = all` forbids hand-aligned DDL columns (LT01); expect
+# alignment to be collapsed.
+sqruff lint crates/hof-core/migrations/*.sql
+sqruff fix crates/hof-core/migrations/*.sql
 
 # Dependency audit
 cargo deny check
@@ -57,7 +71,7 @@ bacon                    # Default: check
 bacon test               # Run all tests continuously
 bacon test -- <filter>   # Run specific test continuously
 bacon clippy-all         # Run clippy on all targets
-bacon pedantic           # Run pedantic clippy
+bacon pedantic           # Run strict pedantic and nursery clippy
 bacon serve              # Run web server with auto-restart
 bacon tui                # Run TUI binary
 
@@ -246,6 +260,56 @@ pub struct Video {
 - Use `TryFrom<RowType> for DomainType` for conversion
 - Run `just prepare` after schema changes for offline mode
 
+#### Adding a migration: order matters
+
+1. Write the SQL.
+2. `sqruff fix` it.
+3. `just prepare` (runs `mig-run`, then regenerates `.sqlx/`).
+4. `just lint`.
+5. `just test`.
+
+`just prepare` must precede lint and test: every test recipe sets
+`SQLX_OFFLINE=true`, and the postgres-test instance carries no schema, so a new
+`query!` with no `.sqlx/` cache entry fails at **compile** time, not test time.
+
+**Run `sqruff fix` on new SQL before applying the migration, never after.**
+Applying a migration records its checksum in `_sqlx_migrations`; reformatting
+the file afterwards strands that checksum, and every later commit fails the
+pre-commit `sqlx-prepare` hook with `migration <version> was previously
+applied but has been modified`. Fix by re-applying, not by hand-editing the
+checksum:
+
+```bash
+just mig-revert && just mig-run
+```
+
+Full recovery steps and a second, unrelated failure mode (`XX002` index
+corruption in the postgres-test instance) are in
+[`docs/sqlx-troubleshooting.md`](docs/sqlx-troubleshooting.md).
+
+#### `TIMESTAMPTZ` maps to `time::OffsetDateTime`, not `chrono::DateTime<Utc>`
+
+`Cargo.toml` enables sqlx's `chrono` feature, but the vendored
+`tower-sessions-sqlx-store` crate unifies sqlx's `time` feature on for the
+whole workspace. With both enabled, the `query!`/`query_as!` macros prefer
+`time`: a plain `SELECT` of a timestamptz column yields `OffsetDateTime` and
+fails E0308 against a `DateTime<Utc>` field, plus a deprecation warning that
+`-D warnings` turns into a build failure.
+
+**Fix (the established pattern in this codebase):** an inline type override in
+the query — `created_at AS "created_at: DateTime<Utc>"`, or the `?` form for a
+nullable column, `paused_until AS "paused_until?: DateTime<Utc>"`. See
+`crates/hof-core/src/db/source.rs` lines 69, 109, 148, 187, 232, 286, 548 for
+existing uses.
+
+Rejected alternative: sqlx supports a global `sqlx.toml` with
+`[macros.preferred-crates] date-time = "chrono"`, but reading it is gated
+behind the `sqlx-toml` cargo feature, which is not in sqlx's default features
+and not declared in this workspace — a bare `sqlx.toml` would be silently
+ignored. Enabling it would also mean adding `"sqlx-toml"` to the sqlx
+features. Per-column overrides are cheaper and are what the codebase already
+does.
+
 ### Actor Pattern (Kameo)
 
 ```rust
@@ -311,6 +375,17 @@ pub async fn list_videos(State(state): State<AppState>) -> Result<impl IntoRespo
 In development you can use this connection string to connect to the database. DATABASE_URL=postgresql://postgres:postgres@localhost:5432/hofvarpnir_dev
 
 The test entry points (`just test`, `e2e`, `e2e-only`, `ci`, and the bacon `test`/`nextest` jobs) do not use the dev database: they override `DATABASE_URL` to a dedicated, ephemeral Postgres (`postgres-test` service in `containers/compose.dev.yml`, localhost:5433, no monitoring extensions, durability disabled). Override with `TEST_DATABASE_URL` (just) if needed. The bacon `run`/`serve`/`tui` jobs still use the dev database, as does `just dev`.
+
+`#[sqlx::test]` migrates a fresh database per test against postgres-test, so a
+migration checksum mismatch (see Database and SQLx above) affects the dev
+database and pre-commit hook, not `just test` — don't run migrations against
+5433 to "fix" a test failure. Durability being disabled on postgres-test also
+means its own sqlx-managed registry (`_sqlx_test.databases`) can develop index
+corruption after an unclean shutdown, surfacing as Postgres error `XX002`
+(`heap tid from index tuple ... points past end of heap page`) from inside
+sqlx's test harness rather than from application code. Fix with
+`REINDEX TABLE _sqlx_test.databases;` against localhost:5433 — see
+[`docs/sqlx-troubleshooting.md`](docs/sqlx-troubleshooting.md) for details.
 
 You can use flake.nix psql client.
 
@@ -437,14 +512,14 @@ cd patches/yt-dlp-patched && cargo test --test unit selection::ranked
 All PRs must pass:
 
 1. `cargo fmt --all -- --check`
-2. `cargo clippy --all-targets --all-features -- -D warnings`
+2. `cargo clippy --workspace --all-targets --all-features -- -D warnings`
 3. `cargo test --all-features`
 4. `cargo build --all-features --release`
 
-**Important:** Always run clippy with pedantic lints before submitting changes:
+**Important:** Always run strict clippy with pedantic and nursery lints before submitting changes:
 
 ```bash
-cargo clippy --workspace --all-targets -- -W clippy::pedantic
+cargo clippy --workspace --all-targets --all-features -- -D warnings
 ```
 
 ## Environment Variables
@@ -453,7 +528,7 @@ Required for development:
 
 - `DATABASE_URL` - PostgreSQL connection string
 - `PORT` - Server port (default: 3000)
-- `YT_DLP_PATH` - Path to yt-dlp binary
+- `YTDLP_PATH` - Path to yt-dlp binary (no underscore between `YT` and `DLP`)
 - `SQLX_OFFLINE` - Set to `true` for offline builds
 
 Optional (observability):

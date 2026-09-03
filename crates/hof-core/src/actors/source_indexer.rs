@@ -431,7 +431,9 @@ impl SourceIndexerActor {
         counter!(crate::metrics::SOURCE_INDEX_TOTAL, "status" => "success").increment(1);
         histogram!(crate::metrics::SOURCE_INDEX_DURATION_SECONDS)
             .record(indexing_start.elapsed().as_secs_f64());
-        #[allow(clippy::cast_precision_loss)]
+        // `usize` has no lossless conversion to `f64`; a per-source new-video
+        // count is far below 2^53, so precision loss cannot occur in practice.
+        #[allow(clippy::cast_precision_loss, clippy::as_conversions)]
         gauge!(crate::metrics::SOURCE_INDEX_NEW_VIDEOS).set(result.new_videos as f64);
 
         info!(
@@ -689,8 +691,12 @@ impl SourceIndexerActor {
             return EntryOrder::Unordered;
         }
 
-        let first_entry = &entries[0];
-        let last_entry = &entries[entries.len() - 1];
+        // The length check above guarantees both are present; `first`/`last`
+        // express that without an indexing panic path.
+        let (Some(first_entry), Some(last_entry)) = (entries.first(), entries.last()) else {
+            debug!("Cannot detect order: entries unexpectedly empty");
+            return EntryOrder::Unordered;
+        };
 
         debug!(
             first_video_id = %first_entry.platform_video_id,

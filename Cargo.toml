@@ -62,8 +62,32 @@ unsafe_code = "forbid"
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
-pedantic = { level = "warn", priority = -1 }
-nursery = { level = "warn", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+nursery = { level = "deny", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+indexing_slicing = "deny"
+unreachable = "deny"
+unimplemented = "deny"
+unchecked_time_subtraction = "deny"
+todo = "deny"
+# `arithmetic_side_effects` and `string_slice` are clippy `restriction`-group
+# lints, which upstream documents as a menu for safety-critical code rather
+# than a general quality baseline. Enabled wholesale they accounted for 63 of
+# 80 errors here, almost all of them ceremony: `saturating_add` on counters
+# that cannot overflow, and UTF-8 guards on ASCII-structured parsing that is
+# already correct. Worse, mechanical "fixes" to the string-slicing sites risk
+# silently changing yt-dlp output parsing.
+#
+# These are `allow` rather than `warn` deliberately: `just lint` and the
+# lefthook hooks pass `-D warnings`, which promotes every warning to an error,
+# so `warn` would still block every commit.
+arithmetic_side_effects = "allow"
+string_slice = "allow"
+panic_in_result_fn = "deny"
+panic = "deny"
+exit = "deny"
+as_conversions = "deny"
 # Selectively allow noisy pedantic lints
 module_name_repetitions = "allow"
 must_use_candidate = "allow"
@@ -75,6 +99,24 @@ needless_pass_by_ref_mut = "allow"
 option_if_let_else = "allow"
 significant_drop_tightening = "allow"
 redundant_pub_crate = "allow"
+
+# Build-time profile tuning. Full debuginfo on every dependency is the single
+# largest avoidable cost in the dev/test loop: it is generated on every
+# compile and re-linked into every test binary, and this workspace has ~600
+# dependencies against four crates of our own.
+#
+# Dependencies drop debuginfo entirely — stepping through `rustls` internals
+# in a debugger is not something this project does. Workspace crates keep
+# line tables, so panic backtraces still name the file and line; only
+# variable inspection is lost. Restore with `debug = true` here if you need
+# a full debugger session.
+#
+# `just ci` and the release build are unaffected (release profile untouched).
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
 
 # Vendored yt-dlp: makes Playlist.title, PlaylistEntry.title and PlaylistEntry.url
 # optional, so a single private/deleted video does not fail the whole playlist

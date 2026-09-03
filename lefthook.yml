@@ -17,7 +17,7 @@ pre-commit:
       stage_fixed: true
     - name: clippy
       glob: "*.rs"
-      run: cargo clippy --all-targets --all-features -- -D warnings
+      run: SQLX_OFFLINE=true cargo clippy --workspace --all-targets --all-features -- -D warnings
       stage_fixed: true
     - name: sqruff
       glob: "**/*.sql"
@@ -43,7 +43,14 @@ pre-commit:
       run: cargo deny check
       stage_fixed: true
 pre-push:
-  parallel: true
+  # Sequential, NOT parallel. `just prepare` clears and regenerates `.sqlx/`,
+  # while `test` and `clippy-all` both compile with `SQLX_OFFLINE=true` and
+  # read that same directory -- running them concurrently makes the offline
+  # jobs fail with "no cached data for this query" whenever they happen to
+  # read during prepare's rewrite window. These jobs also all invoke cargo
+  # against one `target/`, so `parallel: true` bought contention rather than
+  # speed. `piped` additionally stops at the first failure.
+  piped: true
   jobs:
     - name: sqlx-prepare
       run: just prepare
@@ -56,7 +63,7 @@ pre-push:
       run: just test
     - name: clippy-all
       glob: "*.rs"
-      run: cargo clippy --all-targets --all-features -- -D warnings
+      run: SQLX_OFFLINE=true cargo clippy --workspace --all-targets --all-features -- -D warnings
     # The vendored crates declare their own [workspace], so the root
     # workspace only builds their lib target as a [patch.crates-io]
     # dependency -- their tests/examples are compiled by nothing above.

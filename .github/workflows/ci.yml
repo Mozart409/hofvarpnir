@@ -59,7 +59,12 @@ jobs:
       - name: Check formatting
         run: nix develop .#default --command cargo fmt --all -- --check
       - name: Run clippy
-        run: nix develop .#default --command cargo clippy --all-targets --all-features -- -D warnings
+        # Lint levels live in Cargo.toml [workspace.lints.clippy]. Do NOT add
+        # `-D clippy::pedantic -D clippy::nursery` here: those flags apply
+        # AFTER the manifest's levels and re-deny both groups wholesale,
+        # silently defeating the workspace's selective `allow` entries and
+        # making CI stricter than every local invocation. See AGENTS.md.
+        run: SQLX_OFFLINE=true nix develop .#default --command cargo clippy --workspace --all-targets --all-features -- -D warnings
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 30

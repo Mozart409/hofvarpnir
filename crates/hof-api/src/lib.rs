@@ -6,6 +6,7 @@
 //! - Download status, progress SSE, and retry endpoints
 //! - Activity log endpoints
 //! - System status and control endpoints
+//! - Runtime settings, pause, and shutdown (drain) endpoints
 //! - `OpenAPI` documentation via utoipa + Scalar
 #![allow(clippy::needless_for_each)]
 
@@ -22,6 +23,7 @@ use hof_core::actors::scheduler::SchedulerActor;
 use hof_core::db::ActivityBroadcaster;
 use hof_core::domain::system::SystemIssue;
 use hof_core::domain::video::DownloadProgress;
+use hof_core::runtime_config::{DrainToken, RuntimeConfig};
 use kameo::actor::ActorRef;
 use sqlx::PgPool;
 use tokio::sync::broadcast;
@@ -30,7 +32,7 @@ use utoipa::{Modify, OpenApi};
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_scalar::{Scalar, Servable};
 
-use routes::{activity, downloads, health, profiles, sources, system};
+use routes::{activity, downloads, health, profiles, settings, sources, system};
 
 /// Security scheme modifier for `OpenAPI` documentation.
 struct SecurityAddon;
@@ -95,6 +97,20 @@ pub struct AppState {
     /// Global retention fallback in days (`RETENTION_DAYS`), used to preview
     /// upcoming retention deletions. `None` means no global retention.
     pub global_retention_days: Option<i32>,
+    /// Per-download timeout (`DOWNLOAD_TIMEOUT_HOURS`). Read-only and
+    /// env-derived, threaded through only so the runtime control panel can
+    /// display it alongside the mutable knobs (design 7.1) — the same reason
+    /// `global_retention_days` is here.
+    pub download_timeout: std::time::Duration,
+    /// Handle to the runtime-mutable settings (see ADR-0002). Handlers read
+    /// `current()` for the effective values and their provenance; writes go
+    /// through `db::patch_runtime_settings`, which the listener picks up.
+    pub runtime_config: RuntimeConfig,
+    /// Process-local drain signal (see ADR-0004). Set by
+    /// `POST /api/v1/system/shutdown`; actor gates and the shutdown poller
+    /// read `drain.is_draining()` to stop taking new work and detect
+    /// quiescence.
+    pub drain: DrainToken,
 }
 
 impl AppState {
@@ -111,6 +127,9 @@ impl AppState {
         startup_issues: Vec<SystemIssue>,
         broadcaster: ActivityBroadcaster,
         global_retention_days: Option<i32>,
+        download_timeout: std::time::Duration,
+        runtime_config: RuntimeConfig,
+        drain: DrainToken,
     ) -> Self {
         Self {
             pool,
@@ -122,6 +141,9 @@ impl AppState {
             startup_issues: startup_issues.into(),
             broadcaster,
             global_retention_days,
+            download_timeout,
+            runtime_config,
+            drain,
         }
     }
 }
@@ -167,6 +189,19 @@ impl AppState {
         system::StatisticsResponse,
         system::CleanupTriggerResponse,
         system::CleanupResultResponse,
+        settings::ResolvedU32,
+        settings::ResolvedSecs,
+        settings::PauseStateResponse,
+        settings::PauseSummaryResponse,
+        settings::DrainStatusResponse,
+        settings::SettingsErrorResponse,
+        settings::SettingsResponse,
+        settings::PatchSettingsRequest,
+        settings::PauseModule,
+        settings::PauseRequest,
+        settings::PauseResponse,
+        settings::ShutdownResponse,
+        hof_core::runtime_config::Provenance,
         auth::ApiErrorResponse,
         hof_core::domain::profile::Quality,
         hof_core::domain::profile::OutputPreset,
@@ -204,7 +239,14 @@ pub fn router(state: AppState) -> (Router, utoipa::openapi::OpenApi) {
         .nest("/api/v1/sources", sources::router())
         .nest("/api/v1/downloads", downloads::router())
         .nest("/api/v1/activity", activity::router())
-        .nest("/api/v1/system", system::router())
+        // `system` and `settings` share the `/api/v1/system` prefix. Axum's
+        // `Router::nest` registers a `{prefix}/{*rest}` wildcard route per
+        // call, so nesting twice on the identical prefix panics at router
+        // build time with a duplicate-route conflict. Merging the two
+        // `OpenApiRouter`s before the single `nest` call combines both their
+        // axum routes and their utoipa path registrations without hitting
+        // that conflict.
+        .nest("/api/v1/system", system::router().merge(settings::router()))
         .split_for_parts();
 
     // Apply modifiers (security scheme, server URL)

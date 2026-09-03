@@ -93,6 +93,10 @@ impl OidcClient {
         &self,
         callback_uri: &str,
     ) -> (Url, CsrfToken, Nonce, PkceCodeVerifier) {
+        // `callback_uri` is built from validated OIDC configuration at startup.
+        // Propagating instead would make this a fallible constructor and ripple
+        // through every caller of `authorization_url`.
+        #[allow(clippy::expect_used)]
         let callback =
             RedirectUrl::new(callback_uri.to_string()).expect("callback_uri should be a valid URL");
 

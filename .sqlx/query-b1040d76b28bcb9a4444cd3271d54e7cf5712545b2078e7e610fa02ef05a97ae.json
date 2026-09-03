@@ -1,0 +1,134 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT indexing_paused_until  AS \"indexing_paused_until?: DateTime<Utc>\",\n               downloads_paused_until AS \"downloads_paused_until?: DateTime<Utc>\",\n               max_concurrent_downloads, max_indexers_per_tick,\n               rate_limit_delay_secs, check_interval_secs,\n               cleanup_interval_secs, drain_timeout_secs,\n               updated_at AS \"updated_at: DateTime<Utc>\",\n               updated_by\n        FROM runtime_settings WHERE id = true\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "indexing_paused_until?: DateTime<Utc>",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "runtime_settings",
+            "name": "indexing_paused_until"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "downloads_paused_until?: DateTime<Utc>",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "runtime_settings",
+            "name": "downloads_paused_until"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "max_concurrent_downloads",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "runtime_settings",
+            "name": "max_concurrent_downloads"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "max_indexers_per_tick",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "runtime_settings",
+            "name": "max_indexers_per_tick"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "rate_limit_delay_secs",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "runtime_settings",
+            "name": "rate_limit_delay_secs"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "check_interval_secs",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "runtime_settings",
+            "name": "check_interval_secs"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "cleanup_interval_secs",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "runtime_settings",
+            "name": "cleanup_interval_secs"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "drain_timeout_secs",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "runtime_settings",
+            "name": "drain_timeout_secs"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "updated_at: DateTime<Utc>",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "runtime_settings",
+            "name": "updated_at"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "updated_by",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "runtime_settings",
+            "name": "updated_by"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false,
+      true
+    ]
+  },
+  "hash": "b1040d76b28bcb9a4444cd3271d54e7cf5712545b2078e7e610fa02ef05a97ae"
+}
