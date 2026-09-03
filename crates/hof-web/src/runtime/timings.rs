@@ -61,7 +61,7 @@ pub(crate) fn section(view: &PanelView) -> Markup {
                         (readonly_row(
                             "Download timeout",
                             view.download_timeout,
-                            Provenance::Env,
+                            view.download_timeout_provenance,
                             "Per-download network timeout for in-flight transfers.",
                         ))
                         (readonly_row(
@@ -453,6 +453,7 @@ mod tests {
                 last_run_at: Some(now),
             }),
             download_timeout: Duration::from_hours(4),
+            download_timeout_provenance: Provenance::Default,
             ytdlp_timeout: Duration::from_mins(30),
             min_index_interval: Duration::from_mins(5),
         }

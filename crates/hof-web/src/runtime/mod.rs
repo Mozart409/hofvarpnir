@@ -23,7 +23,7 @@ use hof_core::actors::cleanup::{CleanupStatus, GetCleanupStatus};
 use hof_core::actors::download_supervisor::{GetSupervisorStatus, SupervisorStatus};
 use hof_core::actors::scheduler::{GetSchedulerStatus, MIN_INDEX_INTERVAL_SECS, SchedulerStatus};
 use hof_core::db::{self, RuntimeSettingsRow};
-use hof_core::runtime_config::{EffectiveSettings, YTDLP_COMMAND_TIMEOUT};
+use hof_core::runtime_config::{EffectiveSettings, Provenance, YTDLP_COMMAND_TIMEOUT};
 use maud::Markup;
 use tower_sessions::Session;
 
@@ -62,6 +62,11 @@ pub(crate) struct PanelView {
     /// Read-only timings (design 7.1): compiled-in or env-derived, displayed
     /// with a `default`/`env` badge but not runtime-mutable.
     pub(crate) download_timeout: Duration,
+    /// Which layer supplied `download_timeout`. `DOWNLOAD_TIMEOUT_HOURS`
+    /// falls back to a compiled-in default when unset, so this must be
+    /// derived rather than assumed — ADR-0002 makes the badge load-bearing,
+    /// and a badge that says "env" on a stock deployment is worse than none.
+    pub(crate) download_timeout_provenance: Provenance,
     pub(crate) ytdlp_timeout: Duration,
     pub(crate) min_index_interval: Duration,
 }
@@ -108,6 +113,11 @@ async fn runtime_page(
         scheduler: scheduler.ok(),
         cleanup: cleanup.ok(),
         download_timeout: state.download_timeout,
+        download_timeout_provenance: if std::env::var("DOWNLOAD_TIMEOUT_HOURS").is_ok() {
+            Provenance::Env
+        } else {
+            Provenance::Default
+        },
         ytdlp_timeout: YTDLP_COMMAND_TIMEOUT,
         min_index_interval: Duration::from_secs(MIN_INDEX_INTERVAL_SECS),
     };

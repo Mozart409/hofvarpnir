@@ -295,6 +295,7 @@ mod tests {
             }),
             cleanup: None,
             download_timeout: Duration::from_hours(1),
+            download_timeout_provenance: Provenance::Default,
             ytdlp_timeout: Duration::from_mins(5),
             min_index_interval: Duration::from_secs(30),
         }

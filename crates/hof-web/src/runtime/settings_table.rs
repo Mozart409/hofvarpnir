@@ -170,6 +170,32 @@ mod tests {
         assert_eq!(humanize(Duration::from_secs(3661)), "1h 1m 1s");
     }
 
+    /// ADR-0002 makes the provenance badge required, not decorative — without
+    /// it the three-layer precedence chain is opaque. The `badge()` unit test
+    /// below passes even if `row` never calls it, so this asserts the badge
+    /// actually reaches rendered output. Deleting `(badge(provenance))` from
+    /// `row` fails here and nowhere else.
+    #[test]
+    fn row_renders_the_provenance_badge() {
+        let html = row(
+            "Max concurrent downloads",
+            "3",
+            Provenance::Database,
+            "How many downloads may run at once.",
+        )
+        .into_string();
+
+        assert!(html.contains("Max concurrent downloads"));
+        assert!(
+            html.contains(">3<"),
+            "value not rendered into an element body"
+        );
+        assert!(
+            html.contains("database"),
+            "provenance badge missing from the rendered row (ADR-0002)"
+        );
+    }
+
     #[test]
     fn every_provenance_renders_its_own_text() {
         let default = badge(Provenance::Default).into_string();
