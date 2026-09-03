@@ -100,6 +100,24 @@ option_if_let_else = "allow"
 significant_drop_tightening = "allow"
 redundant_pub_crate = "allow"
 
+# Build-time profile tuning. Full debuginfo on every dependency is the single
+# largest avoidable cost in the dev/test loop: it is generated on every
+# compile and re-linked into every test binary, and this workspace has ~600
+# dependencies against four crates of our own.
+#
+# Dependencies drop debuginfo entirely — stepping through `rustls` internals
+# in a debugger is not something this project does. Workspace crates keep
+# line tables, so panic backtraces still name the file and line; only
+# variable inspection is lost. Restore with `debug = true` here if you need
+# a full debugger session.
+#
+# `just ci` and the release build are unaffected (release profile untouched).
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
 # Vendored yt-dlp: makes Playlist.title, PlaylistEntry.title and PlaylistEntry.url
 # optional, so a single private/deleted video does not fail the whole playlist
 # parse. See patches/yt-dlp-patched/PATCHES.md for the full delta and the
