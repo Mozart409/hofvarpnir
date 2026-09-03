@@ -257,7 +257,13 @@ where
 ///
 /// `indexing_paused_until` / `downloads_paused_until` are deliberately not
 /// here — pause has its own endpoints (`POST`/`DELETE /pause`).
+///
+/// `deny_unknown_fields`: this is a settings endpoint, so a typo'd key
+/// (e.g. `max_concurrent_downlods`) must be rejected loudly rather than
+/// silently deserializing as "absent" and leaving the intended knob
+/// unchanged while still returning 200.
 #[derive(Debug, Default, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
 pub struct PatchSettingsRequest {
     #[serde(default, deserialize_with = "double_option")]
     #[schema(value_type = Option<u32>)]
@@ -436,6 +442,15 @@ fn pause_expiry(duration_secs: Option<u64>) -> Result<DateTime<Utc>, String> {
 /// if that read fails, this still returns 200 with the resolved settings and
 /// both audit fields `None`, rather than failing the whole request over an
 /// audit-trail read.
+///
+/// Because the two reads are separate and the knobs come from a cache that
+/// only converges after LISTEN/NOTIFY propagation, the audit stamp can
+/// legitimately show a write newer than the knob values sitting next to it
+/// (e.g. immediately after a concurrent `PATCH /settings` lands in the
+/// database but before this process's listener has republished). This is
+/// expected, not a bug: `PATCH /settings`'s own response is always
+/// consistent, since it resolves the row it just wrote rather than reading
+/// `current()`.
 #[utoipa::path(
     get,
     path = "/settings",
@@ -628,6 +643,7 @@ pub async fn pause(
     ),
     responses(
         (status = 200, description = "Updated pause state", body = PauseResponse),
+        (status = 400, description = "Invalid `module` query parameter", body = SettingsErrorResponse),
         (status = 401, description = "Unauthorized", body = ApiErrorResponse),
         (status = 403, description = "Forbidden - insufficient scope", body = ApiErrorResponse),
         (status = 500, description = "Internal server error", body = SettingsErrorResponse)
@@ -861,6 +877,15 @@ mod tests {
         let with_value: PatchSettingsRequest =
             serde_json::from_str(r#"{"max_concurrent_downloads": 7}"#).expect("value body");
         assert_eq!(with_value.max_concurrent_downloads, Some(Some(7)));
+    }
+
+    /// `#[serde(deny_unknown_fields)]`: a typo'd key must be a hard error,
+    /// not a silent no-op that returns 200 having changed nothing.
+    #[test]
+    fn patch_settings_request_rejects_unknown_field() {
+        let result: Result<PatchSettingsRequest, _> =
+            serde_json::from_str(r#"{"max_concurrent_downlods": 5}"#);
+        assert!(result.is_err());
     }
 
     // ------------------------------------------------------------------
