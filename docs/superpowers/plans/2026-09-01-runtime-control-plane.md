@@ -1204,7 +1204,11 @@ git commit -m "feat(api): add runtime settings, pause, and shutdown endpoints"
 
 ---
 
-## Task 7: UI control panel
+## Task 7: UI control panel — ✅ DONE (2026-09-03)
+
+Commits `4c48ef8` + `208cd54`. Built as `crates/hof-web/src/runtime/` (a directory
+module, so the four sections could be written in parallel without colliding in
+`pages.rs`). Panel at `/settings/runtime`.
 
 **Files:** Modify `crates/hof-web/src/pages.rs`, `crates/hof-web/src/lib.rs`
 
@@ -1227,7 +1231,12 @@ git commit -m "feat(ui): add runtime control panel with pause, drain, and timing
 
 ---
 
-## Task 8: Documentation
+## Task 8: Documentation — ✅ DONE (2026-09-03)
+
+Commit `42695a5`. Also fixed three README env var names that did not match the
+code (`DOWNLOAD_CONCURRENCY`, `DOWNLOAD_TIMEOUT`, `YT_DLP_PATH`) and amended
+ADR-0003 and ADR-0004, both of which documented mechanisms that were replaced
+during implementation.
 
 - [ ] **Step 1:** README — document the new env vars (`MAX_INDEXERS_PER_TICK`, `CHECK_INTERVAL_SECS`, `CLEANUP_INTERVAL_SECS`, `DRAIN_TIMEOUT_SECS`) and state that database values override them.
 - [ ] **Step 2:** README — **document the restart-policy caveat**: draining exits 0, so under `restart: always` or `unless-stopped` the container comes straight back up. Deployments wanting the process to stay down must use `restart: on-failure`. This is the one place the UI's "shut down" will not do what it says, and it is a deployment-side fix.
