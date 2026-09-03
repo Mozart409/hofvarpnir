@@ -6,12 +6,10 @@
 //! chain is opaque, and an operator cannot tell why a value is what it is or
 //! whether editing the database row would even take effect.
 
-use std::time::Duration;
-
 use hof_core::runtime_config::Provenance;
 use maud::Markup;
 
-use super::{PanelView, panel_section};
+use super::{PanelView, badge, humanize, panel_section};
 
 /// Render the effective-settings table.
 pub(crate) fn section(view: &PanelView) -> Markup {
@@ -78,32 +76,6 @@ fn row(label: &str, value: &str, provenance: Provenance, description: &str) -> M
     }
 }
 
-/// Provenance badge.
-///
-/// Colour alone would fail for colour-blind readers and in monochrome, so the
-/// layer name is always spelled out in the badge text as well.
-fn badge(provenance: Provenance) -> Markup {
-    let (text, classes) = match provenance {
-        Provenance::Default => (
-            "default",
-            "bg-slate-100 text-slate-700 dark:bg-slate-700 dark:text-slate-200",
-        ),
-        Provenance::Env => (
-            "env",
-            "bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200",
-        ),
-        Provenance::Database => (
-            "database",
-            "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-200",
-        ),
-    };
-    maud::html! {
-        span class={ "inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium " (classes) } {
-            (text)
-        }
-    }
-}
-
 /// When the database layer was last written, and by whom.
 ///
 /// `updated_by` holds a ULID string rather than a display name; it is rendered
@@ -132,43 +104,9 @@ fn audit_stamp(view: &PanelView) -> Markup {
     }
 }
 
-/// Render a duration the way an operator reads it: "45s", "1m 30s", "3h".
-fn humanize(d: Duration) -> String {
-    let total = d.as_secs();
-    if total == 0 {
-        return "0s".to_string();
-    }
-    let hours = total / 3600;
-    let minutes = (total % 3600) / 60;
-    let seconds = total % 60;
-
-    let mut parts: Vec<String> = Vec::new();
-    if hours > 0 {
-        parts.push(format!("{hours}h"));
-    }
-    if minutes > 0 {
-        parts.push(format!("{minutes}m"));
-    }
-    if seconds > 0 {
-        parts.push(format!("{seconds}s"));
-    }
-    parts.join(" ")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn humanize_covers_each_magnitude() {
-        assert_eq!(humanize(Duration::from_secs(0)), "0s");
-        assert_eq!(humanize(Duration::from_secs(45)), "45s");
-        assert_eq!(humanize(Duration::from_secs(90)), "1m 30s");
-        assert_eq!(humanize(Duration::from_mins(5)), "5m");
-        // Exact-hour boundary: no stray "0m 0s" tail.
-        assert_eq!(humanize(Duration::from_hours(3)), "3h");
-        assert_eq!(humanize(Duration::from_secs(3661)), "1h 1m 1s");
-    }
 
     /// ADR-0002 makes the provenance badge required, not decorative — without
     /// it the three-layer precedence chain is opaque. The `badge()` unit test

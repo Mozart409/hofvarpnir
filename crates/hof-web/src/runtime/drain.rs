@@ -11,7 +11,7 @@ use chrono::{DateTime, Utc};
 use hof_core::runtime_config::sleep_duration_until;
 use maud::Markup;
 
-use super::{PanelView, panel_section};
+use super::{PanelView, humanize, panel_section};
 
 /// Render the Drain section.
 pub(crate) fn section(view: &PanelView) -> Markup {
@@ -173,29 +173,6 @@ fn elapsed_since(now: DateTime<Utc>, since: DateTime<Utc>) -> Duration {
     now.signed_duration_since(since)
         .to_std()
         .unwrap_or(Duration::ZERO)
-}
-
-/// Render a duration the way an operator reads it: "45s", "1m 30s", "3h".
-fn humanize(d: Duration) -> String {
-    let total = d.as_secs();
-    if total == 0 {
-        return "0s".to_string();
-    }
-    let hours = total / 3600;
-    let minutes = (total % 3600) / 60;
-    let seconds = total % 60;
-
-    let mut parts: Vec<String> = Vec::new();
-    if hours > 0 {
-        parts.push(format!("{hours}h"));
-    }
-    if minutes > 0 {
-        parts.push(format!("{minutes}m"));
-    }
-    if seconds > 0 {
-        parts.push(format!("{seconds}s"));
-    }
-    parts.join(" ")
 }
 
 /// `POST /settings/runtime/shutdown` — begin draining, then redirect back to

@@ -26,11 +26,14 @@ use super::download_supervisor::{DownloadSupervisor, ProcessPendingDownloads};
 use super::source_indexer::{IndexingResult, SourceIndexerActor, SourceIndexerArgs};
 
 /// Minimum interval between indexing the same source (rate limiting).
-/// Floor on how often a single source may be re-indexed.
+/// Floor on how often the periodic sweep will re-index a single source.
 ///
-/// Applies regardless of the source's configured `index_frequency_secs`.
-/// Public so the runtime control panel can display it: it is one of the
-/// read-only timings an operator is actually subject to (design 7.1).
+/// Applies to `CheckSources`/`spawn_due_indexers` regardless of the source's
+/// configured `index_frequency_secs`. **A manual `IndexSource` trigger
+/// deliberately bypasses it** — an operator asking to index now has overridden
+/// the pacing on purpose, which is also why that path resets the source's
+/// error count. Public so the runtime control panel can display it: it is one
+/// of the read-only timings an operator is subject to (design 7.1).
 pub const MIN_INDEX_INTERVAL_SECS: u64 = 300; // 5 minutes
 
 /// How long the scheduling loop waits for mailbox space before giving up on

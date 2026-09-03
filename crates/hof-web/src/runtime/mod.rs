@@ -113,7 +113,18 @@ async fn runtime_page(
         scheduler: scheduler.ok(),
         cleanup: cleanup.ok(),
         download_timeout: state.download_timeout,
-        download_timeout_provenance: if std::env::var("DOWNLOAD_TIMEOUT_HOURS").is_ok() {
+        // Presence is not enough: `DownloadConfig::from_env` PARSES this var
+        // and silently falls back to the compiled-in default on any non-`u64`
+        // input, so `DOWNLOAD_TIMEOUT_HOURS=abc` yields the default value.
+        // Checking only `is_ok()` would badge that default as "env" -- exactly
+        // the failure this field's doc comment warns against. Mirror the
+        // parse-then-check shape `EnvOverrides::from_env` uses for every other
+        // tunable.
+        download_timeout_provenance: if std::env::var("DOWNLOAD_TIMEOUT_HOURS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .is_some()
+        {
             Provenance::Env
         } else {
             Provenance::Default
@@ -137,6 +148,55 @@ async fn runtime_page(
     .into_response()
 }
 
+/// Provenance badge.
+///
+/// Colour alone would fail for colour-blind readers and in monochrome, so the
+/// layer name is always spelled out in the badge text as well.
+pub(crate) fn badge(provenance: Provenance) -> Markup {
+    let (text, classes) = match provenance {
+        Provenance::Default => (
+            "default",
+            "bg-slate-100 text-slate-700 dark:bg-slate-700 dark:text-slate-200",
+        ),
+        Provenance::Env => (
+            "env",
+            "bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200",
+        ),
+        Provenance::Database => (
+            "database",
+            "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-200",
+        ),
+    };
+    maud::html! {
+        span class={ "inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium " (classes) } {
+            (text)
+        }
+    }
+}
+
+/// Render a duration the way an operator reads it: "45s", "1m 30s", "3h".
+pub(crate) fn humanize(d: Duration) -> String {
+    let total = d.as_secs();
+    if total == 0 {
+        return "0s".to_string();
+    }
+    let hours = total / 3600;
+    let minutes = (total % 3600) / 60;
+    let seconds = total % 60;
+
+    let mut parts: Vec<String> = Vec::new();
+    if hours > 0 {
+        parts.push(format!("{hours}h"));
+    }
+    if minutes > 0 {
+        parts.push(format!("{minutes}m"));
+    }
+    if seconds > 0 {
+        parts.push(format!("{seconds}s"));
+    }
+    parts.join(" ")
+}
+
 /// Shared shell so the four sections look like one panel.
 pub(crate) fn panel_section(title: &str, body: &Markup) -> Markup {
     maud::html! {
@@ -144,5 +204,38 @@ pub(crate) fn panel_section(title: &str, body: &Markup) -> Markup {
             h2 class="text-lg font-semibold text-slate-900 dark:text-slate-100" { (title) }
             div class="mt-4" { (body) }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn humanize_covers_each_magnitude() {
+        assert_eq!(humanize(Duration::from_secs(0)), "0s");
+        assert_eq!(humanize(Duration::from_secs(45)), "45s");
+        assert_eq!(humanize(Duration::from_secs(90)), "1m 30s");
+        assert_eq!(humanize(Duration::from_mins(5)), "5m");
+        // Exact-hour boundary: no stray "0m 0s" tail.
+        assert_eq!(humanize(Duration::from_hours(3)), "3h");
+        assert_eq!(humanize(Duration::from_secs(3661)), "1h 1m 1s");
+    }
+
+    /// ADR-0002 makes the badge load-bearing, so the three layers must stay
+    /// distinguishable by TEXT, not only by colour -- colour-only encoding
+    /// fails for colour-blind readers and in monochrome.
+    #[test]
+    fn every_provenance_renders_its_own_text() {
+        let default = badge(Provenance::Default).into_string();
+        let env = badge(Provenance::Env).into_string();
+        let db = badge(Provenance::Database).into_string();
+
+        assert!(default.contains("default"));
+        assert!(env.contains("env"));
+        assert!(db.contains("database"));
+        assert_ne!(default, env);
+        assert_ne!(env, db);
+        assert_ne!(default, db);
     }
 }
