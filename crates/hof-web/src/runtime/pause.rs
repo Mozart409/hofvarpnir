@@ -438,6 +438,7 @@ mod tests {
             supervisor: None,
             scheduler: None,
             cleanup: None,
+            actor_health: Vec::new(),
             download_timeout: StdDuration::from_secs(30),
             download_timeout_provenance: Provenance::Default,
             ytdlp_timeout: StdDuration::from_secs(30),
