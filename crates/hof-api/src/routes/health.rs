@@ -4,6 +4,8 @@ use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
+use chrono::{DateTime, Utc};
+use hof_core::actors::root_supervisor::GetActorHealth;
 use hof_core::domain::system::{IssueSeverity, SystemIssue};
 use serde::Serialize;
 use utoipa::ToSchema;
@@ -28,6 +30,12 @@ pub struct HealthResponse {
 }
 
 /// Actor system health status.
+///
+/// The five booleans are a frozen contract: the compose healthcheck and
+/// external monitoring both read them, so they are never renamed or
+/// re-derived. `details` was *added* alongside them — it answers the question
+/// the booleans cannot ("why is it dead, and can it come back?") without
+/// changing what they mean.
 #[derive(Debug, Serialize, ToSchema)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct ActorsHealth {
@@ -38,6 +46,32 @@ pub struct ActorsHealth {
     pub scheduler: bool,
     pub cleanup: bool,
     pub jellyfin_metadata: bool,
+    /// Per-actor restart and failure detail from the root supervisor.
+    ///
+    /// Empty when the root supervisor itself did not answer — the booleans
+    /// above are still authoritative in that case, because they come from
+    /// cheap in-process `is_alive()` checks that cannot fail.
+    pub details: Vec<ActorDetail>,
+}
+
+/// Per-actor detail behind one of the `ActorsHealth` booleans.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ActorDetail {
+    /// Actor name in its URL spelling, matching the `{name}` segment of
+    /// `POST /api/v1/system/actors/{name}/restart`.
+    pub actor: String,
+    pub alive: bool,
+    /// Restarts the root supervisor has performed since process start.
+    pub restart_count: u32,
+    pub last_restart_at: Option<DateTime<Utc>>,
+    /// Why the actor last died. The single most useful field for an operator:
+    /// a dead actor with no explanation is what turned a transient database
+    /// error into a 27-hour outage.
+    pub last_failure: Option<String>,
+    /// The restart budget is spent — no in-process restart can recover this
+    /// actor, the process must be restarted. A monitor should page on this
+    /// rather than retrying the restart endpoint.
+    pub unrecoverable: bool,
 }
 
 /// Overall health status.
@@ -86,7 +120,7 @@ pub fn router() -> OpenApiRouter<AppState> {
 pub async fn health_check(State(state): State<AppState>) -> impl IntoResponse {
     let db_health = check_database(&state).await;
     let ytdlp_health = check_ytdlp().await;
-    let actors_health = check_actors(&state);
+    let actors_health = check_actors_detailed(&state).await;
     let issues: Vec<SystemIssue> = state.startup_issues.to_vec();
 
     // Check if any issues are errors (vs warnings)
@@ -117,20 +151,43 @@ pub async fn health_check(State(state): State<AppState>) -> impl IntoResponse {
     (status_code, Json(response))
 }
 
-/// Kubernetes liveness probe.
+/// Liveness probe: is this process worth keeping, or should it be replaced?
 ///
-/// Returns 200 if the process is alive. Does not check dependencies.
-/// Use this for `livenessProbe` in Kubernetes.
+/// Returns 503 only when an actor is *unrecoverable* — it exhausted its
+/// restart budget, so kameo has unlinked it permanently and no in-process
+/// restart can bring it back. A new process is then the only remedy, which
+/// is exactly what a `livenessProbe` (or the watchdog's own self-exit) is
+/// for.
+///
+/// Deliberately NOT tripped by a database outage or by an actor that is
+/// merely down-and-restarting: the download supervisor now rides out a
+/// database fault via its circuit breaker without dying, and supervision
+/// recovers an ordinary panic on its own. Reporting either here would turn a
+/// transient blip into a container restart — the failure mode this endpoint
+/// exists to avoid.
+///
+/// Reads a shared atomic written by `hof_core::watchdog`, never an actor
+/// `ask`: a probe must not be able to hang behind a mailbox, least of all
+/// the root supervisor's, whose own health is part of what is being probed.
+/// Use `/ready` (not this) to decide whether to send traffic.
 #[utoipa::path(
     get,
     path = "/live",
     responses(
-        (status = 200, description = "Process is alive"),
+        (status = 200, description = "Process is alive and recoverable"),
+        (
+            status = 503,
+            description = "An actor is unrecoverable; this process should be replaced"
+        ),
     ),
     tag = "health"
 )]
-pub async fn liveness() -> StatusCode {
-    StatusCode::OK
+pub async fn liveness(State(state): State<AppState>) -> StatusCode {
+    if state.liveness.is_alive() {
+        StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    }
 }
 
 /// Kubernetes readiness probe.
@@ -157,6 +214,12 @@ pub async fn readiness(State(state): State<AppState>) -> StatusCode {
     }
 }
 
+/// Liveness only, from in-process `is_alive()` checks.
+///
+/// Deliberately synchronous and infallible: `readiness` runs this on every
+/// probe (every 31s in the compose deployment), and a probe must never be
+/// able to hang behind an actor mailbox — least of all the root supervisor's,
+/// whose own death is one of the things being probed for.
 fn check_actors(state: &AppState) -> ActorsHealth {
     let supervisor = state.supervisor.is_alive();
     let scheduler = state.scheduler.is_alive();
@@ -169,7 +232,43 @@ fn check_actors(state: &AppState) -> ActorsHealth {
         scheduler,
         cleanup,
         jellyfin_metadata,
+        details: Vec::new(),
     }
+}
+
+/// `check_actors` plus the root supervisor's per-actor detail.
+///
+/// The `healthy` flag and the four booleans are still computed by
+/// `check_actors`, so the top-level `status` this feeds is unaffected by
+/// whether the detail ask succeeds. A failed ask degrades to empty `details`
+/// and a warning, never to a worse verdict — reporting "unhealthy" because a
+/// *diagnostic* call failed would be its own false alarm.
+async fn check_actors_detailed(state: &AppState) -> ActorsHealth {
+    let mut health = check_actors(state);
+
+    match state.root_supervisor.ask(GetActorHealth).await {
+        Ok(reports) => {
+            health.details = reports
+                .into_iter()
+                .map(|report| ActorDetail {
+                    actor: report.actor.as_str().to_string(),
+                    alive: report.alive,
+                    restart_count: report.restart_count,
+                    last_restart_at: report.last_restart_at,
+                    last_failure: report.last_failure,
+                    unrecoverable: report.unrecoverable,
+                })
+                .collect();
+        }
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "Root supervisor did not report actor health; serving liveness only"
+            );
+        }
+    }
+
+    health
 }
 
 async fn check_database(state: &AppState) -> ComponentHealth {

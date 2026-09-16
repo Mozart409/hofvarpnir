@@ -19,10 +19,12 @@ use axum::{Json, Router, response::Redirect, routing::get};
 use hof_core::actors::cleanup::CleanupActor;
 use hof_core::actors::download_supervisor::DownloadSupervisor;
 use hof_core::actors::jellyfin_metadata::JellyfinMetadataActor;
+use hof_core::actors::root_supervisor::RootSupervisor;
 use hof_core::actors::scheduler::SchedulerActor;
 use hof_core::db::ActivityBroadcaster;
 use hof_core::domain::system::SystemIssue;
 use hof_core::domain::video::DownloadProgress;
+use hof_core::liveness::LivenessFlag;
 use hof_core::runtime_config::{DrainToken, RuntimeConfig};
 use kameo::actor::ActorRef;
 use sqlx::PgPool;
@@ -80,6 +82,15 @@ impl Modify for ServerAddon {
 pub struct AppState {
     /// Database connection pool.
     pub pool: PgPool,
+    /// Reference to the root supervisor, the parent of the four singleton
+    /// actors below.
+    ///
+    /// Held separately from the child refs because it answers two questions
+    /// no child ref can: *why* a child died (`GetActorHealth`), and whether
+    /// it can be brought back in-process (`RestartActor`). The child
+    /// `ActorRef`s stay valid across a restart — kameo re-targets them — so
+    /// they remain the right handle for ordinary asks.
+    pub root_supervisor: ActorRef<RootSupervisor>,
     /// Reference to the download supervisor actor.
     pub supervisor: ActorRef<DownloadSupervisor>,
     /// Reference to the scheduler actor.
@@ -111,6 +122,10 @@ pub struct AppState {
     /// read `drain.is_draining()` to stop taking new work and detect
     /// quiescence.
     pub drain: DrainToken,
+    /// Shared liveness flag written by `hof_core::watchdog`. Read by
+    /// `GET /api/health/live` directly, never via an actor `ask`: a probe
+    /// must not be able to hang behind a mailbox.
+    pub liveness: LivenessFlag,
 }
 
 impl AppState {
@@ -119,6 +134,7 @@ impl AppState {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         pool: PgPool,
+        root_supervisor: ActorRef<RootSupervisor>,
         supervisor: ActorRef<DownloadSupervisor>,
         scheduler: ActorRef<SchedulerActor>,
         jellyfin_metadata: ActorRef<JellyfinMetadataActor>,
@@ -130,9 +146,11 @@ impl AppState {
         download_timeout: std::time::Duration,
         runtime_config: RuntimeConfig,
         drain: DrainToken,
+        liveness: LivenessFlag,
     ) -> Self {
         Self {
             pool,
+            root_supervisor,
             supervisor,
             scheduler,
             jellyfin_metadata,
@@ -144,6 +162,7 @@ impl AppState {
             download_timeout,
             runtime_config,
             drain,
+            liveness,
         }
     }
 }
@@ -163,6 +182,7 @@ impl AppState {
         health::HealthStatus,
         health::ComponentHealth,
         health::ActorsHealth,
+        health::ActorDetail,
         profiles::ProfileResponse,
         profiles::CreateProfileRequest,
         profiles::UpdateProfileRequest,
@@ -189,6 +209,7 @@ impl AppState {
         system::StatisticsResponse,
         system::CleanupTriggerResponse,
         system::CleanupResultResponse,
+        system::ActorRestartResponse,
         settings::ResolvedU32,
         settings::ResolvedSecs,
         settings::PauseStateResponse,
