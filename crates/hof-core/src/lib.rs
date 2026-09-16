@@ -14,11 +14,13 @@ pub mod config;
 pub mod db;
 pub mod domain;
 pub mod jellyfin;
+pub mod liveness;
 pub mod metrics;
 pub mod oidc;
 pub mod runtime_config;
 pub mod startup;
 pub mod telemetry;
+pub mod watchdog;
 pub mod ytdlp;
 
 // Re-export commonly used types

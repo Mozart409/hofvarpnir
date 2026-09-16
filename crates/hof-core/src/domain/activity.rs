@@ -31,6 +31,13 @@ pub enum ActivityEventType {
     SourceCreated,
     SourceUpdated,
     SourceDeleted,
+    /// The watchdog self-terminated the process because an actor exhausted
+    /// its in-process restart budget (`unrecoverable`) and the crash-loop
+    /// guard allowed it. Written immediately before the process exits — see
+    /// `hof_core::watchdog` — so the restart is visible in the activity
+    /// timeline even though nothing survives in memory to report it after
+    /// the fact.
+    SelfRestart,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

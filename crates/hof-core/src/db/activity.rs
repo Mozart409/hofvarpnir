@@ -267,6 +267,41 @@ pub async fn count_activity_events(
     Ok(row.0)
 }
 
+/// Count activity events of `event_type` created at or after `since`.
+///
+/// Used by the watchdog (`crate::watchdog`) to read its self-exit budget:
+/// how many `SelfRestart` events landed in the trailing hour. A plain
+/// runtime query rather than a `sqlx::query!`-family macro, deliberately —
+/// this crate builds `SQLX_OFFLINE=true`, and a macro query would need a
+/// `.sqlx` cache entry for one call site that a hand-written query avoids
+/// entirely.
+///
+/// # Errors
+///
+/// Returns an error if the database operation fails. The watchdog treats
+/// that as "budget unknown" and refuses to self-exit — see its module docs
+/// for why that fail-safe direction is the only safe default.
+#[instrument(skip(pool), fields(otel.kind = "client", db.system = "postgresql"))]
+pub async fn count_activity_events_since(
+    pool: &PgPool,
+    event_type: ActivityEventType,
+    since: DateTime<Utc>,
+) -> Result<i64, DbError> {
+    let row: (i64,) = sqlx::query_as(
+        r"
+        SELECT COUNT(*)
+        FROM activity_events
+        WHERE event_type = $1 AND created_at >= $2
+        ",
+    )
+    .bind(event_type)
+    .bind(since)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(row.0)
+}
+
 /// Delete activity events older than a given timestamp.
 ///
 /// # Errors
