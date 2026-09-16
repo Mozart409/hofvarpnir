@@ -4389,6 +4389,31 @@ fn activity_content_markup(
 /// see `db::get_source_names_for_videos`) is used as a fallback so the source
 /// pill still resolves via the event's `video_id`. If neither resolves (e.g.
 /// the source was since deleted), the pill is simply omitted.
+/// Human-facing label for an activity event type.
+///
+/// Extracted from `activity_event_row` rather than inlined: the row renderer
+/// sits right on the `too_many_lines` limit, and a pure enum-to-label map is
+/// the obvious thing to lift out when a new variant is added.
+const fn activity_event_label(event_type: &ActivityEventType) -> &'static str {
+    match event_type {
+        ActivityEventType::SourceIndexed => "Source Indexed",
+        ActivityEventType::SourceError => "Source Error",
+        ActivityEventType::DownloadStarted => "Download Started",
+        ActivityEventType::DownloadCompleted => "Download Completed",
+        ActivityEventType::DownloadFailed => "Download Failed",
+        ActivityEventType::RetryScheduled => "Retry Scheduled",
+        ActivityEventType::MetadataGenerated => "Metadata Generated",
+        ActivityEventType::VideoCleaned => "Video Cleaned",
+        ActivityEventType::ProfileCreated => "Profile Created",
+        ActivityEventType::ProfileUpdated => "Profile Updated",
+        ActivityEventType::ProfileDeleted => "Profile Deleted",
+        ActivityEventType::SourceCreated => "Source Created",
+        ActivityEventType::SourceUpdated => "Source Updated",
+        ActivityEventType::SourceDeleted => "Source Deleted",
+        ActivityEventType::SelfRestart => "Self Restart",
+    }
+}
+
 fn activity_event_row(
     event: &hof_core::domain::activity::ActivityEvent,
     source_names: &HashMap<Ulid, String>,
@@ -4422,22 +4447,7 @@ fn activity_event_row(
         ),
     };
 
-    let event_label = match event.event_type {
-        ActivityEventType::SourceIndexed => "Source Indexed",
-        ActivityEventType::SourceError => "Source Error",
-        ActivityEventType::DownloadStarted => "Download Started",
-        ActivityEventType::DownloadCompleted => "Download Completed",
-        ActivityEventType::DownloadFailed => "Download Failed",
-        ActivityEventType::RetryScheduled => "Retry Scheduled",
-        ActivityEventType::MetadataGenerated => "Metadata Generated",
-        ActivityEventType::VideoCleaned => "Video Cleaned",
-        ActivityEventType::ProfileCreated => "Profile Created",
-        ActivityEventType::ProfileUpdated => "Profile Updated",
-        ActivityEventType::ProfileDeleted => "Profile Deleted",
-        ActivityEventType::SourceCreated => "Source Created",
-        ActivityEventType::SourceUpdated => "Source Updated",
-        ActivityEventType::SourceDeleted => "Source Deleted",
-    };
+    let event_label = activity_event_label(&event.event_type);
 
     let time_ago = format_time_ago(event.created_at);
     let source_indexing = event.source_indexing_summary();
