@@ -9,13 +9,15 @@ use hof_api::AppState;
 use hof_core::{
     ActivityBroadcaster,
     actors::{
-        cleanup::{CleanupActor, CleanupActorArgs},
-        download_supervisor::{DownloadSupervisor, DownloadSupervisorArgs},
-        jellyfin_metadata::{JellyfinMetadataActor, JellyfinMetadataActorArgs},
-        scheduler::{SchedulerActor, SchedulerArgs},
+        cleanup::CleanupActor,
+        download_supervisor::DownloadSupervisor,
+        jellyfin_metadata::JellyfinMetadataActor,
+        root_supervisor::{ChildRefs, GetChildRefs, RootSupervisor, RootSupervisorArgs},
+        scheduler::SchedulerActor,
     },
     config::{DownloadConfig, EnvOverrides},
     domain::video::DownloadProgress,
+    liveness::LivenessFlag,
     runtime_config::{DrainToken, RuntimeConfig},
     ytdlp::YtdlpClient,
 };
@@ -29,6 +31,13 @@ use tokio::sync::{broadcast, mpsc};
 pub struct TestApp {
     pub server: TestServer,
     pub pool: PgPool,
+    /// The liveness flag backing `/api/health/live`, so a test can assert
+    /// both the healthy and the unrecoverable response.
+    pub liveness: LivenessFlag,
+    /// Kept alive for the lifetime of the test: dropping the root supervisor
+    /// would tear down the four supervised children with it.
+    #[allow(dead_code)]
+    root_supervisor: ActorRef<RootSupervisor>,
     #[allow(dead_code)]
     supervisor: ActorRef<DownloadSupervisor>,
     #[allow(dead_code)]
@@ -76,43 +85,44 @@ impl TestApp {
         // quiescence.
         let drain = DrainToken::new();
 
-        let supervisor = DownloadSupervisor::spawn(DownloadSupervisorArgs {
-            pool: pool.clone(),
-            ytdlp: ytdlp.clone(),
-            config: download_config,
-            progress_tx,
-            config_rx: runtime_config.subscribe(),
-            broadcaster: broadcaster.clone(),
-            drain: drain.clone(),
-        });
-
-        let scheduler = SchedulerActor::spawn(SchedulerArgs {
+        // Spawn the four actors the way production does — as supervised
+        // children of a `RootSupervisor` — rather than individually. The
+        // health and restart endpoints under test resolve actors *through*
+        // the root supervisor, so spawning a second, unsupervised set here
+        // would leave those tests asserting against actors the API never
+        // touches.
+        let root_supervisor = RootSupervisor::spawn(RootSupervisorArgs {
             pool: pool.clone(),
             ytdlp,
-            supervisor: supervisor.clone(),
-            config_rx: runtime_config.subscribe(),
+            download_config,
+            progress_tx,
+            runtime_config: runtime_config.clone(),
             broadcaster: broadcaster.clone(),
             drain: drain.clone(),
-        });
-
-        let cleanup = CleanupActor::spawn(CleanupActorArgs {
-            pool: pool.clone(),
             global_retention_days: None,
-            config_rx: runtime_config.subscribe(),
-            broadcaster: broadcaster.clone(),
         });
 
-        let jellyfin_metadata = JellyfinMetadataActor::spawn(JellyfinMetadataActorArgs {
-            pool: pool.clone(),
-            check_interval: None,
-            broadcaster: broadcaster.clone(),
-        });
+        let ChildRefs {
+            supervisor,
+            scheduler,
+            cleanup,
+            jellyfin_metadata,
+        } = root_supervisor
+            .ask(GetChildRefs)
+            .await
+            .expect("root supervisor should report its child refs");
 
         // Create broadcast channel for SSE (not used in most tests)
         let (broadcast_tx, _) = broadcast::channel::<DownloadProgress>(100);
 
+        // No watchdog runs under test, so nothing ever trips this on its own.
+        // Exposed on `TestApp` so a test can drive `/api/health/live` through
+        // both of its outcomes.
+        let liveness = LivenessFlag::new();
+
         let state = AppState::new(
             pool.clone(),
+            root_supervisor.clone(),
             supervisor.clone(),
             scheduler.clone(),
             jellyfin_metadata.clone(),
@@ -124,6 +134,7 @@ impl TestApp {
             std::time::Duration::from_hours(2),
             runtime_config,
             drain,
+            liveness.clone(),
         );
 
         // Build the API router with docs
@@ -137,6 +148,8 @@ impl TestApp {
         Self {
             server,
             pool,
+            liveness,
+            root_supervisor,
             supervisor,
             scheduler,
             cleanup,
