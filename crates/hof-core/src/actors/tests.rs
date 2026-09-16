@@ -72,12 +72,20 @@ mod download_supervisor_tests {
             dispatching: 1,
             available_permits: 3,
             rate_limit_backoff: 2,
+            db_backoff_until: None,
+            consecutive_db_failures: 0,
+            last_db_error: None,
         };
 
         assert_eq!(status.active_downloads, 5);
         assert_eq!(status.dispatching, 1);
         assert_eq!(status.available_permits, 3);
         assert_eq!(status.rate_limit_backoff, 2);
+        // A healthy supervisor reports no database backoff: these three are
+        // what the UI keys off to decide whether to show the outage banner.
+        assert!(status.db_backoff_until.is_none());
+        assert_eq!(status.consecutive_db_failures, 0);
+        assert!(status.last_db_error.is_none());
     }
 }
 

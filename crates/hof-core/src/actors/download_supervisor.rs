@@ -3,13 +3,57 @@
 //! It holds a `tokio::sync::Semaphore` with a configurable number of permits
 //! (default 3) and spawns short-lived `DownloadWorker` actors when permits
 //! are available. It also handles retry logic with exponential backoff.
+//!
+//! # Invariant: a handler reachable via `tell()` must never return `Err`
+//!
+//! This is not a style preference — it is the single most expensive lesson
+//! this file has taught us. Kameo delivers a `tell()` with **no reply
+//! channel**, so when a handler returns `Err` there is nowhere to send it.
+//! Kameo's response is to escalate: `kameo::message` wraps the error in a
+//! `PanicError` with `PanicReason::OnMessage` and routes it through
+//! [`Actor::on_panic`], whose documented contract is *"Called when the actor
+//! encounters a panic **or an error during 'tell' message handling**"*. The
+//! default `on_panic` returns `ControlFlow::Break(ActorStopReason::Panicked)`
+//! — **the actor stops**.
+//!
+//! In production (2026-09-15) a single transient Postgres pool-acquire
+//! timeout inside the `ProcessPendingDownloads` handler did exactly this:
+//! `db::list_videos_ready_for_download(...).map_err(|e| e.to_string())?`
+//! returned `Err`, kameo killed the supervisor, nothing restarted it, and
+//! downloads stopped for 27 hours with videos wedged in `pending`. The only
+//! trace was one line: `Download supervisor stopping | reason: Panicked {
+//! err: "Failed to connect to database: pool timed out ..." }`.
+//!
+//! So, concretely, for every `impl Message<M> for DownloadSupervisor` whose
+//! `type Reply` is a `Result`:
+//!
+//! - If **any** caller anywhere sends `M` via `tell()` (including
+//!   `try_send()` / `mailbox_timeout(..).send()`, which are all `tell`
+//!   flavours), the handler must handle its own failures — log, record
+//!   state, back off — and return `Ok`. A transient infrastructure fault
+//!   must degrade the *sweep*, never the *actor*.
+//! - If `M` is `ask()`-only, returning `Err` is legitimate (the caller gets
+//!   it back over the reply channel and can surface it), but the handler
+//!   must carry a doc comment saying so, because the constraint is invisible
+//!   at the definition site — it lives in the call sites of other crates.
+//!
+//! Current audit (see each handler's doc comment for detail):
+//!
+//! | Message                    | Reply                 | `tell`-reachable | Treatment |
+//! |----------------------------|-----------------------|------------------|-----------|
+//! | `ProcessPendingDownloads`  | `Result<usize, String>` | yes (`startup`, `scheduler`) | non-fatal, DB backoff |
+//! | `EnqueueDownload`          | `Result<(), String>`  | yes (`source_indexer`, `hof-api`, `hof-web`) | non-fatal, logs + `Ok` |
+//! | `CancelDownload`           | `Result<(), String>`  | no (`ask`-only)  | `Err` retained, documented `ask`-only |
+//!
+//! [`Actor::on_panic`]: kameo::actor::Actor::on_panic
 
 use std::collections::{HashMap, HashSet};
+use std::ops::ControlFlow;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use kameo::Reply;
 use kameo::prelude::*;
 use metrics::{counter, gauge};
@@ -64,6 +108,88 @@ const DEFAULT_MAX_CONCURRENT: usize = 3;
 /// `scheduler::TICK_SEND_TIMEOUT` / `cleanup::TICK_SEND_TIMEOUT`.
 const RESIZE_SEND_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Upper bound on the database-unavailability backoff, in seconds.
+///
+/// Ten minutes. The backoff exists to stop a `ProcessPendingDownloads` sweep
+/// from hammering a pool that is already exhausted (every sweep that waits
+/// out `acquire_timeout` and fails holds a waiter slot for the duration), not
+/// to give up. The clamp matters because the bound is also the worst-case
+/// recovery latency: once Postgres comes back, the scheduler's very next tick
+/// past this deadline resumes the sweep, so downloads restart within at most
+/// ten minutes of the database becoming healthy — with no operator action and
+/// no process restart.
+const DB_BACKOFF_MAX_SECS: u64 = 600;
+
+/// Backoff to apply after `consecutive_failures` consecutive failures of the
+/// `ProcessPendingDownloads` database query.
+///
+/// One-based: the *first* failure yields 1s, then 2s, 4s, 8s, ... doubling
+/// until clamped at [`DB_BACKOFF_MAX_SECS`]. `consecutive_failures == 0`
+/// (never produced by the caller, which increments before calling) is treated
+/// as the first failure rather than as "no backoff", so a future caller
+/// cannot accidentally disable the backoff by passing a zero.
+///
+/// Deliberately a free function over a plain `u32` rather than a method on
+/// `DownloadSupervisor`: the schedule is the part worth pinning down in a
+/// test, and a pure function can be tested without a pool, a runtime, or a
+/// spawned actor.
+///
+/// Overflow-free by construction: the shift is clamped to 63 before it is
+/// applied to a `u64`, and `checked_shl` covers the remainder, so a failure
+/// count of `u32::MAX` returns the clamp rather than panicking in debug
+/// builds or wrapping to a near-zero delay in release builds. That case is
+/// not hypothetical hygiene — a wrapped shift producing a 1-nanosecond
+/// backoff would restore exactly the tight-loop behaviour this guards.
+fn db_backoff(consecutive_failures: u32) -> Duration {
+    let shift = consecutive_failures.saturating_sub(1).min(63);
+    let secs = 1_u64.checked_shl(shift).unwrap_or(u64::MAX);
+    Duration::from_secs(secs.min(DB_BACKOFF_MAX_SECS))
+}
+
+/// Project a monotonic `tokio::time::Instant` onto the wall clock.
+///
+/// Needed only at the API boundary: `db_retry_after` is deliberately
+/// monotonic internally (immune to NTP steps and host suspend/resume), but
+/// `SupervisorStatus` is serialised for the HTTP API and rendered in the web
+/// UI, both of which need a `DateTime<Utc>`.
+///
+/// Computed as `now + remaining` rather than by any absolute correspondence
+/// between the two clocks, because none exists. Every step is fallible-safe:
+/// `saturating_duration_since` yields zero for an already-elapsed deadline
+/// (reported as "now", which is true — the backoff has expired),
+/// `Duration::from_std` cannot overflow for a bounded
+/// [`DB_BACKOFF_MAX_SECS`] window, and `checked_add_signed` degrades to
+/// "now" instead of panicking on a `DateTime` overflow.
+fn instant_to_wall_clock(instant: Instant) -> DateTime<Utc> {
+    let remaining = instant.saturating_duration_since(Instant::now());
+    chrono::Duration::from_std(remaining)
+        .ok()
+        .and_then(|d| Utc::now().checked_add_signed(d))
+        .unwrap_or_else(Utc::now)
+}
+
+/// Classify an [`ActorStopReason`] into a stable, low-cardinality label.
+///
+/// Exists so the `on_stop` log line can be filtered in Loki without parsing
+/// the `Debug` rendering of the reason: `stop_class="fault"` is an alert
+/// condition, `stop_class="graceful"` is a deploy. The 2026-09-15 incident
+/// was invisible for 27 hours precisely because the only signal was an
+/// `info!` line whose `reason` field happened to say `Panicked`.
+const fn stop_class(reason: &ActorStopReason) -> &'static str {
+    match reason {
+        ActorStopReason::Normal => "graceful",
+        ActorStopReason::Killed => "killed",
+        ActorStopReason::SupervisorRestart => "supervisor_restart",
+        ActorStopReason::Panicked(_) => "fault",
+        ActorStopReason::LinkDied { .. } => "link_died",
+        // `ActorStopReason` grows a `PeerDisconnected` variant under kameo's
+        // (non-default) `remote` feature. The catch-all keeps this compiling
+        // if that feature is ever switched on; it is unreachable today.
+        #[allow(unreachable_patterns)]
+        _ => "unknown",
+    }
+}
+
 /// The download supervisor actor.
 ///
 /// Manages concurrent downloads using a semaphore and handles retry logic
@@ -106,6 +232,22 @@ pub struct DownloadSupervisor {
     /// work" refusal path — see `dispatch_download` and
     /// `ProcessPendingDownloads`.
     drain: DrainToken,
+    /// Consecutive failures of the `ProcessPendingDownloads` database query.
+    /// Reset to zero by the first success. Drives `db_backoff`.
+    db_failures: u32,
+    /// Earliest instant at which the next `ProcessPendingDownloads` sweep may
+    /// touch the database again. `None` means "healthy, sweep freely".
+    ///
+    /// A `tokio::time::Instant` (monotonic) rather than a `DateTime<Utc>`
+    /// because it gates a *duration since the last failure*, which must not
+    /// be perturbed by a wall-clock step (NTP correction, host suspend/resume
+    /// — the latter routine for this workload). The wall-clock projection
+    /// needed by the API lives only at the `GetSupervisorStatus` boundary.
+    db_retry_after: Option<Instant>,
+    /// The most recent database error that forced a sweep to be skipped,
+    /// surfaced through `SupervisorStatus` so the UI can say *why* nothing is
+    /// downloading instead of silently showing an idle queue.
+    last_db_error: Option<String>,
 }
 
 impl std::fmt::Debug for DownloadSupervisor {
@@ -113,6 +255,7 @@ impl std::fmt::Debug for DownloadSupervisor {
         f.debug_struct("DownloadSupervisor")
             .field("active_downloads", &self.active_downloads.len())
             .field("rate_limit_backoff", &self.rate_limit_backoff_multiplier)
+            .field("db_failures", &self.db_failures)
             .finish_non_exhaustive()
     }
 }
@@ -161,6 +304,9 @@ impl Actor for DownloadSupervisor {
             max_attempts: args.config.max_attempts,
             broadcaster: args.broadcaster,
             drain: args.drain,
+            db_failures: 0,
+            db_retry_after: None,
+            last_db_error: None,
         };
 
         // Reactively resize the semaphore whenever the concurrency cap
@@ -204,16 +350,49 @@ impl Actor for DownloadSupervisor {
         Ok(supervisor)
     }
 
+    /// Log the death and tear down in-flight workers.
+    ///
+    /// The log is deliberately split by severity. A graceful stop (deploy,
+    /// shutdown, operator `kill`) is `info!`; anything else — a fault, a dead
+    /// link — is `error!`, and both carry a `stop_class` field (see
+    /// [`stop_class`]) so the two are separable in Loki by label rather than
+    /// by substring-matching a `Debug` rendering.
+    ///
+    /// This asymmetry is the whole point: during the 2026-09-15 incident the
+    /// supervisor's death was recorded, correctly, with the reason attached —
+    /// but at `info!`, indistinguishable at a glance from the dozens of
+    /// benign restart lines around it. Nothing alerted, and nobody read it
+    /// for 27 hours. A fault must announce itself as a fault.
     async fn on_stop(
         &mut self,
         _actor_ref: WeakActorRef<Self>,
         reason: ActorStopReason,
     ) -> Result<(), Self::Error> {
-        info!(
-            reason = ?reason,
-            active_downloads = self.active_downloads.len(),
-            "Download supervisor stopping"
-        );
+        let class = stop_class(&reason);
+        let graceful = matches!(reason, ActorStopReason::Normal | ActorStopReason::Killed);
+
+        if graceful {
+            info!(
+                actor = "DownloadSupervisor",
+                stop_class = class,
+                reason = ?reason,
+                active_downloads = self.active_downloads.len(),
+                dispatching = self.dispatching.len(),
+                "Download supervisor stopping"
+            );
+        } else {
+            error!(
+                actor = "DownloadSupervisor",
+                stop_class = class,
+                reason = ?reason,
+                active_downloads = self.active_downloads.len(),
+                dispatching = self.dispatching.len(),
+                consecutive_db_failures = self.db_failures,
+                last_db_error = self.last_db_error.as_deref().unwrap_or("none"),
+                "Download supervisor stopping ABNORMALLY; no new downloads will \
+                 be dispatched until it is restarted"
+            );
+        }
 
         // Stop all active workers
         for (video_id, worker_ref) in self.active_downloads.drain() {
@@ -223,6 +402,45 @@ impl Actor for DownloadSupervisor {
         self.dispatching.clear();
 
         Ok(())
+    }
+
+    /// Log the fault that is about to stop this actor, then stop.
+    ///
+    /// Kameo routes two distinct things through `on_panic`: a genuine
+    /// unwinding panic in a handler (`PanicReason::HandlerPanic`) and an
+    /// `Err` returned from a handler invoked by `tell()`
+    /// (`PanicReason::OnMessage`) — see the module-level invariant. The
+    /// second is the 2026-09-15 bug class, and distinguishing them in the log
+    /// is the difference between "we have a real panic to debug" and "a
+    /// handler broke the `tell`/`Err` invariant".
+    ///
+    /// The stop behaviour is *unchanged* from kameo's default
+    /// (`ControlFlow::Break`). Restarting is not this hook's job: swallowing
+    /// the fault here with `ControlFlow::Continue` would keep a possibly
+    /// inconsistent actor alive and hide the fault from the supervision tree,
+    /// which owns restart policy. This override exists purely so that the
+    /// next fault names itself.
+    async fn on_panic(
+        &mut self,
+        _actor_ref: WeakActorRef<Self>,
+        err: PanicError,
+    ) -> Result<ControlFlow<ActorStopReason>, Self::Error> {
+        error!(
+            actor = "DownloadSupervisor",
+            panic_reason = ?err.reason(),
+            is_real_panic = err.is_panic(),
+            error = %err,
+            error_detail = ?err,
+            active_downloads = self.active_downloads.len(),
+            dispatching = self.dispatching.len(),
+            consecutive_db_failures = self.db_failures,
+            last_db_error = self.last_db_error.as_deref().unwrap_or("none"),
+            "Download supervisor FAULTED and is stopping; a handler either \
+             panicked or returned Err from a tell-delivered message (see the \
+             tell/Err invariant in this module's docs)"
+        );
+
+        Ok(ControlFlow::Break(ActorStopReason::Panicked(err)))
     }
 }
 
@@ -235,16 +453,50 @@ pub struct EnqueueDownload {
 }
 
 impl Message<EnqueueDownload> for DownloadSupervisor {
+    /// `Result` is retained for source compatibility with the `ask` call
+    /// sites in the tests, but this handler is **infallible by
+    /// construction** — see the `handle` doc comment.
     type Reply = Result<(), String>;
 
+    /// Accept a video for dispatch.
+    ///
+    /// # This handler must never return `Err`
+    ///
+    /// `EnqueueDownload` is the most widely `tell`-delivered message on this
+    /// actor — `source_indexer` fires one per newly discovered video, and
+    /// `hof-api`/`hof-web` fire them from manual retry/download actions, six
+    /// `tell` sites in all and not one `ask` in production code. Per the
+    /// module-level invariant, a single `Err` from any of those would be
+    /// escalated by kameo to `on_panic` and would stop the supervisor,
+    /// killing *all* downloading — from a fault affecting one video.
+    ///
+    /// `dispatch_download` happens to have no failing path today (every
+    /// refusal it makes — paused, draining, ineligible, already dispatching —
+    /// is deliberately `Ok`, see its doc comment), so this is currently a
+    /// latent rather than live instance of the 2026-09-15 bug. The guard
+    /// below is here precisely so it stays latent: it converts any `Err` a
+    /// future edit of `dispatch_download` introduces into a logged,
+    /// per-video failure instead of an actor death. Do not "simplify" it back
+    /// into `self.dispatch_download(..).await`.
     #[instrument(skip_all, fields(video_id = %msg.video.id))]
     async fn handle(
         &mut self,
         msg: EnqueueDownload,
         ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
+        let video_id = msg.video.id;
         let supervisor_ref = ctx.actor_ref().clone();
-        self.dispatch_download(msg, supervisor_ref).await
+
+        if let Err(e) = self.dispatch_download(msg, supervisor_ref).await {
+            error!(
+                video_id = %video_id,
+                error = %e,
+                "Failed to dispatch enqueued download; dropping this enqueue \
+                 (supervisor stays alive — see the tell/Err invariant)"
+            );
+        }
+
+        Ok(())
     }
 }
 
@@ -435,8 +687,40 @@ impl Message<ReportOutcome> for DownloadSupervisor {
 pub struct ProcessPendingDownloads;
 
 impl Message<ProcessPendingDownloads> for DownloadSupervisor {
+    /// `Result` is kept for source compatibility with existing callers, but
+    /// this handler is **infallible by construction**: every return path is
+    /// `Ok`. See the handler body and the module-level `tell`/`Err`
+    /// invariant.
     type Reply = Result<usize, String>;
 
+    /// Sweep the `pending`/retry-ready backlog and dispatch what is eligible.
+    ///
+    /// # This handler must never return `Err`
+    ///
+    /// `ProcessPendingDownloads` is delivered exclusively by `tell()` — from
+    /// `startup::run` (the one-shot catch-up sweep on boot) and from the
+    /// scheduler's periodic tick. Per the module-level invariant, an `Err`
+    /// from a `tell`-delivered handler is escalated by kameo to `on_panic`
+    /// and **stops the supervisor**. On 2026-09-15 a single transient
+    /// pool-acquire timeout here did exactly that and downloads stayed dead
+    /// for 27 hours. Every failure path below therefore logs, records state,
+    /// and returns `Ok`.
+    ///
+    /// # Degradation strategy
+    ///
+    /// A database failure is treated as *the sweep is impossible right now*,
+    /// never as *this actor is broken*. Failures are counted, and the next
+    /// `db_backoff(count)` window is skipped outright without touching the
+    /// pool — deliberately, because the failure mode we actually hit is pool
+    /// *exhaustion*: each sweep that waits out `acquire_timeout` and fails
+    /// occupies a waiter slot for the whole timeout, so retrying at full
+    /// scheduler cadence actively prolongs the outage it is reacting to. One
+    /// success clears the counter and the window, so recovery needs no
+    /// operator action.
+    ///
+    /// The return value is the number of videos found and processed by a
+    /// complete sweep, `0` for a skipped or failed sweep, and the number
+    /// dispatched so far for a sweep that aborted partway.
     #[instrument(skip_all)]
     async fn handle(
         &mut self,
@@ -456,10 +740,36 @@ impl Message<ProcessPendingDownloads> for DownloadSupervisor {
             return Ok(0);
         }
 
-        // Get all videos ready for download
-        let videos = db::list_videos_ready_for_download(&self.pool)
-            .await
-            .map_err(|e| e.to_string())?;
+        // Database-unavailability backoff gate. Checked before the pause gate
+        // would matter and before any pool access, so a sweep inside the
+        // backoff window costs nothing at all — no connection acquire, no
+        // waiter slot held on an already-exhausted pool.
+        if let Some(until) = self.db_retry_after {
+            let now = Instant::now();
+            if now < until {
+                debug!(
+                    consecutive_db_failures = self.db_failures,
+                    retry_in_secs = until.saturating_duration_since(now).as_secs(),
+                    last_db_error = self.last_db_error.as_deref().unwrap_or("none"),
+                    "Skipping pending-downloads sweep: database backoff active"
+                );
+                return Ok(0);
+            }
+        }
+
+        // Get all videos ready for download.
+        let videos = match db::list_videos_ready_for_download(&self.pool).await {
+            Ok(videos) => {
+                self.note_db_recovered();
+                videos
+            }
+            Err(e) => {
+                // THE FIX. This used to be `.map_err(|e| e.to_string())?`,
+                // which killed the actor (see this handler's doc comment).
+                self.note_db_failure("list_videos_ready_for_download", &e.to_string());
+                return Ok(0);
+            }
+        };
 
         let count = videos.len();
         if count == 0 {
@@ -473,25 +783,51 @@ impl Message<ProcessPendingDownloads> for DownloadSupervisor {
         // This is a simplified version - in a full implementation we'd
         // look up the profile through the source linkage
         let supervisor_ref = ctx.actor_ref().clone();
+        let mut dispatched = 0_usize;
         for video in videos {
+            let video_id = video.id;
+
+            // The three lookups below all follow ids that a foreign key
+            // already guarantees resolve (`source_ids` comes from the join
+            // table, `source.profile_id` from a FK-constrained column), so a
+            // failure here means infrastructure, not data — the same pool
+            // that just succeeded above has gone away mid-sweep. Aborting the
+            // rest of the sweep and entering backoff is therefore right
+            // (matching the pre-fix control flow, which `?`-returned here),
+            // and is strictly better than continuing to issue N more doomed
+            // queries. What changed is only the *reply*: `Ok(dispatched)`
+            // instead of an actor-killing `Err`.
+
             // Get the source(s) for this video to find the profile
-            let source_ids = db::get_sources_for_video(&self.pool, video.id)
-                .await
-                .map_err(|e| e.to_string())?;
+            let source_ids = match db::get_sources_for_video(&self.pool, video_id).await {
+                Ok(ids) => ids,
+                Err(e) => {
+                    self.note_db_failure("get_sources_for_video", &e.to_string());
+                    return Ok(dispatched);
+                }
+            };
 
             let Some(&first_source_id) = source_ids.first() else {
-                warn!(video_id = %video.id, "Video has no linked sources, skipping");
+                warn!(video_id = %video_id, "Video has no linked sources, skipping");
                 continue;
             };
 
             // Get the first source's profile (in a real app, might need better logic)
-            let source = db::get_source(&self.pool, first_source_id)
-                .await
-                .map_err(|e| e.to_string())?;
+            let source = match db::get_source(&self.pool, first_source_id).await {
+                Ok(source) => source,
+                Err(e) => {
+                    self.note_db_failure("get_source", &e.to_string());
+                    return Ok(dispatched);
+                }
+            };
 
-            let profile = db::get_profile(&self.pool, source.profile_id)
-                .await
-                .map_err(|e| e.to_string())?;
+            let profile = match db::get_profile(&self.pool, source.profile_id).await {
+                Ok(profile) => profile,
+                Err(e) => {
+                    self.note_db_failure("get_profile", &e.to_string());
+                    return Ok(dispatched);
+                }
+            };
 
             // Dispatch inline (not via the mailbox) so the whole backlog is
             // processed even when it exceeds the bounded mailbox capacity.
@@ -507,6 +843,8 @@ impl Message<ProcessPendingDownloads> for DownloadSupervisor {
                 .await
             {
                 warn!(error = %e, "Failed to dispatch pending download");
+            } else {
+                dispatched = dispatched.saturating_add(1);
             }
         }
 
@@ -529,6 +867,24 @@ pub struct SupervisorStatus {
     pub dispatching: usize,
     pub available_permits: usize,
     pub rate_limit_backoff: u32,
+    /// Wall-clock instant until which the `ProcessPendingDownloads` sweep is
+    /// backing off from the database, or `None` when the database is healthy.
+    ///
+    /// Wall clock, not the monotonic `Instant` the actor stores internally,
+    /// because this crosses an API/UI boundary where "in 4 minutes" has to be
+    /// rendered against the reader's clock. The projection is computed from
+    /// the *remaining* duration at the moment of the read (see
+    /// `instant_to_wall_clock`), so it is accurate when read and is not
+    /// expected to be stable across reads.
+    pub db_backoff_until: Option<DateTime<Utc>>,
+    /// Consecutive `ProcessPendingDownloads` database failures; `0` when
+    /// healthy. Non-zero with an empty queue is the signal that distinguishes
+    /// "nothing to download" from "cannot see what to download" — the
+    /// ambiguity that made the 2026-09-15 outage invisible in the UI.
+    pub consecutive_db_failures: u32,
+    /// Message from the most recent database failure, retained until the next
+    /// success so the UI can explain the stall rather than just report it.
+    pub last_db_error: Option<String>,
 }
 
 impl Message<GetSupervisorStatus> for DownloadSupervisor {
@@ -539,21 +895,33 @@ impl Message<GetSupervisorStatus> for DownloadSupervisor {
         _msg: GetSupervisorStatus,
         _ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
-        SupervisorStatus {
-            active_downloads: self.active_downloads.len(),
-            dispatching: self.dispatching.len(),
-            available_permits: self.semaphore.available_permits(),
-            rate_limit_backoff: self.rate_limit_backoff_multiplier,
-        }
+        self.status_snapshot()
     }
 }
 
 /// Cancel an active or pending download.
+///
+/// # `ask`-only — never send this with `tell`
+///
+/// Unlike the other two `Result`-replying messages on this actor, this one
+/// keeps a meaningful `Err`: all four call sites (`hof-api`'s single and bulk
+/// cancel routes, `hof-web`'s two cancel handlers) use `ask` and surface the
+/// error to the operator who clicked cancel, so swallowing it would silently
+/// report success for a cancellation that did not happen.
+///
+/// That makes the `tell` prohibition load-bearing rather than advisory: per
+/// the module-level invariant, a `tell(CancelDownload { .. })` whose DB write
+/// failed would be escalated to `on_panic` and would stop the supervisor,
+/// turning one failed cancel into a total downloading outage. If a
+/// fire-and-forget cancel is ever genuinely wanted, do not reach for `tell`
+/// here — add a separate message whose handler logs and returns `Ok`.
 pub struct CancelDownload {
     pub video_id: Ulid,
 }
 
 impl Message<CancelDownload> for DownloadSupervisor {
+    /// A real, caller-visible `Result`. Legitimate only because this message
+    /// is `ask`-only; see [`CancelDownload`].
     type Reply = Result<(), String>;
 
     #[instrument(skip_all, fields(video_id = %msg.video_id))]
@@ -615,6 +983,75 @@ impl Message<NotifyRateLimited> for DownloadSupervisor {
 }
 
 impl DownloadSupervisor {
+    /// Record a failed database access from the `ProcessPendingDownloads`
+    /// sweep, arm the backoff window, and log it.
+    ///
+    /// `operation` names the `db::` call that failed so the log distinguishes
+    /// "could not even list the backlog" from "lost the pool partway through
+    /// dispatching it" — different blast radii, same remedy.
+    ///
+    /// This is the *entire* replacement for what used to be a `?`. It
+    /// deliberately returns `()` rather than anything `?`-able, so that no
+    /// future edit can accidentally reintroduce an actor-killing early return
+    /// through it.
+    fn note_db_failure(&mut self, operation: &str, error: &str) {
+        self.db_failures = self.db_failures.saturating_add(1);
+        let backoff = db_backoff(self.db_failures);
+        // `checked_add` rather than `+`: `Instant` addition can overflow the
+        // underlying representation, and a panic here would be the very
+        // failure mode this function exists to prevent. Falling back to the
+        // un-armed state just means the next sweep retries immediately.
+        self.db_retry_after = Instant::now().checked_add(backoff);
+        self.last_db_error = Some(error.to_owned());
+
+        warn!(
+            operation,
+            error,
+            consecutive_db_failures = self.db_failures,
+            retry_in_secs = backoff.as_secs(),
+            "Pending-downloads sweep failed on a database error; backing off \
+             (supervisor stays alive — see the tell/Err invariant)"
+        );
+    }
+
+    /// Clear the database backoff state after a successful access.
+    ///
+    /// Logs at `info!` only on an actual recovery (i.e. when there was
+    /// something to clear), so the healthy path stays silent while the
+    /// outage-ended transition is recorded exactly once.
+    fn note_db_recovered(&mut self) {
+        if self.db_failures > 0 {
+            info!(
+                previous_consecutive_failures = self.db_failures,
+                last_db_error = self.last_db_error.as_deref().unwrap_or("none"),
+                "Database recovered; resuming pending-downloads sweeps"
+            );
+        }
+        self.db_failures = 0;
+        self.db_retry_after = None;
+        self.last_db_error = None;
+    }
+
+    /// Project the supervisor's current state into the status shape the API
+    /// and web panel read.
+    ///
+    /// Deliberately a plain method on `&self` rather than inline in the
+    /// `GetSupervisorStatus` handler: a `Context` cannot be constructed
+    /// outside kameo, so a handler-only projection is unreachable from a unit
+    /// test. Keeping it here lets tests assert on exactly what the UI will
+    /// render without spawning an actor.
+    fn status_snapshot(&self) -> SupervisorStatus {
+        SupervisorStatus {
+            active_downloads: self.active_downloads.len(),
+            dispatching: self.dispatching.len(),
+            available_permits: self.semaphore.available_permits(),
+            rate_limit_backoff: self.rate_limit_backoff_multiplier,
+            db_backoff_until: self.db_retry_after.map(instant_to_wall_clock),
+            consecutive_db_failures: self.db_failures,
+            last_db_error: self.last_db_error.clone(),
+        }
+    }
+
     /// Dispatch a single video for download.
     ///
     /// Shared by the `EnqueueDownload` message handler and the
@@ -1043,6 +1480,286 @@ mod tests {
         assert_eq!(base * 2u64.pow(4), 1920); // 32 min
         assert_eq!((base * 2u64.pow(5)).min(max), 3840); // 64 min (capped)
         assert_eq!((base * 2u64.pow(6)).min(max), 3840); // still capped
+    }
+
+    // ========================================================================
+    // Database-unavailability backoff (the 2026-09-15 incident).
+    // ========================================================================
+
+    #[test]
+    fn db_backoff_doubles_then_clamps() {
+        // One-based: the first failure already backs off, and it backs off by
+        // the smallest useful amount rather than waiting out a long window
+        // for what is usually a one-off blip.
+        assert_eq!(db_backoff(1), Duration::from_secs(1));
+        assert_eq!(db_backoff(2), Duration::from_secs(2));
+        assert_eq!(db_backoff(3), Duration::from_secs(4));
+        assert_eq!(db_backoff(4), Duration::from_secs(8));
+        assert_eq!(db_backoff(5), Duration::from_secs(16));
+        assert_eq!(db_backoff(6), Duration::from_secs(32));
+
+        // 2^9 = 512 < 600 is the last uncapped step; 2^10 = 1024 clamps.
+        assert_eq!(db_backoff(10), Duration::from_secs(512));
+        assert_eq!(db_backoff(11), Duration::from_secs(DB_BACKOFF_MAX_SECS));
+        assert_eq!(db_backoff(12), Duration::from_secs(DB_BACKOFF_MAX_SECS));
+
+        // Zero is never produced by `note_db_failure` (which increments
+        // first), but must not read as "no backoff" if some future caller
+        // passes it.
+        assert_eq!(db_backoff(0), Duration::from_secs(1));
+    }
+
+    #[test]
+    fn db_backoff_does_not_overflow_on_absurd_failure_counts() {
+        // A naive `1u64 << (n - 1)` panics in debug and wraps in release well
+        // before these counts. Wrapping is the dangerous outcome: a
+        // near-zero backoff silently restores the tight retry loop against an
+        // already-exhausted pool.
+        for n in [63_u32, 64, 65, 1_000, u32::MAX - 1, u32::MAX] {
+            assert_eq!(
+                db_backoff(n),
+                Duration::from_secs(DB_BACKOFF_MAX_SECS),
+                "db_backoff({n}) must clamp, not overflow"
+            );
+        }
+    }
+
+    #[test]
+    fn stop_class_separates_faults_from_graceful_stops() {
+        assert_eq!(stop_class(&ActorStopReason::Normal), "graceful");
+        assert_eq!(stop_class(&ActorStopReason::Killed), "killed");
+        assert_eq!(
+            stop_class(&ActorStopReason::SupervisorRestart),
+            "supervisor_restart"
+        );
+        assert_eq!(
+            stop_class(&ActorStopReason::Panicked(PanicError::new(
+                Box::new("pool timed out".to_owned()),
+                PanicReason::OnMessage,
+            ))),
+            "fault"
+        );
+    }
+
+    #[test]
+    fn instant_to_wall_clock_projects_forwards_and_saturates() {
+        let before = Utc::now();
+        let projected = instant_to_wall_clock(
+            Instant::now()
+                .checked_add(Duration::from_mins(2))
+                .expect("Instant::now() + 120s is representable"),
+        );
+        // ~2 minutes out, with generous slack for a slow CI scheduler.
+        let delta = projected.signed_duration_since(before).num_seconds();
+        assert!(
+            (115..=125).contains(&delta),
+            "expected ~120s in the future, got {delta}s"
+        );
+
+        // An already-expired deadline reports "now", not a past timestamp
+        // from an underflowed subtraction.
+        let expired = instant_to_wall_clock(
+            Instant::now()
+                .checked_sub(Duration::from_mins(1))
+                .expect("Instant::now() - 60s is representable in a live runtime"),
+        );
+        assert!(expired >= before);
+        assert!(expired <= Utc::now());
+    }
+
+    /// A `PgPool` that is guaranteed to fail every query, with no live
+    /// database anywhere in sight.
+    ///
+    /// `connect_lazy` builds the pool without dialing, and `close()` then
+    /// makes every subsequent `acquire()` fail immediately with
+    /// `PoolClosed`. That is the same *shape* of failure as the production
+    /// `PoolTimedOut` — a `DbError` out of the `db::` layer, before any SQL
+    /// runs — but it is instantaneous and deterministic, which is why these
+    /// tests need neither a database nor an `#[ignore]`.
+    async fn unusable_pool() -> PgPool {
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .acquire_timeout(Duration::from_millis(1))
+            .connect_lazy("postgres://hof-test-unreachable/hof")
+            .expect("a syntactically valid URL builds a lazy pool without connecting");
+        pool.close().await;
+        pool
+    }
+
+    /// Default (nothing paused) runtime settings channel.
+    ///
+    /// Returns the sender too: the caller must keep it bound for the
+    /// supervisor's lifetime, or the resize watcher spawned in `on_start`
+    /// sees a closed channel and exits. Matches the
+    /// `let (_settings_tx, config_rx) = ...` shape of the tests below.
+    fn default_settings_channel() -> (
+        watch::Sender<Arc<EffectiveSettings>>,
+        watch::Receiver<Arc<EffectiveSettings>>,
+    ) {
+        use crate::db::RuntimeSettingsRow;
+        use crate::runtime_config::{EnvOverrides, resolve};
+
+        watch::channel(Arc::new(resolve(
+            &RuntimeSettingsRow::default(),
+            &EnvOverrides::default(),
+        )))
+    }
+
+    /// Build (but do not spawn) a `DownloadSupervisor` for tests that need to
+    /// drive its private bookkeeping directly.
+    ///
+    /// Spawning would only let us reach that bookkeeping through a message,
+    /// and there is no message that *injects* failure state — so the
+    /// recovery transition would be untestable against the real methods.
+    async fn unspawned_supervisor(
+        pool: PgPool,
+        config_rx: watch::Receiver<Arc<EffectiveSettings>>,
+    ) -> DownloadSupervisor {
+        let ytdlp = Arc::new(
+            YtdlpClient::new("yt-dlp", None, std::path::Path::new("/tmp"))
+                .await
+                .expect("YtdlpClient::new is path-only construction and cannot fail here"),
+        );
+        let (progress_tx, _progress_rx) = mpsc::channel(10);
+
+        DownloadSupervisor {
+            pool,
+            ytdlp,
+            semaphore: Arc::new(Semaphore::new(2)),
+            permits_total: 2,
+            config_rx,
+            last_download_start: None,
+            rate_limit_backoff_multiplier: 1,
+            active_downloads: HashMap::new(),
+            dispatching: HashSet::new(),
+            progress_tx,
+            download_timeout: Duration::from_hours(1),
+            max_attempts: 3,
+            broadcaster: ActivityBroadcaster::new(),
+            drain: DrainToken::new(),
+            db_failures: 0,
+            db_retry_after: None,
+            last_db_error: None,
+        }
+    }
+
+    /// REGRESSION TEST for the 2026-09-15 27-hour download outage.
+    ///
+    /// A transient `db::` failure inside `ProcessPendingDownloads` used to be
+    /// returned as `Err`. Because both callers deliver that message with
+    /// `tell()`, kameo escalated the `Err` to `on_panic` and stopped the
+    /// supervisor; nothing restarted it and downloads stayed dead until the
+    /// process was restarted by hand.
+    ///
+    /// The two assertions below are the whole incident:
+    ///   (a) the sweep degrades to `Ok(0)` instead of `Err`, and
+    ///   (b) the actor is still alive to try again on the next tick.
+    ///
+    /// This test fails on the pre-fix code: `ask` surfaces the `Err` and (a)
+    /// trips. Note that it is sent with `ask`, not `tell`, purely so the
+    /// reply is observable — the failure mode under test is a property of the
+    /// *handler's return value*, and `tell` would give us nothing to assert
+    /// on (b) beyond a race against the actor's own death.
+    #[tokio::test]
+    async fn process_pending_downloads_survives_database_failure() {
+        let (_settings_tx, config_rx) = default_settings_channel();
+        let supervisor =
+            spawn_test_supervisor(unusable_pool().await, config_rx, DrainToken::new()).await;
+
+        let processed = supervisor
+            .ask(ProcessPendingDownloads)
+            .await
+            .expect("a database failure must NOT be reported as an Err reply");
+        assert_eq!(processed, 0, "a failed sweep dispatches nothing");
+
+        assert!(
+            supervisor.is_alive(),
+            "THE BUG: a transient database error must not kill the download \
+             supervisor — this is the 27-hour outage of 2026-09-15"
+        );
+
+        // Still alive means still serving messages, not merely un-reaped.
+        let status = supervisor
+            .ask(GetSupervisorStatus)
+            .await
+            .expect("a live supervisor still answers GetSupervisorStatus");
+        assert_eq!(status.consecutive_db_failures, 1);
+        assert!(status.db_backoff_until.is_some());
+        assert!(
+            status.last_db_error.is_some_and(|e| !e.is_empty()),
+            "the UI needs the reason the queue is stalled, not just that it is"
+        );
+    }
+
+    /// Repeated failures accumulate, and the backoff window suppresses the
+    /// sweeps in between — each of them still non-fatally.
+    #[tokio::test]
+    async fn repeated_database_failures_back_off_without_dying() {
+        let (_settings_tx, config_rx) = default_settings_channel();
+        let supervisor =
+            spawn_test_supervisor(unusable_pool().await, config_rx, DrainToken::new()).await;
+
+        for _ in 0..5_u32 {
+            assert_eq!(
+                supervisor
+                    .ask(ProcessPendingDownloads)
+                    .await
+                    .expect("every sweep replies Ok, however many have failed"),
+                0
+            );
+            assert!(supervisor.is_alive());
+        }
+
+        let status = supervisor
+            .ask(GetSupervisorStatus)
+            .await
+            .expect("GetSupervisorStatus");
+        // Only the first sweep reached the pool; the remaining four were
+        // skipped by the 1s backoff armed by that first failure, which is the
+        // behaviour that stops a failing sweep from monopolising pool waiter
+        // slots. So the counter is 1, not 5.
+        assert_eq!(
+            status.consecutive_db_failures, 1,
+            "sweeps inside the backoff window must not touch the pool at all"
+        );
+        assert!(status.db_backoff_until.is_some());
+    }
+
+    /// A success after failures clears the counter and the backoff window,
+    /// so recovery needs no operator action and no process restart.
+    ///
+    /// Drives the real `note_db_failure`/`note_db_recovered` on a real (if
+    /// unspawned) `DownloadSupervisor`, rather than a pool made to fail and
+    /// then succeed: a live pool cannot be flipped from broken to healthy
+    /// in-process, and the state transition is the contract under test.
+    #[tokio::test]
+    async fn db_success_resets_failure_state() {
+        let (_settings_tx, config_rx) = default_settings_channel();
+        let mut supervisor = unspawned_supervisor(unusable_pool().await, config_rx).await;
+
+        supervisor.note_db_failure("list_videos_ready_for_download", "pool timed out");
+        assert_eq!(supervisor.db_failures, 1);
+        supervisor.note_db_failure("list_videos_ready_for_download", "pool timed out");
+        supervisor.note_db_failure("get_source", "pool timed out");
+        assert_eq!(supervisor.db_failures, 3);
+        assert!(supervisor.db_retry_after.is_some());
+        assert_eq!(supervisor.last_db_error.as_deref(), Some("pool timed out"));
+
+        supervisor.note_db_recovered();
+        assert_eq!(
+            supervisor.db_failures, 0,
+            "one success must reset the schedule to 1s, not resume mid-ramp"
+        );
+        assert!(
+            supervisor.db_retry_after.is_none(),
+            "a stale backoff deadline would keep suppressing sweeps after recovery"
+        );
+        assert!(supervisor.last_db_error.is_none());
+
+        // And the status projection agrees, since that is what the UI reads.
+        let status = supervisor.status_snapshot();
+        assert_eq!(status.consecutive_db_failures, 0);
+        assert!(status.db_backoff_until.is_none());
+        assert!(status.last_db_error.is_none());
     }
 
     #[test]
