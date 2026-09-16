@@ -566,10 +566,13 @@ mod tests {
         for (label, patch) in cases {
             let result = patch_runtime_settings(&pool, &patch).await;
             let code = match &result {
-                Err(DbError::ConnectionError(sqlx_err)) => sqlx_err
+                // Variant-agnostic on purpose: a CHECK violation is a
+                // `QueryError`, but asserting on the SQLSTATE should not be
+                // coupled to how `classify` buckets the error.
+                Err(e) => e
                     .as_database_error()
                     .and_then(sqlx::error::DatabaseError::code),
-                _ => None,
+                Ok(_) => None,
             };
             // Postgres SQLSTATE 23514 is `check_violation`; matching on it
             // (rather than just "some sqlx error") rules out the failure
