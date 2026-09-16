@@ -5,6 +5,7 @@
 //! renders from one shared [`PanelView`] that the page handler assembles once,
 //! so no section re-queries the database or re-asks an actor.
 
+pub(crate) mod actors;
 pub(crate) mod drain;
 pub(crate) mod pause;
 pub(crate) mod settings_table;
@@ -21,6 +22,7 @@ use chrono::{DateTime, Utc};
 use hof_api::AppState;
 use hof_core::actors::cleanup::{CleanupStatus, GetCleanupStatus};
 use hof_core::actors::download_supervisor::{GetSupervisorStatus, SupervisorStatus};
+use hof_core::actors::root_supervisor::{ActorHealthReport, GetActorHealth};
 use hof_core::actors::scheduler::{GetSchedulerStatus, MIN_INDEX_INTERVAL_SECS, SchedulerStatus};
 use hof_core::db::{self, RuntimeSettingsRow};
 use hof_core::runtime_config::{EffectiveSettings, Provenance, YTDLP_COMMAND_TIMEOUT};
@@ -38,6 +40,10 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/settings/runtime/pause", post(pause::pause_submit))
         .route("/settings/runtime/resume", post(pause::resume_submit))
         .route("/settings/runtime/shutdown", post(drain::shutdown_submit))
+        .route(
+            "/settings/runtime/restart/{name}",
+            post(actors::restart_submit),
+        )
 }
 
 /// Everything the four panel sections render from, gathered once per request.
@@ -59,6 +65,13 @@ pub(crate) struct PanelView {
     pub(crate) supervisor: Option<SupervisorStatus>,
     pub(crate) scheduler: Option<SchedulerStatus>,
     pub(crate) cleanup: Option<CleanupStatus>,
+    /// Per-actor liveness and restart history from the root supervisor.
+    ///
+    /// Empty — not `None` — when the root supervisor itself did not answer,
+    /// which the Actors section renders as its own (loud) failure rather than
+    /// as an empty list. Nothing supervises the root supervisor, so that case
+    /// is strictly worse than a dead child.
+    pub(crate) actor_health: Vec<ActorHealthReport>,
     /// Read-only timings (design 7.1): compiled-in or env-derived, displayed
     /// with a `default`/`env` badge but not runtime-mutable.
     pub(crate) download_timeout: Duration,
@@ -86,11 +99,12 @@ async fn runtime_page(
     let now = Utc::now();
     let settings = state.runtime_config.current();
 
-    let (row_result, supervisor, scheduler, cleanup) = tokio::join!(
+    let (row_result, supervisor, scheduler, cleanup, actor_health) = tokio::join!(
         db::get_runtime_settings(&state.pool),
         state.supervisor.ask(GetSupervisorStatus),
         state.scheduler.ask(GetSchedulerStatus),
         state.cleanup.ask(GetCleanupStatus),
+        state.root_supervisor.ask(GetActorHealth),
     );
 
     let row = match row_result {
@@ -112,6 +126,10 @@ async fn runtime_page(
         supervisor: supervisor.ok(),
         scheduler: scheduler.ok(),
         cleanup: cleanup.ok(),
+        // A failed ask degrades to an empty list, matching how the four
+        // status asks above degrade to `None`: one silent actor never fails
+        // the page that exists to report on it.
+        actor_health: actor_health.unwrap_or_default(),
         download_timeout: state.download_timeout,
         // Presence is not enough: `DownloadConfig::from_env` PARSES this var
         // and silently falls back to the compiled-in default on any non-`u64`
@@ -138,6 +156,7 @@ async fn runtime_page(
         NavItem::Runtime,
         flash,
         maud::html! {
+            (actors::section(&view))
             (pause::section(&view))
             (drain::section(&view))
             (settings_table::section(&view))

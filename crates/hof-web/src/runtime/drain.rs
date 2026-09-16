@@ -264,6 +264,9 @@ mod tests {
                 dispatching: 1,
                 available_permits: 0,
                 rate_limit_backoff: 0,
+                db_backoff_until: None,
+                consecutive_db_failures: 0,
+                last_db_error: None,
             }),
             scheduler: Some(SchedulerStatus {
                 running: true,
@@ -271,6 +274,7 @@ mod tests {
                 check_interval_secs: 60,
             }),
             cleanup: None,
+            actor_health: Vec::new(),
             download_timeout: Duration::from_hours(1),
             download_timeout_provenance: Provenance::Default,
             ytdlp_timeout: Duration::from_mins(5),
