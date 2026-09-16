@@ -190,6 +190,7 @@
         sqlx-cli
         sqruff
         tailwindcss_4
+        tokei
         yt-dlp
         # keep-sorted end
       ];
