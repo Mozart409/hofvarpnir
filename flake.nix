@@ -195,13 +195,14 @@
       ];
 
       linuxDevPackages = with pkgs; [
-        dbeaver-bin
+        # keep-sorted start
+        cachix
+        claude-code
+        opencode
         podman
         podman-compose
         trivy
-        opencode
-        claude-code
-        cachix
+        # keep-sorted end
       ];
 
       darwinDevPackages = with pkgs; [
