@@ -4,6 +4,7 @@
 //! and storage quotas. Videos are only deleted when all referencing sources
 //! agree the retention period has expired.
 
+use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -116,6 +117,43 @@ impl Actor for CleanupActor {
         info!(reason = ?reason, "Cleanup actor stopping");
         self.running = false;
         Ok(())
+    }
+
+    /// Log the fault that is about to stop this actor, then stop.
+    ///
+    /// Kameo escalates both a genuine unwinding panic in a handler and an
+    /// `Err` returned from a handler invoked by `tell()` to this hook (see
+    /// `download_supervisor`'s module docs for the full `tell`/`Err`
+    /// invariant this project relies on). The 2026-09 27-hour download
+    /// outage was exactly the second case going unnoticed: an actor died,
+    /// kameo's default `on_panic` logged nothing beyond a terse stop
+    /// message, and the failing readiness probe never triggered a recovery.
+    /// This override exists purely so the next fault names itself loudly and
+    /// with enough structure to grep in Loki (`service_name="hofvarpnir"`).
+    ///
+    /// The stop behaviour is *unchanged* from kameo's default
+    /// (`ControlFlow::Break`). Restarting is the supervision tree's job, not
+    /// this hook's — swallowing the fault here with `ControlFlow::Continue`
+    /// would keep a possibly inconsistent actor alive and hide the fault
+    /// from the supervisor that owns restart policy.
+    async fn on_panic(
+        &mut self,
+        _actor_ref: WeakActorRef<Self>,
+        err: PanicError,
+    ) -> Result<ControlFlow<ActorStopReason>, Self::Error> {
+        error!(
+            actor = "CleanupActor",
+            panic_reason = ?err.reason(),
+            is_real_panic = err.is_panic(),
+            error = %err,
+            error_detail = ?err,
+            running = self.running,
+            last_run_at = ?self.last_run_at,
+            "Cleanup actor FAULTED and is stopping; a handler either \
+             panicked or returned Err from a tell-delivered message"
+        );
+
+        Ok(ControlFlow::Break(ActorStopReason::Panicked(err)))
     }
 }
 

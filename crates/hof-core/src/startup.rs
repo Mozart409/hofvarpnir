@@ -15,30 +15,35 @@ use chrono::{DateTime, Utc};
 use color_eyre::eyre::{Result, WrapErr};
 use sqlx::PgPool;
 use tokio::sync::mpsc;
-use tokio::sync::watch;
 use tracing::{debug, error, info, warn};
 
-use crate::actors::cleanup::{CleanupActor, CleanupActorArgs, CleanupPartFiles};
+use crate::actors::cleanup::{CleanupActor, CleanupPartFiles};
 use crate::actors::download_supervisor::{
-    DownloadSupervisor, DownloadSupervisorArgs, GetSupervisorStatus, ProcessPendingDownloads,
+    DownloadSupervisor, GetSupervisorStatus, ProcessPendingDownloads,
 };
-use crate::actors::jellyfin_metadata::{JellyfinMetadataActor, JellyfinMetadataActorArgs};
-use crate::actors::scheduler::{GetSchedulerStatus, SchedulerActor, SchedulerArgs};
+use crate::actors::jellyfin_metadata::JellyfinMetadataActor;
+use crate::actors::root_supervisor::{ChildRefs, GetChildRefs, RootSupervisor, RootSupervisorArgs};
+use crate::actors::scheduler::{GetSchedulerStatus, SchedulerActor};
 use crate::config::Config;
 use crate::db;
 use crate::db::ActivityBroadcaster;
 use crate::domain::system::SystemIssue;
 use crate::domain::video::DownloadProgress;
-use crate::runtime_config::{DrainToken, EffectiveSettings, RuntimeConfig};
+use crate::liveness::LivenessFlag;
+use crate::runtime_config::{DrainToken, RuntimeConfig};
 use crate::ytdlp::YtdlpClient;
 
 use kameo::prelude::*;
 
-/// Shorthand for the live-settings receiver threaded into each actor's `Args`.
-type ConfigRx = watch::Receiver<Arc<EffectiveSettings>>;
-
 /// Actors created during startup.
 pub struct ActorSystem {
+    /// The root supervisor, parent of the four singleton actors below. Held
+    /// separately because it answers questions no child ref can: *why* a
+    /// child died, and whether it can be restarted in-process (see
+    /// `actors::root_supervisor`). The child refs below stay valid across a
+    /// restart the root supervisor performs — kameo re-targets them — so
+    /// they remain the right handle for ordinary use.
+    pub root_supervisor: ActorRef<RootSupervisor>,
     /// The download supervisor (manages concurrent downloads).
     pub supervisor: ActorRef<DownloadSupervisor>,
     /// The scheduler (triggers source indexing).
@@ -59,6 +64,10 @@ pub struct ActorSystem {
     /// dispatch/indexing work and, once the system reaches quiescence (or
     /// `drain_timeout` elapses), signals `main`'s shutdown select arm.
     pub drain: DrainToken,
+    /// Shared liveness flag backing `GET /api/health/live`. Written by the
+    /// watchdog task, read by the probe handler without touching an actor
+    /// mailbox (see `crate::watchdog` and `crate::liveness`).
+    pub liveness: LivenessFlag,
 }
 
 /// Initialize the actor system and perform crash recovery.
@@ -137,32 +146,47 @@ pub async fn initialize(pool: PgPool, config: &Config) -> Result<ActorSystem> {
     // to start and polls both actors for quiescence.
     let drain = DrainToken::new();
 
-    // Phase 4: Start actors
-    let supervisor = start_supervisor(
+    // Phase 4: Start the root supervisor, which spawns and supervises all
+    // four singleton actors as its children (see `actors::root_supervisor`
+    // for why this exists and how restarts work). `on_start` fully
+    // completes — all four children spawned — before the `ask` below is
+    // processed, since kameo gates message processing on `on_start`
+    // finishing; there is no race to guard against here.
+    let root_supervisor = start_root_supervisor(
         pool.clone(),
         ytdlp.clone(),
         config,
         progress_tx,
-        runtime_config.subscribe(),
+        runtime_config.clone(),
         broadcaster.clone(),
         drain.clone(),
     );
-    let scheduler = start_scheduler(
-        pool.clone(),
-        ytdlp.clone(),
-        supervisor.clone(),
-        runtime_config.subscribe(),
-        broadcaster.clone(),
-        drain.clone(),
-    );
+    let ChildRefs {
+        supervisor,
+        scheduler,
+        cleanup,
+        jellyfin_metadata,
+    } = root_supervisor.ask(GetChildRefs).await.map_err(|e| {
+        color_eyre::eyre::eyre!("Failed to retrieve actor refs from root supervisor: {e}")
+    })?;
+
     spawn_drain_watcher(drain.clone(), supervisor.clone(), scheduler.clone());
-    let cleanup = start_cleanup(
+
+    // Phase 4.4: the watchdog. Supervision recovers a child that merely
+    // panicked, but a child that exhausts its restart budget is unlinked by
+    // kameo permanently and cannot be revived in-process. That is the one
+    // state where the only remaining remedy is a new process, so the
+    // watchdog trips `liveness` (surfacing 503 on `/api/health/live`) and,
+    // subject to its crash-loop guard, exits so the container restart policy
+    // can do what an unhealthy healthcheck alone never does: restart us.
+    let liveness = LivenessFlag::new();
+    crate::watchdog::spawn(
         pool.clone(),
-        config,
-        runtime_config.subscribe(),
-        broadcaster.clone(),
+        root_supervisor.clone(),
+        runtime_config.clone(),
+        drain.clone(),
+        liveness.clone(),
     );
-    let jellyfin_metadata = start_jellyfin_metadata(pool.clone(), broadcaster.clone());
 
     // Phase 4.5: Kick pending/retry-eligible downloads after startup recovery.
     // This ensures videos reset from `downloading` -> `pending` are resumed
@@ -195,6 +219,7 @@ pub async fn initialize(pool: PgPool, config: &Config) -> Result<ActorSystem> {
     }
 
     Ok(ActorSystem {
+        root_supervisor,
         supervisor,
         scheduler,
         cleanup,
@@ -204,6 +229,7 @@ pub async fn initialize(pool: PgPool, config: &Config) -> Result<ActorSystem> {
         broadcaster,
         runtime_config,
         drain,
+        liveness,
     })
 }
 
@@ -272,91 +298,39 @@ async fn clean_part_files(dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Start the download supervisor actor.
-fn start_supervisor(
+/// Start the root supervisor, which spawns and supervises all four
+/// singleton actors (`DownloadSupervisor`, `SchedulerActor`, `CleanupActor`,
+/// `JellyfinMetadataActor`) as its children, restarting any of them
+/// in-process if it dies. See `actors::root_supervisor` for the full design
+/// rationale — in particular why the four children use
+/// `RestartPolicy::Transient` (so `shutdown` below still converges) and why
+/// this is safe for every existing cached `ActorRef<DownloadSupervisor>` /
+/// `ActorRef<SchedulerActor>` / etc. in the codebase to keep working
+/// unchanged across a restart.
+fn start_root_supervisor(
     pool: PgPool,
     ytdlp: Arc<YtdlpClient>,
     config: &Config,
     progress_tx: mpsc::Sender<DownloadProgress>,
-    config_rx: ConfigRx,
+    runtime_config: RuntimeConfig,
     broadcaster: ActivityBroadcaster,
     drain: DrainToken,
-) -> ActorRef<DownloadSupervisor> {
-    let args = DownloadSupervisorArgs {
+) -> ActorRef<RootSupervisor> {
+    let args = RootSupervisorArgs {
         pool,
         ytdlp,
-        config: config.download.clone(),
+        download_config: config.download.clone(),
         progress_tx,
-        config_rx,
+        runtime_config,
         broadcaster,
         drain,
-    };
-
-    let supervisor = DownloadSupervisor::spawn(args);
-
-    info!("Download supervisor started");
-    supervisor
-}
-
-/// Start the scheduler actor.
-fn start_scheduler(
-    pool: PgPool,
-    ytdlp: Arc<YtdlpClient>,
-    supervisor: ActorRef<DownloadSupervisor>,
-    config_rx: ConfigRx,
-    broadcaster: ActivityBroadcaster,
-    drain: DrainToken,
-) -> ActorRef<SchedulerActor> {
-    let args = SchedulerArgs {
-        pool,
-        ytdlp,
-        supervisor,
-        config_rx,
-        broadcaster,
-        drain,
-    };
-
-    let scheduler = SchedulerActor::spawn(args);
-
-    info!("Scheduler started");
-    scheduler
-}
-
-/// Start the cleanup actor.
-fn start_cleanup(
-    pool: PgPool,
-    config: &Config,
-    config_rx: ConfigRx,
-    broadcaster: ActivityBroadcaster,
-) -> ActorRef<CleanupActor> {
-    let args = CleanupActorArgs {
-        pool,
         global_retention_days: config.storage.retention_days,
-        config_rx,
-        broadcaster,
     };
 
-    let cleanup = CleanupActor::spawn(args);
+    let root_supervisor = RootSupervisor::spawn(args);
 
-    info!("Cleanup actor started");
-    cleanup
-}
-
-/// Start the Jellyfin metadata actor.
-fn start_jellyfin_metadata(
-    pool: PgPool,
-    broadcaster: ActivityBroadcaster,
-) -> ActorRef<JellyfinMetadataActor> {
-    let args = JellyfinMetadataActorArgs {
-        pool,
-        check_interval: None, // Use default (24 hours)
-        broadcaster,
-    };
-
-    let jellyfin_metadata = JellyfinMetadataActor::spawn(args);
-
-    info!("Jellyfin metadata actor started");
-    jellyfin_metadata
+    info!("Root supervisor started");
+    root_supervisor
 }
 
 /// Verify that the output directory is writable.
@@ -563,6 +537,26 @@ pub async fn shutdown(system: ActorSystem) -> Result<()> {
     }
     system.jellyfin_metadata.wait_for_shutdown().await;
     info!("Jellyfin metadata actor stopped");
+
+    // Root supervisor last, once it has nothing left to supervise.
+    //
+    // Each `stop_gracefully()` above stops that child with
+    // `ActorStopReason::Normal`. Under the `RestartPolicy::Transient` all
+    // four children are spawned with (see `actors::root_supervisor`),
+    // `Normal` is explicitly excluded from triggering a restart — kameo's
+    // `ErasedChildSpec::should_restart` special-cases
+    // `Transient if reason.is_normal() => Break(..)` — so none of these
+    // graceful stops race a fresh respawn. Each also delivers a
+    // `Signal::LinkDied` to the root supervisor's own mailbox; its
+    // `on_link_died` override (see that module) always resolves to
+    // `Continue` for a normal stop, so the root supervisor never stops
+    // itself as a side effect of its children stopping here — it is stopped
+    // explicitly, right now, once all four are confirmed down.
+    if let Err(e) = system.root_supervisor.stop_gracefully().await {
+        warn!(error = %e, "Error stopping root supervisor");
+    }
+    system.root_supervisor.wait_for_shutdown().await;
+    info!("Root supervisor stopped");
 
     info!("Actor system shutdown complete");
     Ok(())
