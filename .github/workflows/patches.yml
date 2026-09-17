@@ -42,7 +42,7 @@ jobs:
       - name: Setup Nix
         uses: DeterminateSystems/nix-installer-action@b67ad2f0e8376a0bc947db191e4484285b6f5b56 # main
       - name: Setup Cachix
-        uses: cachix/cachix-action@5f2d7c5294214f71b873db4b969586b980625e71 # v17
+        uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
         with:
           name: hofvarpnir
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
