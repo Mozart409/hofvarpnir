@@ -66,6 +66,7 @@ async fn main() -> Result<()> {
     // Create API state
     let api_state = hof_api::AppState::new(
         pool.clone(),
+        actor_system.root_supervisor.clone(),
         actor_system.supervisor.clone(),
         actor_system.scheduler.clone(),
         actor_system.jellyfin_metadata.clone(),
@@ -80,6 +81,7 @@ async fn main() -> Result<()> {
         config.download.timeout,
         runtime_config,
         drain.clone(),
+        actor_system.liveness.clone(),
     );
 
     // Initialize OIDC client if configured

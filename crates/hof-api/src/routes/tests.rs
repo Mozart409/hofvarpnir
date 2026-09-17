@@ -575,6 +575,7 @@ mod health_tests {
                 scheduler: true,
                 cleanup: true,
                 jellyfin_metadata: true,
+                details: vec![],
             },
             issues: vec![],
         };
@@ -652,11 +653,18 @@ mod system_tests {
                 max_indexers_per_tick: 5,
             },
             downloads: DownloadsStatusResponse {
-                active_downloads: 3,
-                dispatching: 1,
-                available_permits: 2,
-                rate_limit_backoff: 0,
+                // Reachable supervisor: every counter is a real reading.
+                // `None` here would mean "the supervisor did not answer",
+                // which is why these are `Option` rather than bare zeros.
+                supervisor_reachable: true,
+                active_downloads: Some(3),
+                dispatching: Some(1),
+                available_permits: Some(2),
+                rate_limit_backoff: Some(0),
                 max_concurrent_downloads: 4,
+                db_backoff_until: None,
+                consecutive_db_failures: Some(0),
+                last_db_error: None,
             },
             cleanup: CleanupStatusResponse {
                 running: true,

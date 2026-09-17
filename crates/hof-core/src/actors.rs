@@ -8,11 +8,15 @@
 //! - [`SchedulerActor`]: Singleton that triggers indexing on schedule
 //! - [`CleanupActor`]: Singleton enforcing retention policies and quotas
 //! - [`JellyfinMetadataActor`]: Singleton for daily Jellyfin metadata checks
+//! - [`RootSupervisor`]: Parent of the four singleton actors above, restarting
+//!   any of them in-process if it dies (see `root_supervisor` for why this
+//!   exists)
 
 pub mod cleanup;
 pub mod download_supervisor;
 pub mod download_worker;
 pub mod jellyfin_metadata;
+pub mod root_supervisor;
 pub mod scheduler;
 pub mod source_indexer;
 
@@ -28,6 +32,10 @@ pub use download_worker::{DownloadConfig, DownloadOutcome, DownloadWorker, Downl
 pub use jellyfin_metadata::{
     JellyfinMetadataActor, JellyfinMetadataActorArgs, JellyfinMetadataStatus, MetadataCheckResult,
     SourceMetadataResult, TriggerSourceMetadata,
+};
+pub use root_supervisor::{
+    ActorHealthReport, GetActorHealth, RestartActor, RootSupervisor, RootSupervisorArgs,
+    SupervisedActor,
 };
 pub use scheduler::{SchedulerActor, SchedulerArgs, SchedulerStatus};
 pub use source_indexer::{IndexingResult, SourceIndexerActor, SourceIndexerArgs};

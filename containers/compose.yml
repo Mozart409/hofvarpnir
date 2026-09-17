@@ -40,6 +40,14 @@ services:
     # Run as UID:GID 1000:1000 for Jellyfin/Syncthing compatibility
     # Adjust if your media user has a different UID
     user: "1000:1000"
+    # The healthcheck above only *reports* status (visible in `docker/podman
+    # ps` and to whatever scrapes it) — it does not, by itself, restart
+    # anything. During the 2026-09 incident /api/health/ready returned 503
+    # for 27 hours straight and nothing acted on it because the process
+    # never exited; it was just an internal actor that had died. This
+    # restart policy is the actual recovery mechanism: it brings the
+    # container back if the process itself exits (crash, unrecovered panic,
+    # OOM-kill, ...). It does not restart on health status alone.
     restart: unless-stopped
   postgres:
     container_name: postgres

@@ -404,6 +404,7 @@ mod tests {
                 cleanup_interval_secs: 10800,
                 last_run_at: Some(now),
             }),
+            actor_health: Vec::new(),
             download_timeout: Duration::from_hours(4),
             download_timeout_provenance: Provenance::Default,
             ytdlp_timeout: Duration::from_mins(30),
