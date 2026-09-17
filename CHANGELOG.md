@@ -2,6 +2,24 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.9.0 - 2026-09-17
+#### Features
+- (**actors**) supervise the singleton actors and restart them in-process - (afb5604) - Amadeus Mader
+- (**api**) expose actor health and an in-process restart endpoint - (3375fed) - Amadeus Mader
+- (**core**) replace the process when an actor becomes unrecoverable - (520574b) - Amadeus Mader
+- (**web**) surface degraded actors and a restart control in the runtime panel - (ab2e66e) - Amadeus Mader
+#### Bug Fixes
+- (**actors**) keep the download supervisor alive through a transient database error - (e51ce1d) - Amadeus Mader
+- (**db**) split DbError so a pool timeout stops reading as a connection failure - (6c5b249) - Amadeus Mader
+- (**flake**) remove dbeaver - (13ac7c2) - Amadeus Mader
+#### Documentation
+- (**containers**) note that a healthcheck reports status but never restarts - (2705452) - Amadeus Mader
+#### Miscellaneous Chores
+- (**flake**) add tokei - (3f3a30f) - Amadeus Mader
+- (**web**) rebuild tailwind output for the actors panel - (17fefde) - Amadeus Mader
+
+- - -
+
 ## v0.8.0 - 2026-09-03
 #### Features
 - (**actors**) gate indexing and downloads on pause state - (2be0653) - macbook-pro
