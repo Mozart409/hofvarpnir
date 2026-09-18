@@ -70,6 +70,7 @@ impl TestApp {
             max_attempts: 3,
             rate_limit_delay: Duration::from_millis(100),
             ytdlp_path: std::path::PathBuf::from("yt-dlp"),
+            verify_downloads: false,
         };
 
         let broadcaster = ActivityBroadcaster::new();

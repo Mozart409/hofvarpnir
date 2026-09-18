@@ -46,6 +46,17 @@ fn audio_codec_for_mux(audio_path: &Path, output_path: &Path, audio_codec: Optio
     }
 }
 
+/// Returns true when the output container is part of the MP4/QuickTime family,
+/// which stores its index in a `moov` atom and therefore benefits from
+/// `-movflags +faststart`.
+fn is_mp4_family(output_path: &Path) -> bool {
+    output_path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_lowercase)
+        .is_some_and(|ext| matches!(ext.as_str(), "mp4" | "m4a" | "m4v" | "mov"))
+}
+
 impl Downloader {
     /// Downloads a video and splits it into one file per chapter using FFmpeg stream copy.
     ///
@@ -522,10 +533,18 @@ impl Downloader {
             builder = builder.args(["-map_metadata", "2", "-map_chapters", "2"]);
         }
 
-        let args = builder
-            .args(["-c:v", "copy", "-c:a", audio_codec])
-            .output(output)
-            .build();
+        builder = builder.args(["-c:v", "copy", "-c:a", audio_codec]);
+
+        // Move the MP4 index to the front of the file. By default the `moov`
+        // atom is written last, so a file truncated at any point is unopenable
+        // ("moov atom not found") rather than playable up to the damage. Costs
+        // one extra pass over the output at mux time. Matroska interleaves its
+        // index and needs no equivalent.
+        if is_mp4_family(output_path) {
+            builder = builder.args(["-movflags", "+faststart"]);
+        }
+
+        let args = builder.output(output).build();
 
         tracing::debug!(
             args = ?args,

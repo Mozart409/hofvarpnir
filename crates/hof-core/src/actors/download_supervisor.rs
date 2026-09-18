@@ -223,6 +223,8 @@ pub struct DownloadSupervisor {
     progress_tx: mpsc::Sender<DownloadProgress>,
     /// Download timeout.
     download_timeout: Duration,
+    /// Whether downloaded files are verified before publishing.
+    verify_downloads: bool,
     /// Maximum download attempts before marking as permanently failed.
     max_attempts: u32,
     /// Broadcaster for real-time SSE notifications.
@@ -301,6 +303,7 @@ impl Actor for DownloadSupervisor {
             dispatching: HashSet::new(),
             progress_tx: args.progress_tx,
             download_timeout: args.config.timeout,
+            verify_downloads: args.config.verify_downloads,
             max_attempts: args.config.max_attempts,
             broadcaster: args.broadcaster,
             drain: args.drain,
@@ -1137,6 +1140,7 @@ impl DownloadSupervisor {
         let semaphore = self.semaphore.clone();
         let progress_tx = self.progress_tx.clone();
         let download_timeout = self.download_timeout;
+        let verify_downloads = self.verify_downloads;
         let base_delay = self.config_rx.borrow().rate_limit_delay.value;
         let rate_limit_delay = self.effective_rate_limit_delay(base_delay);
         let last_download_start = self.last_download_start;
@@ -1174,6 +1178,7 @@ impl DownloadSupervisor {
             // Create download config from profile
             let config = DownloadConfig {
                 timeout: download_timeout,
+                verify_downloads,
                 quality: profile.quality.clone(),
                 output_preset: profile.output_preset.clone(),
                 output_dir: PathBuf::from(&profile.output_dir),
@@ -1633,6 +1638,7 @@ mod tests {
             dispatching: HashSet::new(),
             progress_tx,
             download_timeout: Duration::from_hours(1),
+            verify_downloads: false,
             max_attempts: 3,
             broadcaster: ActivityBroadcaster::new(),
             drain: DrainToken::new(),
@@ -1858,6 +1864,7 @@ mod tests {
             max_attempts: 3,
             rate_limit_delay: Duration::from_millis(50),
             ytdlp_path: PathBuf::from("yt-dlp"),
+            verify_downloads: false,
         };
 
         DownloadSupervisor::spawn(DownloadSupervisorArgs {
