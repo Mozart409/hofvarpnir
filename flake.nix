@@ -433,8 +433,8 @@
       devShells.default = pkgs.mkShell {
         buildInputs =
           commonDevPackages
-          ++ pkgs.lib.optionals pkgs.stdenv.isLinux linuxDevPackages
-          ++ pkgs.lib.optionals pkgs.stdenv.isDarwin darwinDevPackages;
+          ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux linuxDevPackages
+          ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isDarwin darwinDevPackages;
         shellHook = ''
           export COMPOSE_BAKE=true
           # sccache caches rustc invocations for dependencies. Workspace

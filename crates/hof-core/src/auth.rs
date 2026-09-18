@@ -1,9 +1,6 @@
 //! Authentication utilities for password hashing, verification, and API key management.
 
-use argon2::{
-    Argon2,
-    password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString, rand_core::OsRng},
-};
+use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
 use rand::distr::{Alphanumeric, SampleString};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -23,11 +20,12 @@ pub enum AuthError {
 ///
 /// Returns an error if password hashing fails.
 pub fn hash_password(password: &str) -> Result<String, AuthError> {
-    let salt = SaltString::generate(&mut OsRng);
-    let argon2 = Argon2::default();
-
-    argon2
-        .hash_password(password.as_bytes(), &salt)
+    // argon2 0.6 generates the salt internally (recommended length, via
+    // `getrandom`), replacing the explicit `SaltString::generate(&mut OsRng)`
+    // of 0.5. The PHC output format is unchanged, so hashes written by either
+    // version verify against the other.
+    Argon2::default()
+        .hash_password(password.as_bytes())
         .map(|hash| hash.to_string())
         .map_err(|e| AuthError::HashingFailed(e.to_string()))
 }
@@ -110,6 +108,23 @@ mod tests {
 
         // Wrong password should fail
         assert!(verify_password("wrong_password", &hash).is_err());
+    }
+
+    /// Hashes written before the argon2 0.5 -> 0.6 upgrade must still verify.
+    ///
+    /// 0.6 moved salt generation inside `hash_password`, so this is the only
+    /// check that the stored PHC strings in `users.password_hash` are still
+    /// readable. The literal below was produced by argon2 0.5 with
+    /// `SaltString::generate(&mut OsRng)`; do not regenerate it, that would
+    /// defeat the test.
+    #[test]
+    fn argon2_0_5_hashes_still_verify() {
+        let legacy = "$argon2id$v=19$m=19456,t=2,p=1$slKZiGr85w6za9MBkarRrg\
+                      $9pHj7dJOn8ZF3IAj7dz25w8NmZCRxKxK9Z3aWH35Crg"
+            .replace(char::is_whitespace, "");
+
+        assert!(verify_password("correct horse battery staple", &legacy).is_ok());
+        assert!(verify_password("wrong password", &legacy).is_err());
     }
 
     #[test]

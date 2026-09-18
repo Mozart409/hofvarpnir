@@ -12,7 +12,7 @@ rust-version = "1.97.1"
 name = "hofvarpnir"
 
 [workspace.dependencies]
-argon2 = "0.5"
+argon2 = "0.6"
 axum = { version = "0.8", features = ["macros"] }
 axum-extra = { version = "0.12", features = ["typed-header"] }
 chrono = { version = "0.4", features = ["serde"] }
@@ -55,6 +55,8 @@ utoipa = { version = "5", features = ["axum_extras", "chrono", "ulid"] }
 utoipa-axum = "0.2"
 utoipa-scalar = { version = "0.3", features = ["axum"] }
 wiremock = "0.6"
+# Pinned to 2.7 so `[patch.crates-io]` below resolves to patches/yt-dlp-patched
+# (vendored 2.7.2). Bumping this silently drops the fork -- see PATCHES.md.
 yt-dlp = "2.7"
 
 [workspace.lints.rust]
