@@ -8,6 +8,34 @@ crate, wired into the workspace via `[patch.crates-io]` in the root `Cargo.toml`
 Keep this file up to date whenever the vendored crate is changed. It is the only
 record of how this copy diverges from upstream.
 
+## Do not bump `yt-dlp` in the root `Cargo.toml`
+
+`[patch.crates-io]` only applies when the vendored version satisfies the
+dependency requirement. The root manifest pins `yt-dlp = "2.7"` to match the
+`2.7.2` vendored here. Raising it -- including by an unattended `cargo update`
+that rewrites the requirement -- makes Cargo **silently ignore the patch** and
+build against crates.io instead:
+
+```
+warning: patch `yt-dlp v2.7.2 (patches/yt-dlp-patched)` was not used in the crate graph
+   Compiling yt-dlp v2.8.3
+```
+
+`Cargo.lock` records this as a `[[patch.unused]]` entry. This happened on
+2026-09-18 with a bump to `"2.8"`.
+
+What saves you is that `hof-core` then fails to compile, because the divergences
+below are load-bearing. Do not "fix" those errors against upstream -- restore the
+`"2.7"` requirement and re-resolve:
+
+```sh
+cargo update -p yt-dlp   # re-points the lockfile at the vendored path
+```
+
+Confirm the fix with `grep '\[\[patch.unused\]\]' Cargo.lock` returning nothing.
+Genuinely moving to a newer upstream is the re-sync procedure below, not a
+version-requirement edit.
+
 ## Why we fork
 
 Upstream models several `--flat-playlist` JSON fields as required `String`.
@@ -30,9 +58,14 @@ usually the oldest, at the end — to index 0. The parse dies ~1.4 KB into a
 
 ## The intentional divergence
 
-Only **three field types** are deliberately changed, all in
-`src/model/types/playlist.rs`. Everything else in the diff is mechanical
-fallout that the compiler will point you at.
+There are two kinds: the playlist field types that motivated the fork, and a set
+of feature additions that `hof-core` now depends on. Everything else in the diff
+is mechanical fallout that the compiler will point you at.
+
+### 1. Playlist field types
+
+Three field types are deliberately changed, all in
+`src/model/types/playlist.rs`.
 
 | Struct | Field | Upstream | Here | Notes |
 | --- | --- | --- | --- | --- |
@@ -48,7 +81,7 @@ Deliberately **not** changed:
 - Upstream's `tests/`, `examples/` and `benches/` are kept so re-syncs stay
   diffable against upstream.
 
-### Consumer-side behaviour
+#### Consumer-side behaviour
 
 The `Option` is deliberately *not* given a default inside this crate — the
 placeholder policy lives in `crates/hof-core/src/ytdlp.rs`:
@@ -62,6 +95,20 @@ Regression coverage: `crates/hof-core/tests/fixtures/flat_playlist_null_titles.j
 is a trimmed real capture. Its entry objects deliberately keep `title` as the
 **first** key, because that ordering is what makes serde hit the null before it
 ever reads `id`. Do not reorder those keys.
+
+### 2. Feature additions
+
+These are additions, not type changes, and none exist upstream as of 2.8.3. They
+must be re-applied on every re-sync or `hof-core` will not compile.
+
+| Addition | Lives in | Why |
+| --- | --- | --- |
+| `DownloadDetails`, `DownloadBuilder::execute_detailed` | `src/client/download_builder.rs`, `src/client/mod.rs` | Reports the **delivered** height/codec/fps, not the requested quality. Feeds `DownloadResult` -> `db::DeliveredVideo` so `videos.video_height` / `videos.video_codec` record what the platform actually served. See "Delivered quality is recorded, not assumed" in the root `AGENTS.md`. |
+| `VideoCodecPreference::Ranked(..)` | `src/model/selector.rs`, `src/client/streams/selection.rs` | Ordered codec preference where **resolution outranks codec**. Upstream offers only an absolute preference, which silently caps a 1440p profile at 1080p because YouTube publishes no AVC above 1080p. |
+| `-movflags +faststart` on MP4-family muxes | `src/client/streams/pipeline/combine.rs` | Moves the `moov` atom to the front so a truncated file is playable up to the damage rather than unopenable (`moov atom not found`). Paired with `crates/hof-core/src/verify.rs`; see "Downloads are verified before they are published" in `AGENTS.md`. |
+
+The fork also carries a nested `crates/media-seek` member, which Cargo resolves
+through the same patch entry.
 
 ## Mechanical fallout, and the conventions to follow
 
@@ -96,12 +143,17 @@ re-apply the three type changes, then fix what breaks.
    diff -ru yt-dlp-<VERSION> patches/yt-dlp-patched \
      --exclude=target --exclude=Cargo.lock --exclude=.cargo_vcs_info.json
    ```
-3. **Check whether the fork is still needed.** If upstream has made these fields
-   optional, drop the vendored crate entirely and delete the `[patch.crates-io]`
-   entry from the root `Cargo.toml`. As of upstream **2.8.0** it is still needed:
-   `PlaylistEntry.url` and both `title` fields are still `String` there.
+3. **Check whether the fork is still needed.** Even if upstream makes the
+   playlist fields optional, the feature additions in section 2 still have to
+   live somewhere -- dropping the vendored crate means upstreaming or
+   reimplementing those too, not just deleting the directory.
+
+   Verified against upstream **2.8.3** (2026-09-18): still needed.
+   `PlaylistEntry.title`, `PlaylistEntry.url` and `Playlist.title` remain
+   `String`, and none of the section 2 additions exist upstream.
 4. Replace this directory's contents with upstream, preserving this file, then
-   re-apply the three type changes from the table above.
+   re-apply **both** the type changes (section 1) and the feature additions
+   (section 2).
 5. Iterate until clean:
    ```sh
    cd patches/yt-dlp-patched && cargo check --all-targets --all-features
@@ -113,7 +165,14 @@ re-apply the three type changes, then fix what breaks.
    cargo test --workspace
    cargo clippy --all-targets --all-features -- -D warnings
    ```
-7. Update the "Currently vendored upstream version" line at the top of this file.
+7. Update the "Currently vendored upstream version" line at the top of this
+   file, set this crate's own `version` in `patches/yt-dlp-patched/Cargo.toml`,
+   and update the `yt-dlp = "..."` requirement in the root `Cargo.toml` to match.
+   All three must agree or the patch goes unused -- see the warning at the top.
+8. Confirm the patch is actually in the graph:
+   ```sh
+   grep '\[\[patch.unused\]\]' Cargo.lock   # must print nothing
+   ```
 
 ## How this is guarded in CI
 
