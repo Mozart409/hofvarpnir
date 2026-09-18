@@ -199,12 +199,30 @@ seed-cache: clear
 attic-push attr: clear
     nix build --no-link --print-out-paths {{ attr }} | xargs attic push {{ attic_cache }}
 
+# Two-way sync with GitHub (origin) as the source of truth. Bots push only to
+# forgejo, so their branches flow up to origin first; anything origin has is
+# then force-mirrored onto forgejo, so a diverged branch or tag resolves to
+# GitHub's version. Forgejo-only branches are never deleted.
 sync-remotes: clear
-    git fetch origin --prune
+    #!/usr/bin/env bash
+    set -euo pipefail
+    git fetch origin --prune --prune-tags --force
+    git fetch forgejo --prune
+    # Bot work flows up: a forgejo branch origin lacks, or that fast-forwards
+    # origin's, is pushed to origin. Diverged branches are left alone here and
+    # lose to origin in the mirror step below.
+    for b in $(git for-each-ref --format='%(refname:lstrip=3)' refs/remotes/forgejo/ | grep -vx HEAD); do
+        if ! git show-ref -q --verify "refs/remotes/origin/$b" \
+           || git merge-base --is-ancestor "refs/remotes/origin/$b" "refs/remotes/forgejo/$b"; then
+            git push origin "refs/remotes/forgejo/$b:refs/heads/$b"
+        fi
+    done
     git push origin --all
     git push origin --tags
-    git push forgejo --all
-    git push forgejo --tags
+    git fetch origin --prune
+    # origin wins: force-mirror every branch and tag it has onto forgejo.
+    git push forgejo --force 'refs/remotes/origin/*:refs/heads/*' '^refs/remotes/origin/HEAD'
+    git push forgejo --force 'refs/tags/*:refs/tags/*'
     git fetch forgejo --prune
 
 trivy: clear build-oci
