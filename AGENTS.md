@@ -489,9 +489,53 @@ Machine-readable error codes for download failures are implemented in `YtdlpErro
 - `DOWNLOAD_FORMAT_UNAVAILABLE`
 - `DOWNLOAD_FORMAT_INVALID_PRESET`
 - `DOWNLOAD_EXECUTION_FAILED`
+- `DOWNLOAD_VERIFICATION_FAILED`
 
 These codes are propagated into worker/supervisor logs and persisted failure text (`[CODE] ...`).
 API download responses expose parsed `last_error_code` when available.
+
+### Downloads are verified before they are published
+
+A clean yt-dlp exit does not mean a playable file. `crates/hof-core/src/verify.rs`
+gates every download in `DownloadWorker::handle_success` **while the file is
+still in `incomplete/`**, so a damaged file never reaches `completed/` and never
+gets marked completed in the database. A failure returns
+`DownloadOutcome::Failed` with `DOWNLOAD_VERIFICATION_FAILED`, which picks up
+the supervisor's existing `max_attempts` counting and backoff.
+
+Three checks, cheapest first:
+
+1. `ffprobe` -- container readable, expected streams present, duration not short
+   of `videos.duration_secs` (2% tolerance, 5s floor).
+2. A zero-run scan -- any run of `0x00` at or above 4 MiB.
+3. `ffmpeg -i <file> -c copy -f null -` -- reads every byte, validates container
+   framing, decodes nothing.
+
+Rules when touching this area:
+
+- **`ffmpeg` exits 0 even when it reports stream errors.** The demux pass is
+  judged on whether stderr is non-empty at `-v error`, never on exit status.
+  This was measured, not assumed.
+- **Do not replace the demux pass with a sampled window such as `-sseof -30`.**
+  With `+faststart` the index is at the front of the file, so `-sseof` seeks
+  past EOF on a truncated file, decodes **zero frames**, and exits clean -- it
+  reports success on exactly the files it is supposed to catch.
+- **Do not drop the zero-run scan as redundant with the demux pass.** `-c copy`
+  catches an interior hole only where the demuxer validates in-band framing:
+  measured, H.264 is caught but **AV1 and HEVC are not**, and AV1 is what the
+  `Browser`/`Tv` ladders deliver above 1080p. The scan is what covers them.
+  Truncation, by contrast, is caught for every codec.
+- The file is **deleted** when verification fails. The segmented downloader
+  resumes onto an existing output file and decides a segment is complete by
+  probing only its first and last bytes (`parallel.rs`,
+  `is_segment_downloaded`), so leaving damage in place lets every retry resume
+  onto it.
+- `-movflags +faststart` is applied to MP4-family muxes in
+  `patches/yt-dlp-patched/src/client/streams/pipeline/combine.rs`. It costs one
+  extra pass over the output and makes a truncated file playable up to the
+  damage instead of unopenable (`moov atom not found`).
+
+Set `DOWNLOAD_VERIFY=false` to disable the gate without a code change.
 
 ### Testing guidance for this area
 
@@ -501,6 +545,9 @@ API download responses expose parsed `last_error_code` when available.
 ```bash
 cargo test -p hof-core ytdlp::tests::test_fallback_
 cargo test -p hof-api download_tests::test_video_response_
+
+# Post-download verification (needs ffmpeg/ffprobe on PATH)
+cargo test -p hof-core --lib verify::
 
 # Codec-ladder selection (resolution outranks codec)
 cargo test -p hof-core ytdlp::tests::test_browser_preset_
@@ -538,6 +585,7 @@ Optional (observability):
 - `LOKI_URL` - Grafana Loki endpoint for log shipping (e.g. `http://localhost:3100`)
 - `METRICS_ENABLED` - Set to `true` to enable Prometheus metrics at `/metrics`
 - `LOG_FORMAT` - Set to `json` for structured JSON log output
+- `DOWNLOAD_VERIFY` - Set to `false`/`0`/`no` to skip post-download verification (default: `true`). Requires `ffprobe` on PATH when enabled; startup fails without it.
 
 Optional (OIDC Authentication):
 

@@ -113,6 +113,11 @@ pub async fn initialize(pool: PgPool, config: &Config) -> Result<ActorSystem> {
     // Phase 0.7: Verify ffmpeg is available for audio/video muxing
     verify_ffmpeg_binary().await?;
 
+    // Phase 0.8: Verify ffprobe is available for post-download verification
+    if config.download.verify_downloads {
+        verify_ffprobe_binary().await?;
+    }
+
     // Phase 1: Crash recovery
     recover_from_crash(&pool, &config.storage.default_output_dir).await?;
 
@@ -442,6 +447,44 @@ async fn verify_ffmpeg_binary() -> Result<()> {
         )),
         Err(e) => Err(color_eyre::eyre::eyre!(
             "Failed to verify ffmpeg binary: {}",
+            e
+        )),
+    }
+}
+
+/// Verify that `ffprobe` is available for post-download verification.
+///
+/// Ships alongside `ffmpeg` in every distribution of it, so a missing `ffprobe`
+/// means a partial install rather than a missing dependency.
+async fn verify_ffprobe_binary() -> Result<()> {
+    let output = tokio::process::Command::new("ffprobe")
+        .arg("-version")
+        .output()
+        .await;
+
+    match output {
+        Ok(output) if output.status.success() => {
+            let version_stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+            let version_line = version_stdout.lines().next().unwrap_or("unknown");
+            info!(version = %version_line, "ffprobe binary verified");
+            Ok(())
+        }
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            Err(color_eyre::eyre::eyre!(
+                "ffprobe is installed but failed to run: {}",
+                stderr.trim()
+            ))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(color_eyre::eyre::eyre!(
+            "ffprobe binary not found on PATH. \
+             Post-download verification cannot run. \
+             Install ffmpeg (which ships ffprobe) and restart, \
+             or set DOWNLOAD_VERIFY=false to disable verification. \
+             Nix users: add `ffmpeg` to your dev shell and run `nix develop`."
+        )),
+        Err(e) => Err(color_eyre::eyre::eyre!(
+            "Failed to verify ffprobe binary: {}",
             e
         )),
     }

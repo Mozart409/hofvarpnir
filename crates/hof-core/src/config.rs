@@ -54,6 +54,12 @@ pub struct DownloadConfig {
     pub rate_limit_delay: Duration,
     /// Path to yt-dlp binary.
     pub ytdlp_path: PathBuf,
+    /// Verify downloaded files before publishing them to `completed/`.
+    ///
+    /// Kill switch for [`crate::verify`]: if a future ffmpeg release starts
+    /// reporting benign conditions at `-v error` level, this turns the gate off
+    /// without a code change rather than failing every download.
+    pub verify_downloads: bool,
 }
 
 /// Storage configuration.
@@ -140,12 +146,17 @@ impl DownloadConfig {
         let ytdlp_path =
             optional_env("YTDLP_PATH").map_or_else(|| PathBuf::from("yt-dlp"), PathBuf::from);
 
+        let verify_downloads = optional_env("DOWNLOAD_VERIFY").is_none_or(|s| {
+            !matches!(s.trim().to_ascii_lowercase().as_str(), "0" | "false" | "no")
+        });
+
         Self {
             max_concurrent,
             timeout: Duration::from_secs(timeout_hours * 3600),
             max_attempts,
             rate_limit_delay: Duration::from_secs(rate_limit_secs),
             ytdlp_path,
+            verify_downloads,
         }
     }
 }

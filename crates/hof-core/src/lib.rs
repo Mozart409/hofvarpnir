@@ -20,6 +20,7 @@ pub mod oidc;
 pub mod runtime_config;
 pub mod startup;
 pub mod telemetry;
+pub mod verify;
 pub mod watchdog;
 pub mod ytdlp;
 
