@@ -97,6 +97,9 @@ impl YtdlpError {
     pub const DOWNLOAD_FORMAT_UNAVAILABLE: &str = "DOWNLOAD_FORMAT_UNAVAILABLE";
     pub const DOWNLOAD_FORMAT_INVALID_PRESET: &str = "DOWNLOAD_FORMAT_INVALID_PRESET";
     pub const DOWNLOAD_EXECUTION_FAILED: &str = "DOWNLOAD_EXECUTION_FAILED";
+    /// The file downloaded cleanly but failed post-download verification
+    /// (see [`crate::verify`]). Raised by the worker, not by yt-dlp itself.
+    pub const DOWNLOAD_VERIFICATION_FAILED: &str = "DOWNLOAD_VERIFICATION_FAILED";
 
     #[must_use]
     pub const fn machine_code(&self) -> Option<&'static str> {

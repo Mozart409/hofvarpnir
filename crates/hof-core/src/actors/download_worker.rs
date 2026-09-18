@@ -23,6 +23,7 @@ use ulid::Ulid;
 use crate::db;
 use crate::domain::profile::{OutputPreset, Quality};
 use crate::domain::video::{DownloadProgress, Video};
+use crate::verify::{self, Expectations};
 use crate::ytdlp::{
     DownloadRequest, DownloadResult, FallbackStage, FormatPolicy, OutputTemplateData, YtdlpClient,
     YtdlpError,
@@ -48,6 +49,8 @@ pub struct DownloadConfig {
     pub source_id: Ulid,
     /// Source display name for template context.
     pub source_name: String,
+    /// Verify the downloaded file before publishing it to `completed/`.
+    pub verify_downloads: bool,
 }
 
 /// Result of a download operation, sent back to the supervisor.
@@ -267,6 +270,15 @@ impl DownloadWorker {
     /// Handle a successful download.
     async fn handle_success(&self, result: DownloadResult) -> DownloadOutcome {
         let video_id = self.video.id;
+
+        // Verify before publishing: a clean yt-dlp exit does not imply a
+        // playable file (see `crate::verify`).
+        if self.config.verify_downloads
+            && let Some(failure) = self.reject_if_unverified(&result).await
+        {
+            return failure;
+        }
+
         let incomplete_dir = self.incomplete_dir();
         let completed_dir = self.completed_dir();
         let final_path = match Self::move_to_completed(
@@ -321,6 +333,55 @@ impl DownloadWorker {
             file_path: final_path,
             file_size_bytes: result.file_size_bytes,
         }
+    }
+
+    /// Verify the downloaded file, returning a failure outcome if it is damaged.
+    ///
+    /// Runs while the file is still in `incomplete/`, so a damaged download is
+    /// reported as a failed download and picks up the supervisor's existing
+    /// attempt counting and backoff rather than reaching the library.
+    ///
+    /// The file is deleted on failure. The segmented downloader resumes onto an
+    /// existing output file and decides a segment is complete by probing only
+    /// its first and last bytes, so leaving a file with an interior hole in
+    /// place would let every retry resume onto the same damage.
+    async fn reject_if_unverified(&self, result: &DownloadResult) -> Option<DownloadOutcome> {
+        let expectations = Expectations {
+            expect_video: !matches!(self.config.quality, Quality::AudioOnly),
+            expect_audio: true,
+            duration_secs: self.video.duration_secs,
+        };
+
+        let Err(error) = verify::verify_media(&result.file_path, &expectations).await else {
+            debug!(path = %result.file_path.display(), "Download verified");
+            return None;
+        };
+
+        error!(
+            video_id = %self.video.id,
+            path = %result.file_path.display(),
+            file_size = result.file_size_bytes,
+            error = %error,
+            "Downloaded file failed verification, discarding"
+        );
+
+        if let Err(e) = tokio::fs::remove_file(&result.file_path).await {
+            warn!(
+                error = %e,
+                path = %result.file_path.display(),
+                "Failed to remove unverified file; a retry may resume onto it"
+            );
+        }
+
+        Some(DownloadOutcome::Failed {
+            video_id: self.video.id,
+            error: format!("Downloaded file failed verification: {error}"),
+            error_code: Some(YtdlpError::DOWNLOAD_VERIFICATION_FAILED),
+            preset: self.config.output_preset.clone(),
+            quality: self.config.quality.clone(),
+            fallback_stage: None,
+            is_rate_limited: false,
+        })
     }
 
     fn incomplete_dir(&self) -> PathBuf {
