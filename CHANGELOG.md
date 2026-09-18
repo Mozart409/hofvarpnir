@@ -2,6 +2,15 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.10.0 - 2026-09-18
+#### Features
+- (**deps**) upgrade deps and change argon2 usage to new functions - (5ab0d57) - Amadeus Mader
+#### Bug Fixes
+- (**core**) verify downloaded media before publishing - (05513e8) - Amadeus Mader
+- (**just**) add actuall two way sync - (66fd356) - Amadeus Mader
+
+- - -
+
 ## v0.9.0 - 2026-09-17
 #### Features
 - (**actors**) supervise the singleton actors and restart them in-process - (afb5604) - Amadeus Mader
