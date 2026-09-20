@@ -1,7 +1,6 @@
 # https://just.systems
 
 set unstable
-set dotenv-load
 
 # Cachix binary cache name
 
@@ -10,6 +9,19 @@ cachix_cache := "hofvarpnir"
 # Attic binary cache name
 
 attic_cache := "homelab"
+
+# Secrets and app config live encrypted in .sops.env (sops + gpg-agent; values
+# ENC[...], names visible, safe to commit). They are decrypted into the ONE
+# child process that needs them -- the app itself, via `dev` -- and never
+# written to disk or exported into the shell. Edit with `sops .sops.env`.
+# (`set dotenv-load` and a plaintext .env are gone on purpose.)
+secrets := "sops exec-env .sops.env"
+
+# Dev Postgres (postgres service in containers/compose.dev.yml). The credentials
+# are compose's own, not a secret, so the DB tooling below uses this directly
+# instead of decrypting .sops.env for every migration. Override with
+# DATABASE_URL to point elsewhere.
+database_url := env_var_or_default("DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/hofvarpnir_dev")
 
 # Lean, ephemeral Postgres used exclusively by `just test` (postgres-test service
 # in containers/compose.dev.yml). Override with TEST_DATABASE_URL to point the
@@ -28,7 +40,7 @@ clear:
 up: clear
     #!/usr/bin/env bash
     set -euo pipefail
-    if pg_isready -d "${DATABASE_URL:?DATABASE_URL not set}" -t 2 -q \
+    if pg_isready -d "{{ database_url }}" -t 2 -q \
         && pg_isready -d "{{ test_database_url }}" -t 2 -q; then
         echo "databases already available, skipping podman-compose"
         exit 0
@@ -36,7 +48,7 @@ up: clear
     podman-compose -f containers/compose.dev.yml up -d --build --remove-orphans
     # Wait until postgres actually answers (compose returns before readiness)
     for _ in $(seq 1 30); do
-        if pg_isready -d "$DATABASE_URL" -t 1 -q \
+        if pg_isready -d "{{ database_url }}" -t 1 -q \
             && pg_isready -d "{{ test_database_url }}" -t 1 -q; then
             exit 0
         fi
@@ -61,26 +73,26 @@ mig-add name: clear
 
 [working-directory('crates/hof-core')]
 mig-run: clear up
-    sqlx mig run --database-url ${DATABASE_URL}
+    sqlx mig run --database-url {{ database_url }}
 
 [working-directory('crates/hof-core')]
 mig-revert: clear up
-    sqlx mig revert --database-url ${DATABASE_URL}
+    sqlx mig revert --database-url {{ database_url }}
 
 [working-directory('crates/hof-core')]
 mig-info: clear up
-    sqlx mig info --database-url ${DATABASE_URL}
+    sqlx mig info --database-url {{ database_url }}
 
 [working-directory('crates/hof-core')]
 db-reset: clear up
-    sqlx database drop --database-url ${DATABASE_URL} -y
-    sqlx database create --database-url ${DATABASE_URL}
+    sqlx database drop --database-url {{ database_url }} -y
+    sqlx database create --database-url {{ database_url }}
 
 [working-directory('crates/hof-core')]
 db-setup: clear up
-    sqlx database drop --database-url ${DATABASE_URL} -y
-    sqlx database create --database-url ${DATABASE_URL}
-    sqlx mig run --database-url ${DATABASE_URL}
+    sqlx database drop --database-url {{ database_url }} -y
+    sqlx database create --database-url {{ database_url }}
+    sqlx mig run --database-url {{ database_url }}
 
 # SQLx offline mode - run after schema changes
 # Uses --workspace, so a single merged .sqlx/ is written to the repo root
@@ -88,11 +100,11 @@ db-setup: clear up
 # (covers query! macros in every crate, not just hof-core).
 [working-directory('crates/hof-core')]
 prepare: clear mig-run
-    cargo sqlx prepare --workspace -- --all-targets --all-features
+    DATABASE_URL={{ database_url }} cargo sqlx prepare --workspace -- --all-targets --all-features
 
 [working-directory('crates/hof-core')]
 prepare-check: clear
-    cargo sqlx prepare --workspace --check -- --all-targets --all-features
+    DATABASE_URL={{ database_url }} cargo sqlx prepare --workspace --check -- --all-targets --all-features
 
 # Code quality
 deny: clear fmt
@@ -107,9 +119,10 @@ fix: clear
 lint: clear
     SQLX_OFFLINE=true cargo clippy --workspace --all-targets --all-features -- -D warnings
 
-# Development
+# Development. The only recipe that needs the real config: the binary reads
+# everything from its environment (dotenvy finds no .env any more).
 dev: clear up
-    cargo watch -c -x 'run -p hof-web --bin hofvarpnir'
+    {{ secrets }} 'cargo watch -c -x "run -p hof-web --bin hofvarpnir"'
 
 # Tailwind CSS
 [working-directory('crates/hof-web/assets')]

@@ -81,7 +81,7 @@ just fmt                 # Format code
 just lint                # Run clippy
 just fix                 # Fix clippy issues
 just test                # Run tests with DB setup
-just dev                 # Run web server
+just dev                 # Run web server (config decrypted from .sops.env)
 just db-reset            # Reset database
 just mig-run             # Run migrations
 just prepare             # Generate SQLx offline data
@@ -373,6 +373,8 @@ pub async fn list_videos(State(state): State<AppState>) -> Result<impl IntoRespo
 ## Database
 
 In development you can use this connection string to connect to the database. DATABASE_URL=postgresql://postgres:postgres@localhost:5432/hofvarpnir_dev
+
+The `just` DB recipes (`up`, `mig-*`, `db-*`, `prepare`) use exactly that URL via the `database_url` variable — it is compose's own dev credential, not a secret. The server's real configuration (including `DATABASE_URL` for any other environment) lives encrypted in `.sops.env` and is injected only into `just dev` / `bacon serve` via `sops exec-env`; edit with `sops .sops.env`, never `cat`/`sops -d` it. There is no plaintext `.env` and `set dotenv-load` is gone on purpose.
 
 The test entry points (`just test`, `e2e`, `e2e-only`, `ci`, and the bacon `test`/`nextest` jobs) do not use the dev database: they override `DATABASE_URL` to a dedicated, ephemeral Postgres (`postgres-test` service in `containers/compose.dev.yml`, localhost:5433, no monitoring extensions, durability disabled). Override with `TEST_DATABASE_URL` (just) if needed. The bacon `run`/`serve`/`tui` jobs still use the dev database, as does `just dev`.
 

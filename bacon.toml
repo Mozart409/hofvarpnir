@@ -90,11 +90,13 @@ need_stdout = true
 allow_warnings = true
 background = true
 
-# Run the web server with auto-restart on change
+# Run the web server with auto-restart on change. Config comes from the
+# encrypted .sops.env, decrypted by sops into this one process (same as
+# `just dev`); there is no plaintext .env for dotenvy to find.
 [jobs.serve]
 command = [
-    "cargo", "run",
-    "--bin", "hofvarpnir",
+    "sops", "exec-env", ".sops.env",
+    "cargo run --bin hofvarpnir",
 ]
 need_stdout = true
 allow_warnings = true

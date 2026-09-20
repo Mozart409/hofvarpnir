@@ -87,7 +87,13 @@ Use `GET /api/v1/activity/unhealthy-sources` to find sources that are enabled bu
 
 ## Configuration
 
-Configuration is loaded from environment variables:
+Configuration is loaded from environment variables. For local development they
+live encrypted in [`.sops.env`](.sops.env) — a [sops](https://github.com/getsops/sops)
+dotenv store (variable names visible, values `ENC[...]`, committed) that
+`just dev` / `bacon serve` decrypt into the server process only; edit it with
+`sops .sops.env`. [`.env.example`](.env.example) documents every variable, and
+the binary still loads a plain `.env` via `dotenvy` if one exists (real
+environment variables take precedence).
 
 | Variable                      | Description                            | Default      |
 | ----------------------------- | -------------------------------------- | ------------ |
