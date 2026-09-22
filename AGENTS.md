@@ -99,6 +99,23 @@ nix develop
 nix develop .#default --command cargo test --all-features
 ```
 
+## Testing Philosophy
+
+- **NEVER write unit tests after you write code.** Unit tests written after the
+  fact tend to just re-describe the implementation rather than verify
+  behavior.
+- **Highly prefer E2E tests as the sole testing mechanism.** Use them to
+  verify complex features work end-to-end. At the end of an E2E test, produce
+  a verifiable and repeatable artifact (e.g. a downloaded/verified file, a
+  persisted DB row, an API response fixture) rather than just asserting a
+  process exited cleanly.
+- **If you must test a system in isolation**, first write down all the ways
+  it could fail, *then* write the code to guard against those failure modes.
+  Do not write the code first and backfill unit tests against it.
+- **When writing an E2E test, don't pick the simplest possible scenario to
+  prove the happy path works.** Pick a medium-to-hard scenario when verifying
+  the work.
+
 ## Code Style Guidelines
 
 ### Imports
