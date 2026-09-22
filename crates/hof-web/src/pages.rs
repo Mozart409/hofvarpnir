@@ -5115,79 +5115,44 @@ mod storage_usage_tests {
     use super::{format_bytes_human, is_storage_over_quota, storage_usage_percent};
 
     #[test]
-    fn format_bytes_human_zero() {
-        assert_eq!(format_bytes_human(0), "0.0 B");
+    fn format_bytes_human_table_driven() {
+        let cases = [
+            (0, "0.0 B"),
+            (512, "512.0 B"),
+            (1000, "1.0 KB"),
+            (1000 * 1000, "1.0 MB"),
+            (13 * 1000 * 1000, "13.0 MB"),
+            (1_000_000_000_000_000, "1.0 PB"),
+            (i64::MAX, "9223.4 PB"),
+            (1_000_000_000_i64 + 400_000_000, "1.4 GB"),
+            (1000_i64.pow(4), "1.0 TB"),
+            (-5, "0.0 B"),
+        ];
+
+        for (bytes, expected) in cases {
+            assert_eq!(
+                format_bytes_human(bytes),
+                expected,
+                "Failed for bytes={bytes}"
+            );
+        }
     }
 
     #[test]
-    fn format_bytes_human_sub_kb() {
-        assert_eq!(format_bytes_human(512), "512.0 B");
-    }
+    fn storage_usage_percent_table_driven() {
+        let cases = [
+            (0, 0, 0.0),
+            (5, 0, 100.0),
+            (50, 100, 50.0),
+            (150, 100, 100.0),
+        ];
 
-    #[test]
-    fn format_bytes_human_exact_kb_boundary() {
-        assert_eq!(format_bytes_human(1000), "1.0 KB");
-    }
-
-    #[test]
-    fn format_bytes_human_exact_mb_boundary() {
-        assert_eq!(format_bytes_human(1000 * 1000), "1.0 MB");
-    }
-
-    #[test]
-    fn format_bytes_human_mb_example() {
-        assert_eq!(format_bytes_human(13 * 1000 * 1000), "13.0 MB");
-    }
-
-    #[test]
-    fn format_bytes_human_saturates_at_largest_unit() {
-        // Exercises the upper bound of the unit table: the scaling loop stops at
-        // the last unit (PB) rather than running past the end of `UNITS`.
-        assert_eq!(format_bytes_human(1_000_000_000_000_000), "1.0 PB");
-    }
-
-    #[test]
-    fn format_bytes_human_beyond_largest_unit_stays_in_pb() {
-        // Values larger than the biggest unit must keep scaling the number
-        // instead of advancing the index out of range.
-        assert_eq!(format_bytes_human(i64::MAX), "9223.4 PB");
-    }
-
-    #[test]
-    fn format_bytes_human_gb_example() {
-        // 1.4 GB, expressed as an exact byte count to avoid a lossy float-to-int cast.
-        let bytes = 1_000_000_000_i64 + 400_000_000;
-        assert_eq!(format_bytes_human(bytes), "1.4 GB");
-    }
-
-    #[test]
-    fn format_bytes_human_exact_tb_boundary() {
-        assert_eq!(format_bytes_human(1000_i64.pow(4)), "1.0 TB");
-    }
-
-    #[test]
-    fn format_bytes_human_negative_clamped_to_zero() {
-        assert_eq!(format_bytes_human(-5), "0.0 B");
-    }
-
-    #[test]
-    fn percent_zero_quota_zero_used_is_zero() {
-        assert!((storage_usage_percent(0, 0) - 0.0).abs() < f64::EPSILON);
-    }
-
-    #[test]
-    fn percent_zero_quota_with_usage_is_fully_over() {
-        assert!((storage_usage_percent(5, 0) - 100.0).abs() < f64::EPSILON);
-    }
-
-    #[test]
-    fn percent_normal_ratio() {
-        assert!((storage_usage_percent(50, 100) - 50.0).abs() < f64::EPSILON);
-    }
-
-    #[test]
-    fn percent_over_quota_clamps_to_100() {
-        assert!((storage_usage_percent(150, 100) - 100.0).abs() < f64::EPSILON);
+        for (used, quota, expected) in cases {
+            assert!(
+                (storage_usage_percent(used, quota) - expected).abs() < f64::EPSILON,
+                "Failed for used={used}, quota={quota}, expected {expected}"
+            );
+        }
     }
 
     #[test]
