@@ -155,6 +155,127 @@ async fn downloads_page_renders_status_error_and_delivered_quality(pool: sqlx::P
     );
 }
 
+/// Listings are ordered by publish date, newest first — not by the order
+/// hofvarpnir happened to discover the videos.
+///
+/// The listings used to be `ORDER BY created_at DESC`, i.e. insertion order.
+/// Indexing discovers videos in batches over many runs, and a run that
+/// backfills older videos inserts them after newer ones, so a channel that
+/// uploads strictly in sequence rendered as a jumble: 09-21, 09-16, 09-17,
+/// 09-18, 09-14. That is what this test seeds — deliberately shuffling the
+/// insertion order relative to the publish order, so a regression to
+/// `created_at` fails here rather than looking plausible.
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn downloads_page_orders_videos_by_publish_date(pool: sqlx::PgPool) {
+    let app = helpers::TestWebApp::new(pool.clone()).await;
+
+    let user = UserBuilder::new().build(&pool).await;
+    let profile = ProfileBuilder::new(user.id).build(&pool).await;
+    let source = SourceBuilder::new(profile.id).build(&pool).await;
+
+    let day = |d: u32| {
+        chrono::TimeZone::with_ymd_and_hms(&chrono::Utc, 2026, 9, d, 12, 0, 0)
+            .single()
+            .expect("valid timestamp")
+    };
+
+    // Insertion order deliberately differs from publish order.
+    for (title, published) in [
+        ("Sept Twentyfirst", day(21)),
+        ("Sept Sixteenth", day(16)),
+        ("Sept Eighteenth", day(18)),
+        ("Sept Fourteenth", day(14)),
+    ] {
+        VideoBuilder::new(source.id)
+            .title(title)
+            .status(VideoStatus::Completed)
+            .published_at(published)
+            .build(&pool)
+            .await;
+    }
+
+    app.login_as(&user).await;
+
+    let body = app.server.get("/downloads").await.text();
+
+    let order = rendered_order(
+        &body,
+        &[
+            "Sept Twentyfirst",
+            "Sept Eighteenth",
+            "Sept Sixteenth",
+            "Sept Fourteenth",
+        ],
+    );
+
+    assert_eq!(
+        order,
+        vec![
+            "Sept Twentyfirst",
+            "Sept Eighteenth",
+            "Sept Sixteenth",
+            "Sept Fourteenth",
+        ],
+        "downloads page must list newest published first"
+    );
+}
+
+/// A video with no publish date sorts last rather than jumping to the top.
+///
+/// `videos.published_at` is nullable, so the ordering has to say where nulls
+/// go. Without `NULLS LAST` Postgres sorts them *first* on a `DESC` sort, and
+/// a single undated video would head the list.
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn videos_without_a_publish_date_sort_last(pool: sqlx::PgPool) {
+    let app = helpers::TestWebApp::new(pool.clone()).await;
+
+    let user = UserBuilder::new().build(&pool).await;
+    let profile = ProfileBuilder::new(user.id).build(&pool).await;
+    let source = SourceBuilder::new(profile.id).build(&pool).await;
+
+    // Insertion order matters for what this proves. The undated video is
+    // inserted *second*, so it has the newer `created_at` and the old
+    // `ORDER BY created_at DESC` would have put it first. Only
+    // `published_at DESC NULLS LAST` sorts it last, so this fails if either
+    // the column or the null handling regresses.
+    VideoBuilder::new(source.id)
+        .title("Dated Clip")
+        .status(VideoStatus::Completed)
+        .published_at(
+            chrono::TimeZone::with_ymd_and_hms(&chrono::Utc, 2026, 9, 14, 12, 0, 0)
+                .single()
+                .expect("valid timestamp"),
+        )
+        .build(&pool)
+        .await;
+
+    VideoBuilder::new(source.id)
+        .title("Undated Clip")
+        .status(VideoStatus::Completed)
+        .build(&pool)
+        .await;
+
+    app.login_as(&user).await;
+
+    let body = app.server.get("/downloads").await.text();
+
+    assert_eq!(
+        rendered_order(&body, &["Dated Clip", "Undated Clip"]),
+        vec!["Dated Clip", "Undated Clip"],
+        "an undated video must sort after dated ones, not ahead of them"
+    );
+}
+
+/// The order `titles` appear in within `body`, for those that appear at all.
+fn rendered_order<'a>(body: &str, titles: &[&'a str]) -> Vec<&'a str> {
+    let mut found: Vec<(usize, &str)> = titles
+        .iter()
+        .filter_map(|t| body.find(t).map(|idx| (idx, *t)))
+        .collect();
+    found.sort_unstable_by_key(|(idx, _)| *idx);
+    found.into_iter().map(|(_, t)| t).collect()
+}
+
 /// The source detail page shows the custom name rather than the raw URL, and
 /// lists the source's videos.
 #[sqlx::test(migrations = "../hof-core/migrations")]
