@@ -283,37 +283,47 @@ impl SourceIndexerActor {
         let needs_detection =
             self.source.entry_order == EntryOrder::Unknown || self.needs_order_redetection();
 
-        let entry_order = if needs_detection {
-            if self.source.entry_order != EntryOrder::Unknown {
-                info!(
-                    previous_order = ?self.source.entry_order,
-                    detected_at = ?self.source.entry_order_detected_at,
-                    "Re-detecting entry order (stale detection)"
-                );
-            }
-            let detected = self.detect_entry_order(&index_result.entries).await;
-            // Persist the detected order
-            if let Err(e) =
-                db::update_source_entry_order(&self.pool, self.source.id, detected).await
+        if needs_detection && self.source.entry_order != EntryOrder::Unknown {
+            info!(
+                previous_order = ?self.source.entry_order,
+                detected_at = ?self.source.entry_order_detected_at,
+                "Re-detecting entry order (stale detection)"
+            );
+        }
+
+        let detected = if needs_detection {
+            self.detect_entry_order(&index_result.entries).await
+        } else {
+            None
+        };
+
+        let plan = EntryOrderPlan::new(detected, self.source.entry_order, needs_detection);
+
+        if let Some(verdict) = plan.persist {
+            if let Err(e) = db::update_source_entry_order(&self.pool, self.source.id, verdict).await
             {
                 warn!(error = %e, "Failed to persist detected entry order");
             } else {
-                info!(order = ?detected, "Detected and persisted entry order");
+                info!(order = ?verdict, "Detected and persisted entry order");
             }
-            detected
-        } else {
-            self.source.entry_order
-        };
+        } else if needs_detection {
+            warn!(
+                stored_order = ?self.source.entry_order,
+                "Entry order detection inconclusive; keeping the stored order and indexing \
+                 this run without early termination"
+            );
+        }
+
+        let entry_order = plan.order;
 
         // Prepare entries based on detected order
         // For ascending order (oldest first), reverse to get newest first for cutoff logic
         let entries: Vec<&PlaylistEntry> = match entry_order {
-            EntryOrder::Ascending => index_result.entries.iter().rev().collect(),
+            Some(EntryOrder::Ascending) => index_result.entries.iter().rev().collect(),
             _ => index_result.entries.iter().collect(),
         };
 
-        // Early termination is only valid for ordered playlists
-        let use_early_termination = entry_order != EntryOrder::Unordered;
+        let use_early_termination = plan.early_termination;
 
         // Process each entry.
         // We stop early once we hit several consecutive videos before the cutoff date.
@@ -684,18 +694,18 @@ impl SourceIndexerActor {
     /// - `Descending` if newest entries come first
     /// - `Unordered` if order cannot be determined (< 2 entries, missing dates, or equal dates)
     #[instrument(skip(self, entries), fields(entry_count = entries.len()))]
-    async fn detect_entry_order(&self, entries: &[PlaylistEntry]) -> EntryOrder {
+    async fn detect_entry_order(&self, entries: &[PlaylistEntry]) -> Option<EntryOrder> {
         // Need at least 2 entries to determine order
         if entries.len() < 2 {
             debug!("Cannot detect order: fewer than 2 entries");
-            return EntryOrder::Unordered;
+            return None;
         }
 
         // The length check above guarantees both are present; `first`/`last`
         // express that without an indexing panic path.
         let (Some(first_entry), Some(last_entry)) = (entries.first(), entries.last()) else {
             debug!("Cannot detect order: entries unexpectedly empty");
-            return EntryOrder::Unordered;
+            return None;
         };
 
         debug!(
@@ -704,21 +714,27 @@ impl SourceIndexerActor {
             "Fetching metadata to detect entry order"
         );
 
-        // Fetch metadata for first entry
+        // A failed metadata fetch means "we could not look", not "the playlist
+        // is shuffled". Returning `None` leaves the stored order alone so the
+        // next index retries, instead of recording a verdict we never reached.
+        //
+        // This is the failure that motivated the change: detection asks for
+        // full metadata on the *oldest* entry immediately after enumerating
+        // the whole channel, which is exactly when YouTube starts throttling,
+        // and the bigger the channel the likelier it is to trip.
         let first_metadata = match self.ytdlp.fetch_video_metadata(&first_entry.url).await {
             Ok(m) => m,
             Err(e) => {
                 warn!(error = %e, "Failed to fetch first entry metadata for order detection");
-                return EntryOrder::Unordered;
+                return None;
             }
         };
 
-        // Fetch metadata for last entry
         let last_metadata = match self.ytdlp.fetch_video_metadata(&last_entry.url).await {
             Ok(m) => m,
             Err(e) => {
                 warn!(error = %e, "Failed to fetch last entry metadata for order detection");
-                return EntryOrder::Unordered;
+                return None;
             }
         };
 
@@ -727,29 +743,29 @@ impl SourceIndexerActor {
             determine_order_from_dates(first_metadata.published_at, last_metadata.published_at);
 
         match order {
-            EntryOrder::Ascending => {
+            Some(EntryOrder::Ascending) => {
                 info!(
                     first_date = ?first_metadata.published_at,
                     last_date = ?last_metadata.published_at,
                     "Detected ascending order (oldest first)"
                 );
             }
-            EntryOrder::Descending => {
+            Some(EntryOrder::Descending) => {
                 info!(
                     first_date = ?first_metadata.published_at,
                     last_date = ?last_metadata.published_at,
                     "Detected descending order (newest first)"
                 );
             }
-            EntryOrder::Unordered => {
-                debug!(
+            Some(EntryOrder::Unordered | EntryOrder::Unknown) => {
+                // `determine_order_from_dates` yields neither.
+            }
+            None => {
+                warn!(
                     first_date = ?first_metadata.published_at,
                     last_date = ?last_metadata.published_at,
-                    "Cannot determine order from dates"
+                    "Cannot determine order from dates; leaving stored order untouched"
                 );
-            }
-            EntryOrder::Unknown => {
-                // Should not happen from determine_order_from_dates
             }
         }
 
@@ -775,20 +791,86 @@ enum EntryOutcome {
     Error(String),
 }
 
+/// What an index run does with the outcome of entry-order detection.
+///
+/// Split out of `index_source` so the rules below are testable without a live
+/// yt-dlp client and a database — they are where the bug lived, not in the
+/// date comparison itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct EntryOrderPlan {
+    /// Order to process this run's entries with; `None` when unknown.
+    order: Option<EntryOrder>,
+    /// Verdict to write back to the source row, if any.
+    ///
+    /// `None` leaves `sources.entry_order` and `entry_order_detected_at`
+    /// exactly as they were.
+    persist: Option<EntryOrder>,
+    /// Whether early termination is sound this run.
+    early_termination: bool,
+}
+
+impl EntryOrderPlan {
+    /// Build the plan for one index run.
+    ///
+    /// - `detected` is `detect_entry_order`'s result: `None` means it could
+    ///   not reach a conclusion.
+    /// - `stored` is the order currently on the source row.
+    /// - `ran_detection` is whether detection was attempted at all this run.
+    ///
+    /// The rules:
+    ///
+    /// 1. **An inconclusive detection persists nothing.**
+    ///    `db::update_source_entry_order` stamps
+    ///    `entry_order_detected_at = NOW()`, so writing a non-verdict makes a
+    ///    failure indistinguishable from a successful detection and suppresses
+    ///    re-detection for `REDETECTION_DAYS`.
+    /// 2. **An inconclusive detection never downgrades a stored verdict.**
+    /// 3. **Early termination requires a known ordering.** Stopping after
+    ///    `MAX_CONSECUTIVE_BEFORE_CUTOFF` pre-cutoff entries assumes the
+    ///    remainder is older still, which only holds for a known direction.
+    const fn new(detected: Option<EntryOrder>, stored: EntryOrder, ran_detection: bool) -> Self {
+        let order = if ran_detection {
+            detected
+        } else {
+            Some(stored)
+        };
+
+        Self {
+            order,
+            persist: if ran_detection { detected } else { None },
+            early_termination: matches!(
+                order,
+                Some(EntryOrder::Ascending | EntryOrder::Descending)
+            ),
+        }
+    }
+}
+
 /// Determine entry order from two publish dates (first and last entry).
 ///
 /// Returns:
-/// - `Ascending` if first < last (oldest first)
-/// - `Descending` if first > last (newest first)
-/// - `Unordered` if dates are equal or either is missing
+/// - `Some(Ascending)` if first < last (oldest first)
+/// - `Some(Descending)` if first > last (newest first)
+/// - `None` if the dates cannot discriminate — either is missing, or they are
+///   equal
+///
+/// # `None` is not `Unordered`
+///
+/// This used to return `Unordered` for the indeterminate cases, and the caller
+/// persisted that as a detection result. Two entries that happen to share a
+/// timestamp, or one whose metadata came back without a date, say **nothing**
+/// about whether the playlist is ordered — and a 2-point comparison cannot
+/// prove "unordered" in the first place, only which of the two ends is newer.
+/// Reporting a verdict from non-evidence latched a wrong, sticky label onto
+/// real sources; see `detect_entry_order`.
 fn determine_order_from_dates(
     first_date: Option<chrono::DateTime<Utc>>,
     last_date: Option<chrono::DateTime<Utc>>,
-) -> EntryOrder {
+) -> Option<EntryOrder> {
     match (first_date, last_date) {
-        (Some(first), Some(last)) if first < last => EntryOrder::Ascending,
-        (Some(first), Some(last)) if first > last => EntryOrder::Descending,
-        _ => EntryOrder::Unordered,
+        (Some(first), Some(last)) if first < last => Some(EntryOrder::Ascending),
+        (Some(first), Some(last)) if first > last => Some(EntryOrder::Descending),
+        _ => None,
     }
 }
 
@@ -860,67 +942,143 @@ mod tests {
         assert!(!is_likely_short(&regular_entry));
     }
 
-    #[test]
-    fn test_determine_order_ascending() {
-        // First entry is older than last entry -> ascending (oldest first)
-        let first = Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap();
-        let last = Utc.with_ymd_and_hms(2024, 6, 1, 0, 0, 0).unwrap();
+    // ========================================================================
+    // Entry order detection
+    //
+    // Failure modes, written down before the guards (AGENTS.md "Testing
+    // Philosophy"). Observed in production on a 6366-entry YouTube channel
+    // that is plainly newest-first but was labelled `Unordered`:
+    //
+    //   A. A metadata fetch fails. Detection asks for full metadata on the
+    //      *oldest* entry right after enumerating the whole channel, which is
+    //      when YouTube throttles — so the bigger the channel, the likelier.
+    //      A failure must not become a verdict.
+    //   B. An entry comes back without a publish date. Same: not a verdict.
+    //   C. The two dates are equal. Ambiguous, not evidence of "unordered".
+    //   D. Fewer than two entries. Nothing to compare.
+    //   E. A genuinely descending channel must read as `Descending`.
+    //   F. An inconclusive run must not overwrite a good stored verdict —
+    //      the write stamps `entry_order_detected_at = NOW()`, which would
+    //      suppress re-detection for `REDETECTION_DAYS`.
+    //   G. An inconclusive run must not use early termination, which assumes
+    //      a known ordering and would otherwise skip videos.
+    //
+    // B, C and E are the pure date comparison. D is `detect_entry_order`'s
+    // length guard. A, F and G are the caller's decision, extracted into
+    // `EntryOrderPlan` so they can be asserted here rather than only through
+    // a live yt-dlp client.
+    // ========================================================================
 
+    #[test]
+    fn determine_order_reads_a_real_direction_from_two_dates() {
+        let older = Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap();
+        let newer = Utc.with_ymd_and_hms(2024, 6, 1, 0, 0, 0).unwrap();
+
+        // Oldest first.
         assert_eq!(
-            determine_order_from_dates(Some(first), Some(last)),
-            EntryOrder::Ascending
+            determine_order_from_dates(Some(older), Some(newer)),
+            Some(EntryOrder::Ascending)
+        );
+
+        // Newest first — what a YouTube channel's /videos tab actually is,
+        // and what the production source in question should have been.
+        assert_eq!(
+            determine_order_from_dates(Some(newer), Some(older)),
+            Some(EntryOrder::Descending)
         );
     }
 
+    /// Modes B and C: dates that cannot discriminate yield no verdict.
+    ///
+    /// These returned `Unordered` before, which the caller then persisted as
+    /// though detection had succeeded.
     #[test]
-    fn test_determine_order_descending() {
-        // First entry is newer than last entry -> descending (newest first)
-        let first = Utc.with_ymd_and_hms(2024, 6, 1, 0, 0, 0).unwrap();
-        let last = Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap();
-
-        assert_eq!(
-            determine_order_from_dates(Some(first), Some(last)),
-            EntryOrder::Descending
-        );
-    }
-
-    #[test]
-    fn test_determine_order_equal_dates() {
-        // Same date -> unordered
+    fn determine_order_yields_no_verdict_when_dates_cannot_discriminate() {
         let date = Utc.with_ymd_and_hms(2024, 3, 15, 12, 0, 0).unwrap();
 
-        assert_eq!(
-            determine_order_from_dates(Some(date), Some(date)),
-            EntryOrder::Unordered
+        for (first, last, case) in [
+            (Some(date), Some(date), "equal dates are ambiguous"),
+            (None, Some(date), "first entry has no date"),
+            (Some(date), None, "last entry has no date"),
+            (None, None, "neither entry has a date"),
+        ] {
+            assert_eq!(
+                determine_order_from_dates(first, last),
+                None,
+                "{case}: must not be reported as a verdict"
+            );
+        }
+    }
+
+    /// Mode E: a determined verdict is used and persisted.
+    #[test]
+    fn plan_persists_a_determined_verdict() {
+        let plan = EntryOrderPlan::new(Some(EntryOrder::Descending), EntryOrder::Unknown, true);
+
+        assert_eq!(plan.order, Some(EntryOrder::Descending));
+        assert_eq!(plan.persist, Some(EntryOrder::Descending));
+        assert!(
+            plan.early_termination,
+            "a known direction makes early termination sound"
         );
     }
 
+    /// Modes A and F, the regression this whole change exists for.
+    ///
+    /// A source already known to be newest-first hits one throttled metadata
+    /// fetch. Before the fix the caller wrote `Unordered` with
+    /// `entry_order_detected_at = NOW()`, so the source stayed mislabelled —
+    /// and stayed on full scans — for `REDETECTION_DAYS`.
     #[test]
-    fn test_determine_order_missing_first_date() {
-        let last = Utc.with_ymd_and_hms(2024, 6, 1, 0, 0, 0).unwrap();
+    fn plan_does_not_overwrite_a_good_verdict_when_detection_is_inconclusive() {
+        let plan = EntryOrderPlan::new(None, EntryOrder::Descending, true);
 
         assert_eq!(
-            determine_order_from_dates(None, Some(last)),
-            EntryOrder::Unordered
+            plan.persist, None,
+            "an inconclusive run must write nothing, so the stored Descending \
+             and its detected_at both survive"
+        );
+        assert_ne!(
+            plan.persist,
+            Some(EntryOrder::Unordered),
+            "a failed lookup is not evidence the playlist is shuffled"
         );
     }
 
+    /// Mode G: an inconclusive run scans everything.
     #[test]
-    fn test_determine_order_missing_last_date() {
-        let first = Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap();
+    fn plan_disables_early_termination_when_the_order_is_unknown() {
+        let plan = EntryOrderPlan::new(None, EntryOrder::Descending, true);
 
-        assert_eq!(
-            determine_order_from_dates(Some(first), None),
-            EntryOrder::Unordered
+        assert_eq!(plan.order, None, "this run does not know the order");
+        assert!(
+            !plan.early_termination,
+            "stopping after consecutive pre-cutoff entries assumes a known \
+             ordering; without one it can skip videos"
         );
     }
 
+    /// A run that does not re-detect keeps using the stored order and writes
+    /// nothing.
     #[test]
-    fn test_determine_order_both_dates_missing() {
+    fn plan_reuses_the_stored_order_when_detection_is_skipped() {
+        let plan = EntryOrderPlan::new(None, EntryOrder::Ascending, false);
+
+        assert_eq!(plan.order, Some(EntryOrder::Ascending));
         assert_eq!(
-            determine_order_from_dates(None, None),
-            EntryOrder::Unordered
+            plan.persist, None,
+            "a skipped detection must not rewrite the row"
         );
+        assert!(plan.early_termination);
+    }
+
+    /// A stored `Unordered` still disables early termination, as before.
+    #[test]
+    fn plan_keeps_full_scans_for_a_stored_unordered_source() {
+        let plan = EntryOrderPlan::new(None, EntryOrder::Unordered, false);
+
+        assert_eq!(plan.order, Some(EntryOrder::Unordered));
+        assert!(!plan.early_termination);
     }
 
     // ========================================================================
