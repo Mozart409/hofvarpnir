@@ -770,9 +770,14 @@ pub async fn trigger_metadata(
 /// Reset entry order detection for a source.
 ///
 /// Sets the `entry_order` back to `Unknown`, triggering re-detection on next index.
+// `routes!()` derives the axum route from this `path`, and this router is
+// nested under `/api/v1/sources`, so the path must be relative to that nest
+// prefix like every other route here. Spelling it as a full path mounted the
+// endpoint at `/api/v1/sources/api/sources/{id}/reset-order` and advertised a
+// path in the OpenAPI spec that did not exist.
 #[utoipa::path(
     post,
-    path = "/api/sources/{id}/reset-order",
+    path = "/{id}/reset-order",
     params(
         ("id" = String, Path, description = "Source ID (ULID)")
     ),
