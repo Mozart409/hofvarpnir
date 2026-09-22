@@ -21,10 +21,12 @@ mod helpers;
 
 mod test_activity;
 mod test_auth;
+mod test_download_pipeline;
 mod test_downloads;
 mod test_health;
 mod test_openapi;
 mod test_profiles;
 mod test_settings;
+mod test_source_actions;
 mod test_sources;
 mod test_system;

@@ -16,6 +16,7 @@ use hof_core::{
         scheduler::SchedulerActor,
     },
     config::{DownloadConfig, EnvOverrides},
+    db,
     domain::video::DownloadProgress,
     liveness::LivenessFlag,
     runtime_config::{DrainToken, RuntimeConfig},
@@ -24,6 +25,7 @@ use hof_core::{
 use kameo::actor::{ActorRef, Spawn};
 use sqlx::PgPool;
 use tokio::sync::{broadcast, mpsc};
+use ulid::Ulid;
 
 /// Test application wrapper.
 ///
@@ -53,6 +55,13 @@ impl TestApp {
     ///
     /// The pool is provided by `#[sqlx::test]` which manages database isolation.
     pub async fn new(pool: PgPool) -> Self {
+        Self::with_verification(pool, false).await
+    }
+
+    /// Create a test application with optional download verification.
+    ///
+    /// Use this to test the full download pipeline including verification.
+    pub async fn with_verification(pool: PgPool, verify_downloads: bool) -> Self {
         // Create minimal actors for testing
         let (progress_tx, _progress_rx) = mpsc::channel::<DownloadProgress>(100);
 
@@ -70,7 +79,7 @@ impl TestApp {
             max_attempts: 3,
             rate_limit_delay: Duration::from_millis(100),
             ytdlp_path: std::path::PathBuf::from("yt-dlp"),
-            verify_downloads: false,
+            verify_downloads,
         };
 
         let broadcaster = ActivityBroadcaster::new();
@@ -78,6 +87,12 @@ impl TestApp {
         let runtime_config = RuntimeConfig::new(pool.clone(), EnvOverrides::default())
             .await
             .expect("Failed to load runtime settings");
+
+        // Settings written through the API reach the actors only over
+        // LISTEN/NOTIFY (`startup.rs` does the same). Without this listener a
+        // test can PATCH settings or pause a module and the scheduler keeps
+        // serving its stale snapshot, so the pause gate silently never fires.
+        let _settings_listener = runtime_config.clone().spawn_listener();
 
         // Process-local drain signal (see ADR-0004). Triggerable through
         // this test app via `POST /api/v1/system/shutdown`, which calls
@@ -156,5 +171,68 @@ impl TestApp {
             cleanup,
             jellyfin_metadata,
         }
+    }
+
+    /// Wait until a settings change made through the API has propagated to
+    /// the in-process actors.
+    ///
+    /// `PATCH /system/settings` and `POST /system/pause` write the row and
+    /// `NOTIFY`; the listener picks that up asynchronously and republishes to
+    /// the watch channel the actors read. `GET /system/settings` is served
+    /// from that same channel (`runtime_config.current()`), so polling it
+    /// until `predicate` holds is what makes "pause, then assert the gate
+    /// fires" deterministic instead of racy.
+    pub async fn wait_for_settings<F>(&self, bearer: &str, predicate: F)
+    where
+        F: Fn(&serde_json::Value) -> bool,
+    {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+
+        loop {
+            let response = self
+                .server
+                .get("/api/v1/system/settings")
+                .add_header("Authorization", bearer)
+                .await;
+            let body: serde_json::Value = response.json();
+
+            if predicate(&body) {
+                return;
+            }
+
+            assert!(
+                std::time::Instant::now() < deadline,
+                "settings did not propagate within 5s; last body: {body}"
+            );
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    }
+
+    /// Enqueue a video for download using the download supervisor.
+    ///
+    /// This allows tests to directly trigger downloads without going through the scheduler.
+    pub async fn enqueue_download(&self, video_id: Ulid, source_id: Ulid) {
+        use hof_core::actors::download_supervisor::EnqueueDownload;
+
+        let video = db::get_video(&self.pool, video_id)
+            .await
+            .expect("video should exist");
+
+        let source = db::get_source(&self.pool, source_id)
+            .await
+            .expect("source should exist");
+
+        let profile = db::get_profile(&self.pool, source.profile_id)
+            .await
+            .expect("profile should exist");
+
+        self.supervisor
+            .ask(EnqueueDownload {
+                video,
+                profile,
+                source,
+            })
+            .await
+            .expect("enqueue download should succeed");
     }
 }

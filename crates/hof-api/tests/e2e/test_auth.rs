@@ -5,8 +5,9 @@
 
 use axum::http::StatusCode;
 use sqlx::PgPool;
+use ulid::Ulid;
 
-use crate::helpers::{ApiKeyBuilder, ProfileBuilder, SourceBuilder, TestApp, UserBuilder};
+use crate::helpers::{ApiKeyBuilder, ProfileBuilder, SourceBuilder, TestApp, UserBuilder, db};
 
 // ============================================================================
 // No Auth -> 401 Unauthorized
@@ -216,6 +217,14 @@ async fn write_token_can_create_profile(pool: PgPool) {
         .await;
 
     response.assert_status(StatusCode::CREATED);
+
+    // Verify persisted in DB
+    let body: serde_json::Value = response.json();
+    let profile_id = Ulid::from_string(body["id"].as_str().unwrap()).unwrap();
+    let (db_name, _db_quality, _db_retention) = db::fetch_profile_fields(&pool, profile_id)
+        .await
+        .expect("profile should be in DB");
+    assert_eq!(db_name, "Test Profile");
 }
 
 #[sqlx::test(migrations = "../hof-core/migrations")]
@@ -233,6 +242,12 @@ async fn write_token_can_update_profile(pool: PgPool) {
         .await;
 
     response.assert_status_ok();
+
+    // Verify persisted in DB
+    let (db_name, _db_quality, _db_retention) = db::fetch_profile_fields(&pool, profile.id)
+        .await
+        .expect("profile should be in DB");
+    assert_eq!(db_name, "Updated Name");
 }
 
 #[sqlx::test(migrations = "../hof-core/migrations")]
@@ -306,6 +321,12 @@ async fn delete_token_can_delete_profile(pool: PgPool) {
         .await;
 
     response.assert_status(StatusCode::NO_CONTENT);
+
+    // Verify removed from DB
+    let exists = db::profile_exists(&pool, profile.id)
+        .await
+        .expect("query should succeed");
+    assert!(!exists, "deleted profile should not exist in DB");
 }
 
 // ============================================================================
@@ -334,7 +355,14 @@ async fn full_access_token_can_do_everything(pool: PgPool) {
     create_response.assert_status(StatusCode::CREATED);
 
     let created: serde_json::Value = create_response.json();
-    let profile_id = created["id"].as_str().unwrap();
+    let profile_id_str = created["id"].as_str().unwrap();
+    let profile_id = Ulid::from_string(profile_id_str).unwrap();
+
+    // Verify created in DB
+    let (db_name, _db_quality, _db_retention) = db::fetch_profile_fields(&pool, profile_id)
+        .await
+        .expect("profile should exist");
+    assert_eq!(db_name, "Full Access Test");
 
     // Read
     let read_response = app
@@ -353,6 +381,12 @@ async fn full_access_token_can_do_everything(pool: PgPool) {
         .await;
     update_response.assert_status_ok();
 
+    // Verify updated in DB
+    let (db_name, _db_quality, _db_retention) = db::fetch_profile_fields(&pool, profile_id)
+        .await
+        .expect("profile should exist");
+    assert_eq!(db_name, "Updated");
+
     // Delete
     let delete_response = app
         .server
@@ -360,6 +394,12 @@ async fn full_access_token_can_do_everything(pool: PgPool) {
         .add_header("Authorization", key.bearer())
         .await;
     delete_response.assert_status(StatusCode::NO_CONTENT);
+
+    // Verify deleted from DB
+    let exists = db::profile_exists(&pool, profile_id)
+        .await
+        .expect("query should succeed");
+    assert!(!exists, "deleted profile should not exist in DB");
 }
 
 // ============================================================================

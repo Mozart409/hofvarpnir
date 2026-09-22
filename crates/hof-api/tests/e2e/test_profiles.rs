@@ -2,8 +2,9 @@
 
 use axum::http::StatusCode;
 use sqlx::PgPool;
+use ulid::Ulid;
 
-use crate::helpers::{ApiKeyBuilder, ProfileBuilder, TestApp, UserBuilder};
+use crate::helpers::{ApiKeyBuilder, ProfileBuilder, TestApp, UserBuilder, db};
 
 #[sqlx::test(migrations = "../hof-core/migrations")]
 async fn list_profiles_returns_empty_array(pool: PgPool) {
@@ -47,6 +48,15 @@ async fn create_profile_returns_201(pool: PgPool) {
     assert_eq!(body["name"], "My Test Profile");
     assert_eq!(body["quality"], "Q1080p");
     assert!(body["id"].is_string());
+
+    // Verify persisted in DB
+    let profile_id = Ulid::from_string(body["id"].as_str().unwrap()).unwrap();
+    let (db_name, db_quality, db_retention) = db::fetch_profile_fields(&pool, profile_id)
+        .await
+        .expect("profile should be in DB");
+    assert_eq!(db_name, "My Test Profile");
+    assert_eq!(db_quality, "1080p");
+    assert_eq!(db_retention, None);
 }
 
 #[sqlx::test(migrations = "../hof-core/migrations")]
@@ -79,6 +89,13 @@ async fn create_profile_with_optional_fields(pool: PgPool) {
     assert_eq!(body["include_shorts"], true);
     assert_eq!(body["storage_quota_bytes"], 500_000_000_000_i64);
     assert_eq!(body["retention_days"], 90);
+
+    // Verify persisted in DB
+    let profile_id = Ulid::from_string(body["id"].as_str().unwrap()).unwrap();
+    let (_db_name, _db_quality, db_retention) = db::fetch_profile_fields(&pool, profile_id)
+        .await
+        .expect("profile should be in DB");
+    assert_eq!(db_retention, Some(90));
 }
 
 #[sqlx::test(migrations = "../hof-core/migrations")]
@@ -179,6 +196,13 @@ async fn update_profile_partial(pool: PgPool) {
     assert_eq!(body["name"], "Updated Name");
     // Other fields should remain unchanged
     assert_eq!(body["quality"], "Q1080p");
+
+    // Verify persisted in DB
+    let (db_name, db_quality, _db_retention) = db::fetch_profile_fields(&pool, profile.id)
+        .await
+        .expect("profile should be in DB");
+    assert_eq!(db_name, "Updated Name");
+    assert_eq!(db_quality, "1080p");
 }
 
 #[sqlx::test(migrations = "../hof-core/migrations")]
@@ -212,6 +236,12 @@ async fn update_profile_clear_retention(pool: PgPool) {
 
     let body: serde_json::Value = response.json();
     assert!(body["retention_days"].is_null());
+
+    // Verify persisted in DB
+    let (_db_name, _db_quality, db_retention) = db::fetch_profile_fields(&pool, profile.id)
+        .await
+        .expect("profile should be in DB");
+    assert_eq!(db_retention, None);
 }
 
 #[sqlx::test(migrations = "../hof-core/migrations")]
@@ -229,13 +259,19 @@ async fn delete_profile_returns_204(pool: PgPool) {
 
     response.assert_status(StatusCode::NO_CONTENT);
 
-    // Verify it's gone
+    // Verify it's gone via API
     let get_response = app
         .server
         .get(&format!("/api/v1/profiles/{}", profile.id))
         .add_header("Authorization", key.bearer())
         .await;
     get_response.assert_status(StatusCode::NOT_FOUND);
+
+    // Verify removed from DB
+    let exists = db::profile_exists(&pool, profile.id)
+        .await
+        .expect("query should succeed");
+    assert!(!exists, "deleted profile should not exist in DB");
 }
 
 #[sqlx::test(migrations = "../hof-core/migrations")]

@@ -8,7 +8,9 @@ use hof_core::db;
 use sqlx::PgPool;
 use ulid::Ulid;
 
-use crate::helpers::{ApiKeyBuilder, ProfileBuilder, SourceBuilder, TestApp, UserBuilder};
+use crate::helpers::{
+    ApiKeyBuilder, ProfileBuilder, SourceBuilder, TestApp, UserBuilder, db as test_db,
+};
 
 /// Seed a completed video downloaded `days_ago` in the past, linked to `source_id`.
 async fn seed_completed_video(
@@ -667,6 +669,28 @@ async fn bulk_cancel_applies_to_eligible_and_reports_ineligible(pool: PgPool) {
         serde_json::json!([completed.to_string()])
     );
     assert_eq!(body["not_found"], serde_json::json!([ghost.to_string()]));
+
+    // Verify the persisted statuses, not just the response body. Cancelling
+    // lands the video in `failed` rather than `skipped` — `CancelDownload` in
+    // `download_supervisor.rs` writes `VideoStatus::Failed` and emits a
+    // `DownloadFailed` activity event. `video_status` is a Postgres enum
+    // written snake_case (see `#[sqlx(rename_all = "snake_case")]` on
+    // `VideoStatus`), so these compare against the snake_case spelling.
+    let pending_status = test_db::fetch_video_status(&pool, pending)
+        .await
+        .expect("pending should be in DB");
+    assert_eq!(
+        pending_status, "failed",
+        "cancelling a pending video marks it failed"
+    );
+
+    let completed_status = test_db::fetch_video_status(&pool, completed)
+        .await
+        .expect("completed should be in DB");
+    assert_eq!(
+        completed_status, "completed",
+        "completed video should remain unchanged"
+    );
 }
 
 /// Cancel must not touch a completed video, so its status is unchanged.
