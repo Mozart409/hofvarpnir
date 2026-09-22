@@ -115,14 +115,24 @@ pub struct Video {
     #[serde(default)]
     pub categories: Vec<String>,
 
+    // The three fields below are emitted by the YouTube extractor but not by
+    // every other one -- the `generic` extractor omits all three for a direct
+    // media URL. Upstream models them as required, so a plain
+    // `https://host/clip.mp4` source fails the whole metadata parse with
+    // `missing field \`age_limit\`` and the download never starts. Defaulting
+    // them is the same fix as the `--flat-playlist` nullability divergence
+    // above: a missing optional field must not fail the parse.
     /// If the video is age restricted, the age limit is different from 0.
+    #[serde(default)]
     pub age_limit: i64,
     /// If the video is available in the country.
     #[serde(rename = "_has_drm")]
     pub has_drm: Option<DrmStatus>,
     /// If the video was a live stream.
+    #[serde(default)]
     pub live_status: String,
     /// If the video is playable in an embed.
+    #[serde(default)]
     pub playable_in_embed: bool,
 
     /// The extractor information.
