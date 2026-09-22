@@ -167,19 +167,9 @@ pub async fn delete_user(pool: &PgPool, id: Ulid) -> Result<(), DbError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::{create_pool, run_migrations};
 
-    // Integration tests require a running database.
-    // Run with: DATABASE_URL=postgres://... cargo test -p hof-core --all-features -- --include-ignored
-
-    #[tokio::test]
-    #[ignore = "requires a running database (run with --include-ignored)"]
-    async fn test_create_user() {
-        let pool = create_pool().await.expect("Failed to create pool");
-        run_migrations(&pool)
-            .await
-            .expect("Failed to run migrations");
-
+    #[sqlx::test]
+    async fn test_create_user(pool: PgPool) {
         let user = create_user(
             &pool,
             CreateUser {
@@ -193,21 +183,10 @@ mod tests {
 
         assert_eq!(user.email, "test@example.com");
         assert_eq!(user.name, "Test User");
-
-        // Cleanup
-        delete_user(&pool, user.id)
-            .await
-            .expect("Failed to delete user");
     }
 
-    #[tokio::test]
-    #[ignore = "requires a running database (run with --include-ignored)"]
-    async fn test_user_crud() {
-        let pool = create_pool().await.expect("Failed to create pool");
-        run_migrations(&pool)
-            .await
-            .expect("Failed to run migrations");
-
+    #[sqlx::test]
+    async fn test_user_crud(pool: PgPool) {
         // Create
         let user = create_user(
             &pool,

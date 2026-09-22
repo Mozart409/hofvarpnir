@@ -598,16 +598,8 @@ mod tests {
     /// path stays covered by `pause_deadline_computes_sleep_and_lapses`
     /// (the pure `sleep_duration_until`/`next_pause_deadline` helpers) plus
     /// manual review of `spawn_listener`'s inner loop.
-    #[tokio::test]
-    #[ignore = "requires a running database (run with --include-ignored)"]
-    async fn listener_republishes_on_notify() {
-        let pool = crate::db::create_pool()
-            .await
-            .expect("Failed to create pool");
-        crate::db::run_migrations(&pool)
-            .await
-            .expect("Failed to run migrations");
-
+    #[sqlx::test]
+    async fn listener_republishes_on_notify(pool: PgPool) {
         let config = RuntimeConfig::new(pool.clone(), EnvOverrides::default())
             .await
             .expect("Failed to build RuntimeConfig");
@@ -659,17 +651,6 @@ mod tests {
         assert_eq!(observed.rate_limit_delay.value, target);
 
         listener_handle.abort();
-
-        // Cleanup: leave the singleton row as the other `#[ignore]`d tests
-        // in this binary expect to find it.
-        let cleanup = crate::db::RuntimeSettingsPatch {
-            rate_limit_delay_secs: Some(None),
-            updated_by: None,
-            ..crate::db::RuntimeSettingsPatch::default()
-        };
-        crate::db::patch_runtime_settings(&pool, &cleanup)
-            .await
-            .expect("Failed to reset runtime settings");
     }
 
     #[test]
