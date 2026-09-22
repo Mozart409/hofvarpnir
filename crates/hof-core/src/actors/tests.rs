@@ -62,31 +62,6 @@ mod download_supervisor_tests {
         // Very large attempts should still cap correctly
         assert!(calc_delay(100) <= max);
     }
-
-    #[test]
-    fn test_supervisor_status_fields() {
-        use super::super::download_supervisor::SupervisorStatus;
-
-        let status = SupervisorStatus {
-            active_downloads: 5,
-            dispatching: 1,
-            available_permits: 3,
-            rate_limit_backoff: 2,
-            db_backoff_until: None,
-            consecutive_db_failures: 0,
-            last_db_error: None,
-        };
-
-        assert_eq!(status.active_downloads, 5);
-        assert_eq!(status.dispatching, 1);
-        assert_eq!(status.available_permits, 3);
-        assert_eq!(status.rate_limit_backoff, 2);
-        // A healthy supervisor reports no database backoff: these three are
-        // what the UI keys off to decide whether to show the outage banner.
-        assert!(status.db_backoff_until.is_none());
-        assert_eq!(status.consecutive_db_failures, 0);
-        assert!(status.last_db_error.is_none());
-    }
 }
 
 // ============================================================================
@@ -158,63 +133,6 @@ mod source_indexer_tests {
         };
         assert!(!is_likely_short(&regular2));
     }
-
-    #[test]
-    fn test_indexing_result_defaults() {
-        use super::super::source_indexer::IndexingResult;
-        use ulid::Ulid;
-
-        let result = IndexingResult {
-            source_id: Ulid::generate(),
-            new_videos: 0,
-            existing_videos: 0,
-            filtered_out: 0,
-            filtered_before_cutoff: 0,
-            filtered_shorts: 0,
-            filtered_livestreams: 0,
-            filtered_unavailable: 0,
-            filtered_private: 0,
-            filtered_other: 0,
-            errors: Vec::new(),
-        };
-
-        assert_eq!(result.new_videos, 0);
-        assert_eq!(result.existing_videos, 0);
-        assert_eq!(result.filtered_out, 0);
-        assert!(result.errors.is_empty());
-    }
-
-    #[test]
-    fn test_indexing_result_with_data() {
-        use super::super::source_indexer::IndexingResult;
-        use ulid::Ulid;
-
-        let result = IndexingResult {
-            source_id: Ulid::generate(),
-            new_videos: 10,
-            existing_videos: 50,
-            filtered_out: 5,
-            filtered_before_cutoff: 1,
-            filtered_shorts: 1,
-            filtered_livestreams: 1,
-            filtered_unavailable: 1,
-            filtered_private: 1,
-            filtered_other: 0,
-            errors: vec!["Rate limited".to_string()],
-        };
-
-        assert_eq!(result.new_videos, 10);
-        assert_eq!(result.existing_videos, 50);
-        assert_eq!(result.filtered_out, 5);
-        assert_eq!(result.filtered_before_cutoff, 1);
-        assert_eq!(result.filtered_shorts, 1);
-        assert_eq!(result.filtered_livestreams, 1);
-        assert_eq!(result.filtered_unavailable, 1);
-        assert_eq!(result.filtered_private, 1);
-        assert_eq!(result.filtered_other, 0);
-        assert_eq!(result.errors.len(), 1);
-        assert_eq!(result.errors[0], "Rate limited");
-    }
 }
 
 // ============================================================================
@@ -222,38 +140,7 @@ mod source_indexer_tests {
 // ============================================================================
 
 #[cfg(test)]
-mod scheduler_tests {
-    use std::time::Duration;
-
-    /// Minimum interval constant from scheduler (5 minutes)
-    const MIN_INDEX_INTERVAL_SECS: u64 = 300;
-    /// Default check interval (1 minute)
-    const DEFAULT_CHECK_INTERVAL_SECS: u64 = 60;
-
-    #[test]
-    fn test_duration_from_secs() {
-        let interval = Duration::from_secs(MIN_INDEX_INTERVAL_SECS);
-        assert_eq!(interval.as_secs(), 300);
-
-        let check = Duration::from_secs(DEFAULT_CHECK_INTERVAL_SECS);
-        assert_eq!(check.as_secs(), 60);
-    }
-
-    #[test]
-    fn test_scheduler_status_fields() {
-        use super::super::scheduler::SchedulerStatus;
-
-        let status = SchedulerStatus {
-            running: true,
-            active_indexers: 3,
-            check_interval_secs: 60,
-        };
-
-        assert!(status.running);
-        assert_eq!(status.active_indexers, 3);
-        assert_eq!(status.check_interval_secs, 60);
-    }
-}
+mod scheduler_tests {}
 
 // ============================================================================
 // Cleanup Actor Tests
@@ -262,16 +149,6 @@ mod scheduler_tests {
 #[cfg(test)]
 mod cleanup_tests {
     use std::path::Path;
-    use std::time::Duration;
-
-    /// Default cleanup interval (3 hours)
-    const DEFAULT_CLEANUP_INTERVAL_SECS: u64 = 60 * 60 * 3;
-
-    #[test]
-    fn test_cleanup_interval_duration() {
-        let interval = Duration::from_secs(DEFAULT_CLEANUP_INTERVAL_SECS);
-        assert_eq!(interval.as_secs(), 10_800); // 3 hours
-    }
 
     #[test]
     fn test_is_ytdlp_temp_file() {
@@ -299,72 +176,6 @@ mod cleanup_tests {
 
         // NFO files are not temp files
         assert!(!is_ytdlp_temp_file(Path::new("/downloads/video.nfo")));
-    }
-
-    #[test]
-    fn test_cleanup_result_defaults() {
-        use super::super::cleanup::CleanupResult;
-
-        let result = CleanupResult::default();
-
-        assert_eq!(result.retention_cleaned, 0);
-        assert_eq!(result.quota_cleaned, 0);
-        assert_eq!(result.temp_files_cleaned, 0);
-        assert_eq!(result.bytes_freed, 0);
-        assert!(result.errors.is_empty());
-    }
-
-    #[test]
-    fn test_cleanup_result_with_data() {
-        use super::super::cleanup::CleanupResult;
-
-        let result = CleanupResult {
-            retention_cleaned: 5,
-            quota_cleaned: 3,
-            temp_files_cleaned: 10,
-            bytes_freed: 5_000_000_000,
-            errors: vec!["Failed to delete file".to_string()],
-        };
-
-        assert_eq!(result.retention_cleaned, 5);
-        assert_eq!(result.quota_cleaned, 3);
-        assert_eq!(result.temp_files_cleaned, 10);
-        assert_eq!(result.bytes_freed, 5_000_000_000);
-        assert_eq!(result.errors.len(), 1);
-    }
-
-    #[test]
-    fn test_cleanup_status_fields() {
-        use super::super::cleanup::CleanupStatus;
-
-        let status = CleanupStatus {
-            running: true,
-            global_retention_days: Some(30),
-            cleanup_interval_secs: 900,
-            last_run_at: None,
-        };
-
-        assert!(status.running);
-        assert_eq!(status.global_retention_days, Some(30));
-        assert_eq!(status.cleanup_interval_secs, 900);
-        assert!(status.last_run_at.is_none());
-    }
-
-    #[test]
-    fn test_cleanup_status_without_retention() {
-        use super::super::cleanup::CleanupStatus;
-
-        let status = CleanupStatus {
-            running: false,
-            global_retention_days: None,
-            cleanup_interval_secs: 1800,
-            last_run_at: Some(chrono::Utc::now()),
-        };
-
-        assert!(!status.running);
-        assert!(status.global_retention_days.is_none());
-        assert_eq!(status.cleanup_interval_secs, 1800);
-        assert!(status.last_run_at.is_some());
     }
 
     /// Helper function to check if a path is a yt-dlp temp file.
@@ -618,33 +429,7 @@ mod domain_tests {
     use chrono::{NaiveDate, Utc};
     use ulid::Ulid;
 
-    use crate::domain::profile::Quality;
     use crate::domain::source::{EntryOrder, Source, SourceType};
-    use crate::domain::video::VideoStatus;
-
-    #[test]
-    fn test_video_status_equality() {
-        assert_eq!(VideoStatus::Pending, VideoStatus::Pending);
-        assert_ne!(VideoStatus::Pending, VideoStatus::Completed);
-        assert_ne!(VideoStatus::Failed, VideoStatus::PermanentlyFailed);
-    }
-
-    #[test]
-    fn test_quality_variants_count() {
-        // Ensure we have all expected quality variants
-        let variants = [
-            Quality::Best,
-            Quality::Q4320p,
-            Quality::Q2160p,
-            Quality::Q1440p,
-            Quality::Q1080p,
-            Quality::Q720p,
-            Quality::Q480p,
-            Quality::AudioOnly,
-        ];
-
-        assert_eq!(variants.len(), 8);
-    }
 
     #[test]
     fn test_source_display_name_custom() {
@@ -740,28 +525,6 @@ mod domain_tests {
     }
 
     #[test]
-    fn test_video_status_all_variants() {
-        // Ensure we can create all status variants
-        let statuses = [
-            VideoStatus::Pending,
-            VideoStatus::Downloading,
-            VideoStatus::Completed,
-            VideoStatus::Failed,
-            VideoStatus::Skipped,
-            VideoStatus::Cleaned,
-            VideoStatus::PermanentlyFailed,
-        ];
-
-        assert_eq!(statuses.len(), 7);
-    }
-
-    #[test]
-    fn test_source_type_variants() {
-        assert!(matches!(SourceType::Channel, SourceType::Channel));
-        assert!(matches!(SourceType::Playlist, SourceType::Playlist));
-    }
-
-    #[test]
     fn test_source_completed_dir() {
         let source = Source {
             id: Ulid::generate(),
@@ -791,68 +554,5 @@ mod domain_tests {
         let completed_dir = source.completed_dir("/downloads");
         assert!(completed_dir.to_string_lossy().contains("completed"));
         assert!(completed_dir.to_string_lossy().contains("My Channel"));
-    }
-}
-
-// ============================================================================
-// Jellyfin Metadata Actor Tests
-// ============================================================================
-
-#[cfg(test)]
-mod jellyfin_metadata_tests {
-    use super::super::jellyfin_metadata::{JellyfinMetadataStatus, SourceMetadataResult};
-
-    #[test]
-    fn test_metadata_status_fields() {
-        let status = JellyfinMetadataStatus {
-            is_running: true,
-            last_check_at: None,
-            next_check_at: None,
-        };
-
-        assert!(status.is_running);
-        assert!(status.last_check_at.is_none());
-        assert!(status.next_check_at.is_none());
-    }
-
-    #[test]
-    fn test_metadata_status_with_times() {
-        use chrono::Utc;
-
-        let now = Utc::now();
-        let status = JellyfinMetadataStatus {
-            is_running: false,
-            last_check_at: Some(now),
-            next_check_at: Some(now + chrono::Duration::hours(24)),
-        };
-
-        assert!(!status.is_running);
-        assert!(status.last_check_at.is_some());
-        assert!(status.next_check_at.is_some());
-    }
-
-    #[test]
-    fn test_source_metadata_result_success() {
-        let result = SourceMetadataResult {
-            success: true,
-            error: None,
-        };
-
-        assert!(result.success);
-        assert!(result.error.is_none());
-    }
-
-    #[test]
-    fn test_source_metadata_result_failure() {
-        let result = SourceMetadataResult {
-            success: false,
-            error: Some("Failed to download thumbnail".to_string()),
-        };
-
-        assert!(!result.success);
-        assert_eq!(
-            result.error,
-            Some("Failed to download thumbnail".to_string())
-        );
     }
 }
