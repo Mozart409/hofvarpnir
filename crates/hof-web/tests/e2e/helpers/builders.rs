@@ -228,6 +228,7 @@ pub struct VideoBuilder {
     video_height: Option<i32>,
     video_codec: Option<String>,
     last_error: Option<String>,
+    published_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 impl VideoBuilder {
@@ -244,7 +245,15 @@ impl VideoBuilder {
             video_height: None,
             video_codec: None,
             last_error: None,
+            published_at: None,
         }
+    }
+
+    /// Set the publish date, which is what the UI orders listings by.
+    #[must_use]
+    pub fn published_at(mut self, published_at: chrono::DateTime<chrono::Utc>) -> Self {
+        self.published_at = Some(published_at);
+        self
     }
 
     /// Set the video title.
@@ -298,9 +307,9 @@ impl VideoBuilder {
         let sql = sqlx::query(
             "INSERT INTO videos (
                 id, platform, platform_video_id, title, status, duration_secs,
-                video_height, video_codec, last_error
+                video_height, video_codec, last_error, published_at
             )
-            VALUES ($1, $2, $3, $4, $5::video_status, $6, $7, $8, $9)
+            VALUES ($1, $2, $3, $4, $5::video_status, $6, $7, $8, $9, $10)
             RETURNING id, platform, platform_video_id, title, status::text, duration_secs,
                       video_height, video_codec, last_error, created_at, updated_at",
         )
@@ -312,7 +321,8 @@ impl VideoBuilder {
         .bind(self.duration_secs)
         .bind(self.video_height)
         .bind(self.video_codec.clone())
-        .bind(&self.last_error);
+        .bind(&self.last_error)
+        .bind(self.published_at);
 
         let video = sql
             .fetch_one(pool)
@@ -339,7 +349,7 @@ impl VideoBuilder {
             title: self.title,
             description: None,
             duration_secs: self.duration_secs,
-            published_at: None,
+            published_at: self.published_at,
             thumbnail_url: None,
             status: match status_str_returned.as_str() {
                 "downloading" => VideoStatus::Downloading,
