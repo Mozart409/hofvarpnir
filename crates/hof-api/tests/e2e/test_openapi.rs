@@ -86,6 +86,45 @@ async fn all_openapi_paths_have_api_prefix(pool: PgPool) {
     }
 }
 
+/// No route path carries the `/api` prefix twice.
+///
+/// `routes!()` derives the axum route from the `#[utoipa::path]` `path`, and
+/// `OpenApiRouter::nest` prepends the nest prefix to *both* the route and the
+/// spec entry. So a `path` written as a full path instead of relative to its
+/// nest — `path = "/api/sources/{id}/reset-order"` under a
+/// `.nest("/api/v1/sources", ..)` — produces
+/// `/api/v1/sources/api/sources/{id}/reset-order` in the router *and* in the
+/// spec, consistently.
+///
+/// That consistency is why the reachability check above cannot catch it:
+/// probing the advertised path hits the handler and gets a normal 401. The
+/// endpoint is nonetheless unreachable at any path a client would construct.
+/// `sources.rs`'s `reset_entry_order` shipped this way. The duplicated prefix
+/// is the one signal that survives, so this asserts on it directly.
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn no_openapi_path_repeats_the_api_prefix(pool: PgPool) {
+    let app = TestApp::new(pool).await;
+
+    let response = app.server.get("/docs/openapi.json").await;
+    response.assert_status_ok();
+
+    let spec: serde_json::Value = response.json();
+    let paths = spec
+        .get("paths")
+        .and_then(|p| p.as_object())
+        .expect("paths should exist");
+
+    for path in paths.keys() {
+        assert_eq!(
+            path.matches("/api/").count(),
+            1,
+            "path '{path}' repeats the /api prefix, which means its \
+             #[utoipa::path] declares a full path instead of one relative to \
+             its nest prefix"
+        );
+    }
+}
+
 #[sqlx::test(migrations = "../hof-core/migrations")]
 async fn all_openapi_get_endpoints_are_reachable(pool: PgPool) {
     let app = TestApp::new(pool).await;
