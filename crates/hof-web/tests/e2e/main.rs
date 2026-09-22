@@ -24,6 +24,7 @@ use axum_test::http::StatusCode;
 use helpers::{ActivityBuilder, ProfileBuilder, SourceBuilder, UserBuilder, VideoBuilder};
 use hof_core::domain::{
     activity::{ActivityEventType, ActivitySeverity},
+    source::EntryOrder,
     video::VideoStatus,
 };
 
@@ -319,6 +320,209 @@ async fn source_detail_page_prefers_custom_name_and_lists_videos(pool: sqlx::PgP
     assert!(
         body.contains("Restoring A Bench Vise") && body.contains("Sharpening A Hand Plane"),
         "both of the source's videos should be listed"
+    );
+}
+
+/// The source detail page carries the source-wide action row.
+///
+/// The row used to render only inside the sources list's edit form, so the
+/// detail page had no controls at all and every action meant navigating back
+/// to the list and finding the source again.
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn source_detail_page_offers_the_source_actions(pool: sqlx::PgPool) {
+    let app = helpers::TestWebApp::new(pool.clone()).await;
+
+    let user = UserBuilder::new().build(&pool).await;
+    let profile = ProfileBuilder::new(user.id).build(&pool).await;
+    let source = SourceBuilder::new(profile.id).build(&pool).await;
+
+    app.login_as(&user).await;
+
+    let body = app
+        .server
+        .get(&format!("/sources/{}", source.id))
+        .await
+        .text();
+
+    for verb in [
+        "toggle",
+        "toggle-cleanup-exclusion",
+        "index",
+        "metadata",
+        "reset-order",
+        "delete",
+    ] {
+        let expected = format!("/sources/{}/{verb}", source.id);
+        assert!(
+            body.contains(&expected),
+            "the detail page should offer the {verb} action, targeting {expected}"
+        );
+    }
+
+    assert!(
+        body.contains("Re-detect Order"),
+        "the entry-order action should be labelled for what it does"
+    );
+
+    // Not "Save Source": that button submits the edit form's fields, which
+    // only exist in the list's editor. Rendering it here would POST a body
+    // with none of `SourceForm`'s fields and be rejected.
+    assert!(
+        !body.contains("Save Source"),
+        "the detail page has no edit fields, so it must not offer to save them"
+    );
+}
+
+/// Re-detecting a source's order clears both the stored verdict and the
+/// timestamp that suppresses re-detection.
+///
+/// Clearing `entry_order` alone is not enough. `should_redetect_order` keys
+/// off `entry_order_detected_at`, and the indexer re-detects only while the
+/// order is `Unknown`, so a reset that left the timestamp behind would leave
+/// the source in a state it could never be dragged out of.
+///
+/// The seeded state is the one this whole change exists for: a latched
+/// `Unordered` verdict, which detection persisted for any inconclusive
+/// two-point date comparison.
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn redetect_order_clears_the_verdict_and_its_timestamp(pool: sqlx::PgPool) {
+    let app = helpers::TestWebApp::new(pool.clone()).await;
+
+    let user = UserBuilder::new().build(&pool).await;
+    let profile = ProfileBuilder::new(user.id).build(&pool).await;
+    let source = SourceBuilder::new(profile.id).build(&pool).await;
+
+    hof_core::db::update_source_entry_order(&pool, source.id, EntryOrder::Unordered)
+        .await
+        .expect("seed a latched entry-order verdict");
+
+    let before = hof_core::db::get_source(&pool, source.id)
+        .await
+        .expect("source should exist");
+    assert_eq!(before.entry_order, EntryOrder::Unordered);
+    assert!(
+        before.entry_order_detected_at.is_some(),
+        "persisting a verdict must stamp the detection time — otherwise this \
+         test is not reproducing the stuck state"
+    );
+
+    app.login_as(&user).await;
+
+    let response = app
+        .server
+        .post(&format!("/sources/{}/reset-order", source.id))
+        .await;
+
+    assert_eq!(
+        response.status_code(),
+        StatusCode::SEE_OTHER,
+        "the action should redirect rather than render a page"
+    );
+
+    let after = hof_core::db::get_source(&pool, source.id)
+        .await
+        .expect("source should still exist");
+
+    assert_eq!(
+        after.entry_order,
+        EntryOrder::Unknown,
+        "the stale verdict should be gone"
+    );
+    assert!(
+        after.entry_order_detected_at.is_none(),
+        "the detection timestamp must be cleared too, or re-detection stays \
+         suppressed for REDETECTION_DAYS"
+    );
+}
+
+/// A source action returns the operator to the detail page they clicked from.
+///
+/// These handlers used to redirect to `/sources` unconditionally, which was
+/// fine while the buttons existed only in that list. Now that the detail page
+/// carries the same row, an unconditional redirect would throw the operator
+/// off the page they were working on after every click.
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn source_actions_return_to_the_detail_page_they_came_from(pool: sqlx::PgPool) {
+    let app = helpers::TestWebApp::new(pool.clone()).await;
+
+    let user = UserBuilder::new().build(&pool).await;
+    let profile = ProfileBuilder::new(user.id).build(&pool).await;
+    let source = SourceBuilder::new(profile.id).build(&pool).await;
+
+    app.login_as(&user).await;
+
+    let detail_path = format!("/sources/{}", source.id);
+
+    let from_detail = app
+        .server
+        .post(&format!("/sources/{}/toggle", source.id))
+        .add_header("referer", format!("https://hof.example{detail_path}"))
+        .await;
+    assert_eq!(
+        from_detail
+            .headers()
+            .get("location")
+            .and_then(|v| v.to_str().ok()),
+        Some(detail_path.as_str()),
+        "a click from the detail page should land back on it"
+    );
+
+    // No referer at all — a direct POST, or a browser that strips it — still
+    // has to go somewhere sensible.
+    let without_referer = app
+        .server
+        .post(&format!("/sources/{}/toggle", source.id))
+        .await;
+    assert_eq!(
+        without_referer
+            .headers()
+            .get("location")
+            .and_then(|v| v.to_str().ok()),
+        Some("/sources"),
+        "with no referer the list is the only safe destination"
+    );
+}
+
+/// The entry-order badge says when the order was detected, not just what it is.
+///
+/// A verdict can sit on a source for up to `REDETECTION_DAYS` before it is
+/// revisited, so the label alone cannot distinguish a fresh reading from one
+/// latched months ago — which is exactly the question a surprising label
+/// raises. `Unknown` carries no timestamp, so it shows none.
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn entry_order_badge_reports_when_it_was_detected(pool: sqlx::PgPool) {
+    let app = helpers::TestWebApp::new(pool.clone()).await;
+
+    let user = UserBuilder::new().build(&pool).await;
+    let profile = ProfileBuilder::new(user.id).build(&pool).await;
+    let source = SourceBuilder::new(profile.id).build(&pool).await;
+
+    app.login_as(&user).await;
+
+    let detail_path = format!("/sources/{}", source.id);
+
+    let undetected = app.server.get(&detail_path).await.text();
+    assert!(
+        undetected.contains("yt-dlp: Unknown"),
+        "a source that has never been indexed shows an unknown order"
+    );
+    assert!(
+        !undetected.contains("detected "),
+        "there is no detection time to report yet"
+    );
+
+    hof_core::db::update_source_entry_order(&pool, source.id, EntryOrder::Descending)
+        .await
+        .expect("persist a detected order");
+
+    let detected = app.server.get(&detail_path).await.text();
+    assert!(
+        detected.contains("yt-dlp: Newest first"),
+        "the detected order should be shown, got:\n{detected}"
+    );
+    assert!(
+        detected.contains("detected "),
+        "the badge should carry the detection age once there is one"
     );
 }
 
