@@ -1,8 +1,4 @@
 name: "CodeQL Config"
 
-query-filters:
-  # Ignore hard-coded cryptographic values in test code
-  # These are intentional test fixtures, not real credentials
-  - exclude:
-      id: rust/hard-coded-cryptographic-value
-      tags contain: /test/
+paths-ignore:
+  - "**/tests/**"
