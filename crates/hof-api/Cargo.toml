@@ -27,6 +27,8 @@ tower-sessions.workspace = true
 [dev-dependencies]
 axum-test = "21.0.0"
 serde_qs = "1.1"
+wiremock.workspace = true
+tempfile = "3"
 
 [lints]
 workspace = true

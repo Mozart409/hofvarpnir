@@ -54,6 +54,13 @@ impl ProfileBuilder {
         self
     }
 
+    /// Set the output preset.
+    #[must_use]
+    pub fn output_preset(mut self, output_preset: OutputPreset) -> Self {
+        self.output_preset = output_preset;
+        self
+    }
+
     /// Set the naming template.
     #[must_use]
     pub fn naming_template(mut self, template: impl Into<String>) -> Self {

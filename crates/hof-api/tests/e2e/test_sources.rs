@@ -2,8 +2,9 @@
 
 use axum::http::StatusCode;
 use sqlx::PgPool;
+use ulid::Ulid;
 
-use crate::helpers::{ApiKeyBuilder, ProfileBuilder, SourceBuilder, TestApp, UserBuilder};
+use crate::helpers::{ApiKeyBuilder, ProfileBuilder, SourceBuilder, TestApp, UserBuilder, db};
 
 #[sqlx::test(migrations = "../hof-core/migrations")]
 async fn list_sources_returns_array(pool: PgPool) {
@@ -45,6 +46,14 @@ async fn create_source_returns_201(pool: PgPool) {
     assert_eq!(body["url"], "https://youtube.com/@testchannel");
     assert_eq!(body["source_type"], "Channel");
     assert!(body["id"].is_string());
+
+    // Verify persisted in DB
+    let source_id = Ulid::from_string(body["id"].as_str().unwrap()).unwrap();
+    let (db_url, db_custom_name, _db_freq) = db::fetch_source_fields(&pool, source_id)
+        .await
+        .expect("source should be in DB");
+    assert_eq!(db_url, "https://youtube.com/@testchannel");
+    assert_eq!(db_custom_name, None);
 }
 
 #[sqlx::test(migrations = "../hof-core/migrations")]
@@ -76,6 +85,14 @@ async fn create_source_playlist(pool: PgPool) {
     assert_eq!(body["custom_name"], "My Playlist");
     assert_eq!(body["index_frequency_secs"], 7200);
     assert_eq!(body["retention_days"], 60);
+
+    // Verify persisted in DB
+    let source_id = Ulid::from_string(body["id"].as_str().unwrap()).unwrap();
+    let (_db_url, db_custom_name, db_freq) = db::fetch_source_fields(&pool, source_id)
+        .await
+        .expect("source should be in DB");
+    assert_eq!(db_custom_name, Some("My Playlist".to_string()));
+    assert_eq!(db_freq, 7200);
 }
 
 #[sqlx::test(migrations = "../hof-core/migrations")]
@@ -162,6 +179,13 @@ async fn update_source_partial(pool: PgPool) {
     let body: serde_json::Value = response.json();
     assert_eq!(body["custom_name"], "Updated Name");
     assert_eq!(body["index_frequency_secs"], 1800);
+
+    // Verify persisted in DB
+    let (_db_url, db_custom_name, db_freq) = db::fetch_source_fields(&pool, source.id)
+        .await
+        .expect("source should be in DB");
+    assert_eq!(db_custom_name, Some("Updated Name".to_string()));
+    assert_eq!(db_freq, 1800);
 }
 
 #[sqlx::test(migrations = "../hof-core/migrations")]
@@ -186,6 +210,12 @@ async fn update_source_clear_custom_name(pool: PgPool) {
 
     let body: serde_json::Value = response.json();
     assert!(body["custom_name"].is_null());
+
+    // Verify persisted in DB
+    let (_db_url, db_custom_name, _db_freq) = db::fetch_source_fields(&pool, source.id)
+        .await
+        .expect("source should be in DB");
+    assert_eq!(db_custom_name, None);
 }
 
 // Note: The `enabled` field is not part of UpdateSourceRequest.
@@ -207,35 +237,53 @@ async fn delete_source_returns_204(pool: PgPool) {
 
     response.assert_status(StatusCode::NO_CONTENT);
 
-    // Verify it's gone
+    // Verify it's gone via API
     let get_response = app
         .server
         .get(&format!("/api/v1/sources/{}", source.id))
         .add_header("Authorization", key.bearer())
         .await;
     get_response.assert_status(StatusCode::NOT_FOUND);
+
+    // Verify removed from DB
+    let exists = db::source_exists(&pool, source.id)
+        .await
+        .expect("query should succeed");
+    assert!(!exists, "deleted source should not exist in DB");
 }
 
 #[sqlx::test(migrations = "../hof-core/migrations")]
-async fn trigger_index_returns_accepted_or_conflict(pool: PgPool) {
+async fn trigger_index_returns_conflict_when_paused(pool: PgPool) {
     let app = TestApp::new(pool.clone()).await;
     let user = UserBuilder::new().build(&pool).await;
     let profile = ProfileBuilder::new(user.id).build(&pool).await;
     let source = SourceBuilder::new(profile.id).build(&pool).await;
     let key = ApiKeyBuilder::new(user.id).read_write().build(&pool).await;
 
+    // Pause indexing indefinitely to ensure deterministic 409 response.
+    let pause_response = app
+        .server
+        .post("/api/v1/system/pause")
+        .add_header("Authorization", key.bearer())
+        .json(&serde_json::json!({"module": "indexing"}))
+        .await;
+    pause_response.assert_status_ok();
+
+    // The pause reaches the scheduler over LISTEN/NOTIFY, so wait for it to
+    // land before asserting on the gate it controls.
+    app.wait_for_settings(&key.bearer(), |body| {
+        body["pause"]["indexing"]["paused"] == serde_json::json!(true)
+    })
+    .await;
+
+    // Now triggering index while paused must return 409 Conflict.
     let response = app
         .server
         .post(&format!("/api/v1/sources/{}/index", source.id))
         .add_header("Authorization", key.bearer())
         .await;
 
-    // 202 Accepted for async operation, or 409 Conflict if scheduler already started indexing
-    let status = response.status_code();
-    assert!(
-        status == StatusCode::ACCEPTED || status == StatusCode::CONFLICT,
-        "Expected 202 or 409, got {status}"
-    );
+    response.assert_status(StatusCode::CONFLICT);
 }
 
 #[sqlx::test(migrations = "../hof-core/migrations")]

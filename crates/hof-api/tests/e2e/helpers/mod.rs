@@ -2,6 +2,7 @@
 
 pub mod api_key;
 pub mod app;
+pub mod db;
 pub mod profile;
 pub mod source;
 pub mod user;

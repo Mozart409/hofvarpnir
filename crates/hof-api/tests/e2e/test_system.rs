@@ -104,3 +104,156 @@ async fn trigger_cleanup_requires_write_scope(pool: PgPool) {
 
     response.assert_status(StatusCode::FORBIDDEN);
 }
+
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn restart_download_supervisor_returns_200(pool: PgPool) {
+    let app = TestApp::new(pool.clone()).await;
+    let user = UserBuilder::new().build(&pool).await;
+    let key = ApiKeyBuilder::new(user.id).read_write().build(&pool).await;
+
+    let response = app
+        .server
+        .post("/api/v1/system/actors/download_supervisor/restart")
+        .add_header("Authorization", key.bearer())
+        .await;
+
+    response.assert_status_ok();
+
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["actor"], "download_supervisor");
+    assert!(body.get("message").is_some());
+
+    // Verify system status afterward is still healthy
+    let status_response = app
+        .server
+        .get("/api/v1/system/status")
+        .add_header("Authorization", key.bearer())
+        .await;
+
+    status_response.assert_status_ok();
+    let status_body: serde_json::Value = status_response.json();
+    assert!(status_body.get("downloads").is_some());
+}
+
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn restart_scheduler_returns_200(pool: PgPool) {
+    let app = TestApp::new(pool.clone()).await;
+    let user = UserBuilder::new().build(&pool).await;
+    let key = ApiKeyBuilder::new(user.id).read_write().build(&pool).await;
+
+    let response = app
+        .server
+        .post("/api/v1/system/actors/scheduler/restart")
+        .add_header("Authorization", key.bearer())
+        .await;
+
+    response.assert_status_ok();
+
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["actor"], "scheduler");
+
+    // Verify system status afterward is still healthy
+    let status_response = app
+        .server
+        .get("/api/v1/system/status")
+        .add_header("Authorization", key.bearer())
+        .await;
+
+    status_response.assert_status_ok();
+    let status_body: serde_json::Value = status_response.json();
+    assert!(status_body.get("scheduler").is_some());
+}
+
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn restart_cleanup_returns_200(pool: PgPool) {
+    let app = TestApp::new(pool.clone()).await;
+    let user = UserBuilder::new().build(&pool).await;
+    let key = ApiKeyBuilder::new(user.id).read_write().build(&pool).await;
+
+    let response = app
+        .server
+        .post("/api/v1/system/actors/cleanup/restart")
+        .add_header("Authorization", key.bearer())
+        .await;
+
+    response.assert_status_ok();
+
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["actor"], "cleanup");
+
+    // Verify system status afterward is still healthy
+    let status_response = app
+        .server
+        .get("/api/v1/system/status")
+        .add_header("Authorization", key.bearer())
+        .await;
+
+    status_response.assert_status_ok();
+    let status_body: serde_json::Value = status_response.json();
+    assert!(status_body.get("cleanup").is_some());
+}
+
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn restart_jellyfin_metadata_returns_200(pool: PgPool) {
+    let app = TestApp::new(pool.clone()).await;
+    let user = UserBuilder::new().build(&pool).await;
+    let key = ApiKeyBuilder::new(user.id).read_write().build(&pool).await;
+
+    let response = app
+        .server
+        .post("/api/v1/system/actors/jellyfin_metadata/restart")
+        .add_header("Authorization", key.bearer())
+        .await;
+
+    response.assert_status_ok();
+
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["actor"], "jellyfin_metadata");
+
+    // Verify system status afterward is still healthy
+    let status_response = app
+        .server
+        .get("/api/v1/system/status")
+        .add_header("Authorization", key.bearer())
+        .await;
+
+    status_response.assert_status_ok();
+}
+
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn restart_actor_unknown_name_returns_400(pool: PgPool) {
+    let app = TestApp::new(pool.clone()).await;
+    let user = UserBuilder::new().build(&pool).await;
+    let key = ApiKeyBuilder::new(user.id).read_write().build(&pool).await;
+
+    let response = app
+        .server
+        .post("/api/v1/system/actors/nonexistent_actor/restart")
+        .add_header("Authorization", key.bearer())
+        .await;
+
+    response.assert_status(StatusCode::BAD_REQUEST);
+
+    let body: serde_json::Value = response.json();
+    assert!(body.get("error").is_some());
+    let error = body["error"].as_str().unwrap_or("");
+    assert!(
+        error.contains("Unknown actor"),
+        "Error should mention unknown actor"
+    );
+}
+
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn restart_actor_requires_write_scope(pool: PgPool) {
+    let app = TestApp::new(pool.clone()).await;
+    let user = UserBuilder::new().build(&pool).await;
+    let key = ApiKeyBuilder::new(user.id).read_only().build(&pool).await;
+
+    let response = app
+        .server
+        .post("/api/v1/system/actors/scheduler/restart")
+        .add_header("Authorization", key.bearer())
+        .await;
+
+    response.assert_status(StatusCode::FORBIDDEN);
+}
