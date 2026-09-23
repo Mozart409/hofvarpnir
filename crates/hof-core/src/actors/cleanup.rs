@@ -73,6 +73,14 @@ pub struct CleanupActorArgs {
     /// pacing/concurrency knobs.
     pub config_rx: watch::Receiver<Arc<EffectiveSettings>>,
     pub broadcaster: ActivityBroadcaster,
+    /// Whether to start this actor's periodic loop on spawn.
+    ///
+    /// Always `true` in production. Tests set it `false` so that merely
+    /// constructing the app does not set a timer-driven actor loose on the
+    /// rows the test just seeded -- the loop writes to the same tables the
+    /// assertions read, which otherwise races every test that seeds a row in
+    /// a state the loop acts on.
+    pub autostart: bool,
 }
 
 impl Actor for CleanupActor {
@@ -88,6 +96,7 @@ impl Actor for CleanupActor {
             "Cleanup actor starting"
         );
 
+        let autostart = args.autostart;
         let actor = Self {
             pool: args.pool,
             global_retention_days: args
@@ -101,7 +110,7 @@ impl Actor for CleanupActor {
 
         // Start the cleanup loop.
         // Use try_send() to avoid potential deadlock from self-tell with bounded mailbox.
-        if let Err(e) = actor_ref.tell(StartCleanup).try_send() {
+        if autostart && let Err(e) = actor_ref.tell(StartCleanup).try_send() {
             error!(error = %e, "Failed to start cleanup loop");
             return Err(e.into());
         }

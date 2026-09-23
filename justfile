@@ -37,6 +37,7 @@ up: clear
     if pg_isready -d "{{ database_url }}" -t 2 -q \
         && pg_isready -d "{{ test_database_url }}" -t 2 -q; then
         echo "databases already available, skipping podman-compose"
+        just prune-test-dbs
         exit 0
     fi
     podman-compose -f containers/compose.dev.yml up -d --build --remove-orphans
@@ -44,12 +45,50 @@ up: clear
     for _ in $(seq 1 30); do
         if pg_isready -d "{{ database_url }}" -t 1 -q \
             && pg_isready -d "{{ test_database_url }}" -t 1 -q; then
+            just prune-test-dbs
             exit 0
         fi
         sleep 1
     done
     echo "databases did not become ready within 30s" >&2
     exit 1
+
+# Drop `#[sqlx::test]` databases left behind by interrupted runs.
+#
+# A test that finishes drops its own database. One that is cancelled -- Ctrl-C,
+# a failed pre-push, a killed CI job -- leaves both the database and its
+# `_sqlx_test.databases` row behind, and nothing ever reclaims them, so the
+# count only ever climbs.
+#
+# Age-gated on purpose. That same table lists the databases of any run in
+# flight, so dropping every `_sqlx_test%` database would destroy a suite
+# running in another terminal, or the one lefthook starts on push. Two hours is
+# well beyond a full run.
+[doc("Drop sqlx test databases left behind by interrupted runs")]
+prune-test-dbs:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    pg_isready -d "{{ test_database_url }}" -t 2 -q || exit 0
+    q() { psql "{{ test_database_url }}" -v ON_ERROR_STOP=1 -qAt "$@"; }
+    # Nothing to do before the first `#[sqlx::test]` has created the schema.
+    if [ -z "$(q -c "select to_regclass('_sqlx_test.databases')")" ]; then
+        exit 0
+    fi
+    stale=$(q -c "select db_name from _sqlx_test.databases \
+        where created_at < now() - interval '2 hours'")
+    if [ -z "$stale" ]; then
+        exit 0
+    fi
+    n=0
+    while IFS= read -r db; do
+        [ -z "$db" ] && continue
+        # `DROP DATABASE` cannot run inside a transaction, so it is one
+        # statement per database rather than a single `DO` block.
+        q -c "drop database if exists \"$db\"" >/dev/null
+        q -c "delete from _sqlx_test.databases where db_name = '$db'" >/dev/null
+        n=$((n + 1))
+    done <<< "$stale"
+    echo "pruned $n stale test database(s)"
 
 down: clear
     podman-compose -f containers/compose.dev.yml down
@@ -128,7 +167,10 @@ css-build:
     tailwindcss -i input.css -o app.css --minify
 
 # Run all tests against the lean postgres-test instance
-# (--test-threads=4 avoids a #[sqlx::test] parallelism race on many-core machines)
+# Thread count is left to libtest (one per core), so CI runners and dev
+# machines each use what they have. It was pinned to 4 while the fixture
+# spawned a LISTEN connection and started the timer-driven actors in every
+# test; see `TestApp::with_settings_listener` / `with_running_actors`.
 #
 # SQLX_OFFLINE=true is required: the postgres-test instance is intentionally
 # lean and carries no schema, and while #[sqlx::test] migrates each per-test
@@ -138,23 +180,23 @@ css-build:
 # committed .sqlx cache; the tests still talk to postgres-test at runtime.
 # Run `just prepare` after any schema change to keep that cache current.
 test: clear up
-    SQLX_OFFLINE=true DATABASE_URL={{ test_database_url }} cargo test --all-features -- --include-ignored --test-threads=4
+    SQLX_OFFLINE=true DATABASE_URL={{ test_database_url }} cargo test --all-features -- --include-ignored
 
 # E2E API tests against the lean postgres-test instance.
 # (#[sqlx::test] migrates each test database itself, so this only needs `up`)
 e2e: clear up
-    SQLX_OFFLINE=true DATABASE_URL={{ test_database_url }} cargo test --package hof-api --test e2e --all-features -- --test-threads=4
+    SQLX_OFFLINE=true DATABASE_URL={{ test_database_url }} cargo test --package hof-api --test e2e --all-features
 
 # Same as `e2e`, but skips `up` — works when an unrelated container in the
 # compose stack (e.g. grafana) is failing to start. Requires postgres-test
 # to already be running.
 e2e-only: clear
-    SQLX_OFFLINE=true DATABASE_URL={{ test_database_url }} cargo test --package hof-api --test e2e --all-features -- --test-threads=4
+    SQLX_OFFLINE=true DATABASE_URL={{ test_database_url }} cargo test --package hof-api --test e2e --all-features
 
 # CI simulation (requires database; tests run against the lean postgres-test instance)
 ci: clear up
     SQLX_OFFLINE=true cargo build --release
-    SQLX_OFFLINE=true DATABASE_URL={{ test_database_url }} cargo test --all-features -- --include-ignored --test-threads=4
+    SQLX_OFFLINE=true DATABASE_URL={{ test_database_url }} cargo test --all-features -- --include-ignored
     SQLX_OFFLINE=true cargo clippy --workspace --all-targets --all-features -- -D warnings
 
 # Check Nix cache availability

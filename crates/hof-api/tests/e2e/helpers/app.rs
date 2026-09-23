@@ -55,13 +55,46 @@ impl TestApp {
     ///
     /// The pool is provided by `#[sqlx::test]` which manages database isolation.
     pub async fn new(pool: PgPool) -> Self {
-        Self::with_verification(pool, false).await
+        Self::build(pool, false, false, false).await
     }
 
     /// Create a test application with optional download verification.
     ///
     /// Use this to test the full download pipeline including verification.
     pub async fn with_verification(pool: PgPool, verify_downloads: bool) -> Self {
+        Self::build(pool, verify_downloads, false, false).await
+    }
+
+    /// Create a test application whose runtime-settings listener is running.
+    ///
+    /// Opt-in because the listener holds a second connection out of the pool
+    /// `#[sqlx::test]` hands each test, and that pool is capped at 5 and draws
+    /// from a single process-wide master pool capped at 20 (see
+    /// `sqlx_postgres::testing`). At four tests in flight the two caps meet
+    /// exactly, and the next acquire waits out sqlx's 30s `acquire_timeout` --
+    /// which is 30 seconds added to whichever tests happen to be running.
+    /// Only a test that asserts a settings change reaching the actors needs
+    /// it; see [`Self::wait_for_settings`].
+    pub async fn with_settings_listener(pool: PgPool) -> Self {
+        Self::build(pool, false, true, false).await
+    }
+
+    /// Create a test application whose scheduler/cleanup/metadata loops run.
+    ///
+    /// Opt-in: those loops write to the same tables the assertions read, so a
+    /// test that seeds a row in a state a loop acts on (a pending video, a
+    /// video past its retention) otherwise races it. Only a test asserting
+    /// the loops' own behaviour wants this.
+    pub async fn with_running_actors(pool: PgPool) -> Self {
+        Self::build(pool, false, false, true).await
+    }
+
+    async fn build(
+        pool: PgPool,
+        verify_downloads: bool,
+        settings_listener: bool,
+        autostart_actors: bool,
+    ) -> Self {
         // Create minimal actors for testing
         let (progress_tx, _progress_rx) = mpsc::channel::<DownloadProgress>(100);
 
@@ -92,7 +125,9 @@ impl TestApp {
         // LISTEN/NOTIFY (`startup.rs` does the same). Without this listener a
         // test can PATCH settings or pause a module and the scheduler keeps
         // serving its stale snapshot, so the pause gate silently never fires.
-        let _settings_listener = runtime_config.clone().spawn_listener();
+        if settings_listener {
+            let _listener = runtime_config.clone().spawn_listener();
+        }
 
         // Process-local drain signal (see ADR-0004). Triggerable through
         // this test app via `POST /api/v1/system/shutdown`, which calls
@@ -116,6 +151,7 @@ impl TestApp {
             broadcaster: broadcaster.clone(),
             drain: drain.clone(),
             global_retention_days: None,
+            autostart: autostart_actors,
         });
 
         let ChildRefs {

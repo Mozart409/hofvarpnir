@@ -206,6 +206,13 @@ pub struct RootSupervisorArgs {
     pub broadcaster: ActivityBroadcaster,
     pub drain: DrainToken,
     pub global_retention_days: Option<u32>,
+    /// Whether the timer-driven children start their loops on spawn.
+    ///
+    /// Always `true` in production. Tests default to `false`: every test
+    /// spawns the full tree to get the child refs `AppState` needs, and a
+    /// scheduler or cleanup pass firing on spawn mutates the same rows the
+    /// test just seeded.
+    pub autostart: bool,
 }
 
 /// One of the four actors `RootSupervisor` supervises.
@@ -403,6 +410,29 @@ pub struct RootSupervisor {
     health: HashMap<SupervisedActor, ActorHealthState>,
 }
 
+/// Spawn the supervised Jellyfin metadata child.
+///
+/// Lifted out of [`RootSupervisor::on_start`] purely to keep that function
+/// under the `clippy::too_many_lines` bound; it is spawned exactly the same
+/// way as its three siblings.
+async fn spawn_jellyfin_metadata(
+    parent: &ActorRef<RootSupervisor>,
+    pool: PgPool,
+    broadcaster: ActivityBroadcaster,
+    autostart: bool,
+) -> ActorRef<JellyfinMetadataActor> {
+    JellyfinMetadataActor::supervise_with(parent, move || JellyfinMetadataActorArgs {
+        pool: pool.clone(),
+        check_interval: None, // use the actor's own default
+        broadcaster: broadcaster.clone(),
+        autostart,
+    })
+    .restart_policy(RestartPolicy::Transient)
+    .restart_limit(RESTART_LIMIT, RESTART_WINDOW)
+    .spawn()
+    .await
+}
+
 impl Actor for RootSupervisor {
     type Args = RootSupervisorArgs;
     /// `on_start` below only spawns children and builds plain data
@@ -423,6 +453,7 @@ impl Actor for RootSupervisor {
             broadcaster,
             drain,
             global_retention_days,
+            autostart,
         } = args;
 
         // Spawn order matches the pre-supervision `startup.rs`: the
@@ -469,6 +500,7 @@ impl Actor for RootSupervisor {
                 config_rx: runtime_config.subscribe(),
                 broadcaster: broadcaster.clone(),
                 drain: drain.clone(),
+                autostart,
             })
             .restart_policy(RestartPolicy::Transient)
             .restart_limit(RESTART_LIMIT, RESTART_WINDOW)
@@ -485,6 +517,7 @@ impl Actor for RootSupervisor {
                 global_retention_days,
                 config_rx: runtime_config.subscribe(),
                 broadcaster: broadcaster.clone(),
+                autostart,
             })
             .restart_policy(RestartPolicy::Transient)
             .restart_limit(RESTART_LIMIT, RESTART_WINDOW)
@@ -492,21 +525,8 @@ impl Actor for RootSupervisor {
             .await
         };
 
-        let jellyfin_metadata = {
-            let pool = pool.clone();
-            let broadcaster = broadcaster.clone();
-            JellyfinMetadataActor::supervise_with(&actor_ref, move || {
-                JellyfinMetadataActorArgs {
-                    pool: pool.clone(),
-                    check_interval: None, // use the actor's own default
-                    broadcaster: broadcaster.clone(),
-                }
-            })
-            .restart_policy(RestartPolicy::Transient)
-            .restart_limit(RESTART_LIMIT, RESTART_WINDOW)
-            .spawn()
-            .await
-        };
+        let jellyfin_metadata =
+            spawn_jellyfin_metadata(&actor_ref, pool.clone(), broadcaster.clone(), autostart).await;
 
         let child_by_id = HashMap::from([
             (supervisor.id(), SupervisedActor::DownloadSupervisor),

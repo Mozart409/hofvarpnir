@@ -146,7 +146,8 @@ async fn get_settings_returns_defaults_with_provenance(pool: PgPool) {
 
 #[sqlx::test(migrations = "../hof-core/migrations")]
 async fn patch_settings_updates_response_and_db(pool: PgPool) {
-    let app = TestApp::new(pool.clone()).await;
+    // Asserts a PATCH reaching the actors, so this one needs the listener.
+    let app = TestApp::with_settings_listener(pool.clone()).await;
     let user = UserBuilder::new().build(&pool).await;
     let key = ApiKeyBuilder::new(user.id).read_write().build(&pool).await;
 

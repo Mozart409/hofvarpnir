@@ -330,6 +330,7 @@ fn start_root_supervisor(
         broadcaster,
         drain,
         global_retention_days: config.storage.retention_days,
+        autostart: true,
     };
 
     let root_supervisor = RootSupervisor::spawn(args);

@@ -82,7 +82,11 @@ impl TestWebApp {
         // Matches `startup.rs`: settings changes reach the actors over
         // LISTEN/NOTIFY, so without this listener the actors serve a stale
         // snapshot for the whole test.
-        let _settings_listener = runtime_config.clone().spawn_listener();
+        // No test here asserts a settings change reaching the actors, and the
+        // listener holds a second connection out of the pool `#[sqlx::test]`
+        // caps at 5 -- which, against sqlx's process-wide 20-connection master
+        // pool, stalls every test past the fourth in flight for the full 30s
+        // `acquire_timeout`. See `hof-api`'s `TestApp::with_settings_listener`.
 
         let drain = DrainToken::new();
 
@@ -96,6 +100,7 @@ impl TestWebApp {
             broadcaster: broadcaster.clone(),
             drain: drain.clone(),
             global_retention_days: None,
+            autostart: false,
         });
 
         let ChildRefs {
