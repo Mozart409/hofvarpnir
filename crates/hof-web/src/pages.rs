@@ -629,7 +629,11 @@ fn auth_layout(title: &str, content: impl Render) -> Markup {
     let heading = format!("{title} · Hofvarpnir");
     html! {
         (DOCTYPE)
-        html lang="en" class="h-full" {
+        // `min-h-full`, not `h-full`: the body gradient is propagated to the
+        // canvas but sized to the *root* box, so pinning html to height:100%
+        // capped it at one viewport and Tailwind's default background-repeat
+        // tiled it down the page — a hard slate-950/slate-900 seam every 100vh.
+        html lang="en" class="min-h-full" {
             head {
                 meta charset="utf-8";
                 meta name="viewport" content="width=device-width, initial-scale=1";
@@ -6166,7 +6170,11 @@ pub(crate) fn layout_with_flash(
     let heading = format!("{title} · Hofvarpnir");
     html! {
         (DOCTYPE)
-        html lang="en" class="h-full" {
+        // `min-h-full`, not `h-full`: the body gradient is propagated to the
+        // canvas but sized to the *root* box, so pinning html to height:100%
+        // capped it at one viewport and Tailwind's default background-repeat
+        // tiled it down the page — a hard slate-950/slate-900 seam every 100vh.
+        html lang="en" class="min-h-full" {
             head {
                 meta charset="utf-8";
                 meta name="viewport" content="width=device-width, initial-scale=1";
