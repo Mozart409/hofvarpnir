@@ -306,6 +306,7 @@ pub fn router(state: AppState, oidc_enabled: bool) -> Router {
         )
         .route("/sources/{id}/index", post(trigger_index))
         .route("/sources/{id}/metadata", post(trigger_metadata))
+        .route("/sources/{id}/reset-order", post(redetect_source_order))
         .route("/web/sources/events", get(sources_events_sse))
         .route("/web/sources/{id}/events", get(source_detail_events_sse))
         .route("/downloads", get(downloads_page))
@@ -1735,6 +1736,7 @@ async fn toggle_source_enabled(
     _auth: AuthUser,
     State(state): State<AppState>,
     session: Session,
+    headers: HeaderMap,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     let Ok(source_id) = Ulid::from_string(id.trim()) else {
@@ -1779,7 +1781,7 @@ async fn toggle_source_enabled(
                 )
                 .await;
             set_flash(&session, "success", &format!("Source {status}")).await;
-            Redirect::to("/sources").into_response()
+            Redirect::to(&source_action_redirect(&headers, source_id)).into_response()
         }
         Err(db::DbError::NotFound) => {
             (StatusCode::NOT_FOUND, error_page("Source not found")).into_response()
@@ -1800,6 +1802,7 @@ async fn toggle_source_cleanup_exclusion(
     _auth: AuthUser,
     State(state): State<AppState>,
     session: Session,
+    headers: HeaderMap,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     let Ok(source_id) = Ulid::from_string(id.trim()) else {
@@ -1847,7 +1850,7 @@ async fn toggle_source_cleanup_exclusion(
                 )
                 .await;
             set_flash(&session, "success", &format!("Source {status}")).await;
-            Redirect::to("/sources").into_response()
+            Redirect::to(&source_action_redirect(&headers, source_id)).into_response()
         }
         Err(db::DbError::NotFound) => {
             (StatusCode::NOT_FOUND, error_page("Source not found")).into_response()
@@ -1861,6 +1864,121 @@ async fn toggle_source_cleanup_exclusion(
                 .into_response()
         }
     }
+}
+
+/// Where a source action should return the operator to.
+///
+/// The action row renders in two places now — the sources list and a source's
+/// detail page — so "back to `/sources`" is no longer a safe default. When the
+/// click came from `/sources/{id}` the referer says so, and bouncing the
+/// operator off the page they were working on to hunt for the same source in
+/// the list is the wrong answer. The schedule page carries the same buttons
+/// and keeps its existing special case.
+///
+/// Anything unrecognised falls back to `/sources`, including a missing or
+/// unreadable `Referer`.
+fn source_action_redirect(headers: &HeaderMap, source_id: Ulid) -> String {
+    let Some(referer) = headers
+        .get(header::REFERER)
+        .and_then(|value| value.to_str().ok())
+    else {
+        return "/sources".to_string();
+    };
+
+    // Compare on the last path segment only: the referer is absolute
+    // (`https://host/sources/<id>`), and the host depends on how the instance
+    // is reached.
+    let last_segment = referer
+        .split('?')
+        .next()
+        .unwrap_or(referer)
+        .trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .unwrap_or_default();
+
+    if last_segment == "schedule" {
+        "/schedule".to_string()
+    } else if last_segment == source_id.to_string() {
+        format!("/sources/{source_id}")
+    } else {
+        "/sources".to_string()
+    }
+}
+
+/// Clear a source's stored entry order and index it again so it is re-detected.
+///
+/// The reset on its own is silent. The indexer only re-detects when
+/// `entry_order` is `Unknown` (`source_indexer.rs`), and the next scheduled
+/// run can be days out — `index_frequency_secs` is three days on some real
+/// sources — so an operator would click this and see nothing change. Indexing
+/// straight after is what makes the button do what its label says, and it is
+/// not expensive: detection runs before the entries are walked, so the fresh
+/// verdict still enables early termination on that same run.
+///
+/// The two halves are reported separately on purpose. The reset is the part
+/// that matters and it has already committed by the time indexing is
+/// attempted, so a scheduler that refuses — paused, draining, or already
+/// indexing this source — is a flash rather than an error page: the reset
+/// stands and the next scheduled index picks it up.
+async fn redetect_source_order(
+    _auth: AuthUser,
+    State(state): State<AppState>,
+    session: Session,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let Ok(source_id) = Ulid::from_string(id.trim()) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            error_page("Invalid source ID provided"),
+        )
+            .into_response();
+    };
+
+    match db::update_source_entry_order(&state.pool, source_id, EntryOrder::Unknown).await {
+        Ok(()) => {}
+        Err(db::DbError::NotFound) => {
+            return (StatusCode::NOT_FOUND, error_page("Source not found")).into_response();
+        }
+        Err(error) => {
+            tracing::error!(%error, "failed to reset entry order from web form");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                error_page("Failed to reset the entry order for this source"),
+            )
+                .into_response();
+        }
+    }
+
+    state.broadcaster.invalidate();
+
+    let redirect_to = source_action_redirect(&headers, source_id);
+
+    match state.scheduler.ask(IndexSource { source_id }).await {
+        Ok(()) => {
+            set_flash(
+                &session,
+                "info",
+                "Entry order cleared; indexing triggered to detect it again",
+            )
+            .await;
+        }
+        Err(error) => {
+            tracing::warn!(%error, "entry order reset, but indexing could not be triggered");
+            set_flash(
+                &session,
+                "error",
+                &format!(
+                    "Entry order cleared, but indexing could not start: {error}. It will be \
+                     detected again on the next scheduled index."
+                ),
+            )
+            .await;
+        }
+    }
+
+    Redirect::to(&redirect_to).into_response()
 }
 
 async fn trigger_index(
@@ -1878,23 +1996,12 @@ async fn trigger_index(
             .into_response();
     };
 
-    // Redirect back to the referring page, defaulting to /sources
-    let redirect_to = headers
-        .get(header::REFERER)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|referer| referer.rsplit_once('/').map(|(_, path)| path))
-        .map_or("/sources", |path| {
-            if path == "schedule" {
-                "/schedule"
-            } else {
-                "/sources"
-            }
-        });
+    let redirect_to = source_action_redirect(&headers, source_id);
 
     match state.scheduler.ask(IndexSource { source_id }).await {
         Ok(()) => {
             set_flash(&session, "info", "Indexing triggered").await;
-            Redirect::to(redirect_to).into_response()
+            Redirect::to(&redirect_to).into_response()
         }
         Err(error) => {
             // A pause or drain refusal is an expected operator condition, not a
@@ -1909,7 +2016,7 @@ async fn trigger_index(
                 || message.contains("already being indexed")
             {
                 set_flash(&session, "error", &message).await;
-                return Redirect::to(redirect_to).into_response();
+                return Redirect::to(&redirect_to).into_response();
             }
             tracing::error!(%error, "failed to trigger source index from web form");
             (
@@ -2505,6 +2612,7 @@ async fn trigger_metadata(
     _auth: AuthUser,
     State(state): State<AppState>,
     session: Session,
+    headers: HeaderMap,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     let Ok(source_id) = Ulid::from_string(id.trim()) else {
@@ -2548,7 +2656,7 @@ async fn trigger_metadata(
     {
         Ok(result) if result.success => {
             set_flash(&session, "success", "Metadata generation started").await;
-            Redirect::to("/sources").into_response()
+            Redirect::to(&source_action_redirect(&headers, source_id)).into_response()
         }
         Ok(result) => {
             let error_msg = result.error.unwrap_or_else(|| "Unknown error".to_string());
@@ -2573,8 +2681,15 @@ async fn trigger_metadata(
 async fn source_detail_page(
     _auth: AuthUser,
     State(state): State<AppState>,
+    session: Session,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
+    // The action row renders here now, and its handlers report what they did
+    // through a flash. Without this the page would silently drop every one of
+    // those messages — and worse, leave them in the session to surface on
+    // whatever page the operator opened next.
+    let flash = take_flash(&session).await;
+
     let Ok(source_id) = Ulid::from_string(id.trim()) else {
         return (
             StatusCode::BAD_REQUEST,
@@ -2609,9 +2724,10 @@ async fn source_detail_page(
 
     let events_url = format!("/web/sources/{source_id}/events");
 
-    let page = layout(
+    let page = layout_with_flash(
         &format!("Source: {}", source.display_name()),
         NavItem::Sources,
+        flash,
         html! {
             div class="mb-4" {
                 a href="/sources" class="text-sm text-sky-600 dark:text-sky-400 hover:underline" {
@@ -5115,79 +5231,44 @@ mod storage_usage_tests {
     use super::{format_bytes_human, is_storage_over_quota, storage_usage_percent};
 
     #[test]
-    fn format_bytes_human_zero() {
-        assert_eq!(format_bytes_human(0), "0.0 B");
+    fn format_bytes_human_table_driven() {
+        let cases = [
+            (0, "0.0 B"),
+            (512, "512.0 B"),
+            (1000, "1.0 KB"),
+            (1000 * 1000, "1.0 MB"),
+            (13 * 1000 * 1000, "13.0 MB"),
+            (1_000_000_000_000_000, "1.0 PB"),
+            (i64::MAX, "9223.4 PB"),
+            (1_000_000_000_i64 + 400_000_000, "1.4 GB"),
+            (1000_i64.pow(4), "1.0 TB"),
+            (-5, "0.0 B"),
+        ];
+
+        for (bytes, expected) in cases {
+            assert_eq!(
+                format_bytes_human(bytes),
+                expected,
+                "Failed for bytes={bytes}"
+            );
+        }
     }
 
     #[test]
-    fn format_bytes_human_sub_kb() {
-        assert_eq!(format_bytes_human(512), "512.0 B");
-    }
+    fn storage_usage_percent_table_driven() {
+        let cases = [
+            (0, 0, 0.0),
+            (5, 0, 100.0),
+            (50, 100, 50.0),
+            (150, 100, 100.0),
+        ];
 
-    #[test]
-    fn format_bytes_human_exact_kb_boundary() {
-        assert_eq!(format_bytes_human(1000), "1.0 KB");
-    }
-
-    #[test]
-    fn format_bytes_human_exact_mb_boundary() {
-        assert_eq!(format_bytes_human(1000 * 1000), "1.0 MB");
-    }
-
-    #[test]
-    fn format_bytes_human_mb_example() {
-        assert_eq!(format_bytes_human(13 * 1000 * 1000), "13.0 MB");
-    }
-
-    #[test]
-    fn format_bytes_human_saturates_at_largest_unit() {
-        // Exercises the upper bound of the unit table: the scaling loop stops at
-        // the last unit (PB) rather than running past the end of `UNITS`.
-        assert_eq!(format_bytes_human(1_000_000_000_000_000), "1.0 PB");
-    }
-
-    #[test]
-    fn format_bytes_human_beyond_largest_unit_stays_in_pb() {
-        // Values larger than the biggest unit must keep scaling the number
-        // instead of advancing the index out of range.
-        assert_eq!(format_bytes_human(i64::MAX), "9223.4 PB");
-    }
-
-    #[test]
-    fn format_bytes_human_gb_example() {
-        // 1.4 GB, expressed as an exact byte count to avoid a lossy float-to-int cast.
-        let bytes = 1_000_000_000_i64 + 400_000_000;
-        assert_eq!(format_bytes_human(bytes), "1.4 GB");
-    }
-
-    #[test]
-    fn format_bytes_human_exact_tb_boundary() {
-        assert_eq!(format_bytes_human(1000_i64.pow(4)), "1.0 TB");
-    }
-
-    #[test]
-    fn format_bytes_human_negative_clamped_to_zero() {
-        assert_eq!(format_bytes_human(-5), "0.0 B");
-    }
-
-    #[test]
-    fn percent_zero_quota_zero_used_is_zero() {
-        assert!((storage_usage_percent(0, 0) - 0.0).abs() < f64::EPSILON);
-    }
-
-    #[test]
-    fn percent_zero_quota_with_usage_is_fully_over() {
-        assert!((storage_usage_percent(5, 0) - 100.0).abs() < f64::EPSILON);
-    }
-
-    #[test]
-    fn percent_normal_ratio() {
-        assert!((storage_usage_percent(50, 100) - 50.0).abs() < f64::EPSILON);
-    }
-
-    #[test]
-    fn percent_over_quota_clamps_to_100() {
-        assert!((storage_usage_percent(150, 100) - 100.0).abs() < f64::EPSILON);
+        for (used, quota, expected) in cases {
+            assert!(
+                (storage_usage_percent(used, quota) - expected).abs() < f64::EPSILON,
+                "Failed for used={used}, quota={quota}, expected {expected}"
+            );
+        }
     }
 
     #[test]
@@ -5267,55 +5348,96 @@ fn profile_editor(profile: &Profile) -> Markup {
 /// All of these submit the surrounding form, overriding its target with
 /// `formaction`, so field edits are not lost when triggering a side action.
 fn source_editor_actions(source: &Source) -> Markup {
-    let action = |verb: &str| format!("/sources/{}/{verb}", source.id);
-
     html! {
         div class="md:col-span-2 flex flex-wrap gap-2" {
             button class="rounded-lg bg-slate-900 dark:bg-slate-100 px-4 py-2 text-sm font-medium text-white dark:text-slate-900 hover:bg-slate-700 dark:hover:bg-slate-200" type="submit" {
                 "Save Source"
             }
-            @if source.enabled {
-                button class="rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/50 px-4 py-2 text-sm font-medium text-amber-700 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-900" type="submit" formaction=(action("toggle")) {
-                    "Disable"
-                }
-            } @else {
-                button class="rounded-lg border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-900/50 px-4 py-2 text-sm font-medium text-emerald-700 dark:text-emerald-300 hover:bg-emerald-100 dark:hover:bg-emerald-900" type="submit" formaction=(action("toggle")) {
-                    "Enable"
-                }
+            (source_side_actions(source))
+        }
+    }
+}
+
+/// Every action that operates on the source as a whole rather than on the
+/// edit form's fields.
+///
+/// Split out from `source_editor_actions` so the source detail page can carry
+/// the same row. "Save Source" stays behind: it submits the edit form's
+/// fields, which only exist in the list's editor.
+fn source_side_actions(source: &Source) -> Markup {
+    let action = |verb: &str| format!("/sources/{}/{verb}", source.id);
+
+    html! {
+        @if source.enabled {
+            button class="rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/50 px-4 py-2 text-sm font-medium text-amber-700 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-900" type="submit" formaction=(action("toggle")) {
+                "Disable"
             }
-            @if source.exclude_from_cleanup {
-                button
-                    class="rounded-lg border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-900/50 px-4 py-2 text-sm font-medium text-emerald-700 dark:text-emerald-300 hover:bg-emerald-100 dark:hover:bg-emerald-900"
-                    type="submit"
-                    title="Videos from this source are currently kept forever"
-                    formaction=(action("toggle-cleanup-exclusion"))
-                {
-                    "Include in Cleanup"
-                }
-            } @else {
-                button
-                    class="rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 px-4 py-2 text-sm font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-600"
-                    type="submit"
-                    title="Keep this source's videos forever, ignoring retention and quota"
-                    formaction=(action("toggle-cleanup-exclusion"))
-                {
-                    "Exclude from Cleanup"
-                }
+        } @else {
+            button class="rounded-lg border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-900/50 px-4 py-2 text-sm font-medium text-emerald-700 dark:text-emerald-300 hover:bg-emerald-100 dark:hover:bg-emerald-900" type="submit" formaction=(action("toggle")) {
+                "Enable"
             }
-            button class="rounded-lg border border-sky-200 dark:border-sky-800 bg-sky-50 dark:bg-sky-900/50 px-4 py-2 text-sm font-medium text-sky-700 dark:text-sky-300 hover:bg-sky-100 dark:hover:bg-sky-900" type="submit" formaction=(action("index")) {
-                "Trigger Index"
-            }
-            button class="rounded-lg border border-violet-200 dark:border-violet-800 bg-violet-50 dark:bg-violet-900/50 px-4 py-2 text-sm font-medium text-violet-700 dark:text-violet-300 hover:bg-violet-100 dark:hover:bg-violet-900" type="submit" formaction=(action("metadata")) {
-                "Trigger Image Download"
-            }
+        }
+        @if source.exclude_from_cleanup {
             button
-                class="rounded-lg border border-rose-200 dark:border-rose-800 bg-rose-50 dark:bg-rose-900/50 px-4 py-2 text-sm font-medium text-rose-700 dark:text-rose-300 hover:bg-rose-100 dark:hover:bg-rose-900"
+                class="rounded-lg border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-900/50 px-4 py-2 text-sm font-medium text-emerald-700 dark:text-emerald-300 hover:bg-emerald-100 dark:hover:bg-emerald-900"
                 type="submit"
-                formaction=(action("delete"))
-                onclick="return confirm('Delete this source? This cannot be undone.')"
+                title="Videos from this source are currently kept forever"
+                formaction=(action("toggle-cleanup-exclusion"))
             {
-                "Delete"
+                "Include in Cleanup"
             }
+        } @else {
+            button
+                class="rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 px-4 py-2 text-sm font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-600"
+                type="submit"
+                title="Keep this source's videos forever, ignoring retention and quota"
+                formaction=(action("toggle-cleanup-exclusion"))
+            {
+                "Exclude from Cleanup"
+            }
+        }
+        button class="rounded-lg border border-sky-200 dark:border-sky-800 bg-sky-50 dark:bg-sky-900/50 px-4 py-2 text-sm font-medium text-sky-700 dark:text-sky-300 hover:bg-sky-100 dark:hover:bg-sky-900" type="submit" formaction=(action("index")) {
+            "Trigger Index"
+        }
+        button class="rounded-lg border border-violet-200 dark:border-violet-800 bg-violet-50 dark:bg-violet-900/50 px-4 py-2 text-sm font-medium text-violet-700 dark:text-violet-300 hover:bg-violet-100 dark:hover:bg-violet-900" type="submit" formaction=(action("metadata")) {
+            "Trigger Image Download"
+        }
+        button
+            class="rounded-lg border border-indigo-200 dark:border-indigo-800 bg-indigo-50 dark:bg-indigo-900/50 px-4 py-2 text-sm font-medium text-indigo-700 dark:text-indigo-300 hover:bg-indigo-100 dark:hover:bg-indigo-900"
+            type="submit"
+            title="Clear the stored entry order and index again, so it is worked out from scratch"
+            formaction=(action("reset-order"))
+        {
+            "Re-detect Order"
+        }
+        button
+            class="rounded-lg border border-rose-200 dark:border-rose-800 bg-rose-50 dark:bg-rose-900/50 px-4 py-2 text-sm font-medium text-rose-700 dark:text-rose-300 hover:bg-rose-100 dark:hover:bg-rose-900"
+            type="submit"
+            formaction=(action("delete"))
+            onclick="return confirm('Delete this source? This cannot be undone.')"
+        {
+            "Delete"
+        }
+    }
+}
+
+/// The same source-wide actions, rendered on the source detail page.
+///
+/// `source_editor_actions` reaches these through the edit form they sit
+/// inside; here there is no such form, so they get their own. It carries no
+/// fields on purpose: every button names its own target with `formaction`, and
+/// a form with no text input cannot be submitted implicitly by pressing Enter,
+/// so the form's own `action` is never reached. It still points somewhere
+/// harmless rather than at `/sources/{id}`, which is `update_source` and would
+/// reject a body carrying none of its fields.
+fn source_detail_actions(source: &Source) -> Markup {
+    html! {
+        form
+            class="mt-4 flex flex-wrap gap-2"
+            method="post"
+            action=(format!("/sources/{}/index", source.id))
+        {
+            (source_side_actions(source))
         }
     }
 }
@@ -5443,6 +5565,16 @@ fn source_detail_header(source: &Source, video_count: usize) -> Markup {
                         }
                         span class=(entry_order_badge_class(source.entry_order)) {
                             (entry_order_label(source.entry_order))
+                            // When the verdict was reached, not when the
+                            // source was last indexed: the two diverge by up
+                            // to `REDETECTION_DAYS`, and it is the detection
+                            // age that says whether a surprising label is a
+                            // fresh reading or one latched months ago. There
+                            // is no timestamp while the order is `Unknown` —
+                            // resetting nulls it — so nothing renders then.
+                            @if let Some(detected_at) = source.entry_order_detected_at {
+                                " · detected " (format_time_ago(detected_at))
+                            }
                         }
                         @if let Some(indexed_at) = source.last_indexed_at {
                             span class="rounded bg-slate-100 dark:bg-slate-700 px-2 py-1" {
@@ -5452,6 +5584,7 @@ fn source_detail_header(source: &Source, video_count: usize) -> Markup {
                     }
                 }
             }
+            (source_detail_actions(source))
         }
     }
 }

@@ -11,10 +11,12 @@ record of how this copy diverges from upstream.
 ## Do not bump `yt-dlp` in the root `Cargo.toml`
 
 `[patch.crates-io]` only applies when the vendored version satisfies the
-dependency requirement. The root manifest pins `yt-dlp = "2.7"` to match the
-`2.7.2` vendored here. Raising it -- including by an unattended `cargo update`
-that rewrites the requirement -- makes Cargo **silently ignore the patch** and
-build against crates.io instead:
+dependency requirement **and** is the version the resolver picks. The root
+manifest pins `yt-dlp = "=2.7.2"` -- an *exact* requirement, because the
+earlier caret form `"2.7"` still admitted `2.8.x`, so a routine `cargo update`
+resolved to crates.io's `2.8.3` and dropped the patch without touching the
+manifest at all. Raising or loosening it makes Cargo **silently ignore the
+patch** and build against crates.io instead:
 
 ```
 warning: patch `yt-dlp v2.7.2 (patches/yt-dlp-patched)` was not used in the crate graph
@@ -26,7 +28,7 @@ warning: patch `yt-dlp v2.7.2 (patches/yt-dlp-patched)` was not used in the crat
 
 What saves you is that `hof-core` then fails to compile, because the divergences
 below are load-bearing. Do not "fix" those errors against upstream -- restore the
-`"2.7"` requirement and re-resolve:
+`"=2.7.2"` requirement and re-resolve:
 
 ```sh
 cargo update -p yt-dlp   # re-points the lockfile at the vendored path
@@ -95,6 +97,41 @@ Regression coverage: `crates/hof-core/tests/fixtures/flat_playlist_null_titles.j
 is a trimmed real capture. Its entry objects deliberately keep `title` as the
 **first** key, because that ordering is what makes serde hit the null before it
 ever reads `id`. Do not reorder those keys.
+
+### 1b. Video fields the `generic` extractor omits
+
+Three fields on `Video` in `src/model/video.rs` gain `#[serde(default)]`. The
+types are unchanged; only their required-ness is.
+
+| Field | Type |
+| --- | --- |
+| `age_limit` | `i64` |
+| `live_status` | `String` |
+| `playable_in_embed` | `bool` |
+
+Upstream models all three as required. yt-dlp's `generic` extractor emits none
+of them, so metadata for a URL handled by that extractor failed to parse at
+all:
+
+```
+Failed to fetch video metadata: JSON error while JSON parsing: missing field `age_limit`
+```
+
+**Scope, measured rather than assumed.** The YouTube extractor emits all three,
+so YouTube — the platform this deployment actually indexes — was never
+affected by this. The only extractor confirmed to omit them is `generic`.
+Whether any other platform's extractor does was *not* established: the other
+extractors reachable for a spot check (Vimeo, Dailymotion, SoundCloud, Rumble)
+could not be queried from the machine where this was investigated.
+
+So treat this as defensive hardening in the spirit of the playlist divergence
+above — a missing optional field must degrade, not abort the parse — and not
+as a fix for a known user-facing break. It cannot regress a payload that
+already carries the fields.
+
+Guarded by `crates/hof-api/tests/e2e/test_download_pipeline.rs`, which drives a
+`generic`-extractor URL and would regress to this exact error if the attributes
+were dropped on a re-sync.
 
 ### 2. Feature additions
 

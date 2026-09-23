@@ -23,6 +23,8 @@ futures = "0.3"
 http = "1"
 kameo = "0.22"
 metrics = "0.24"
+# opentelemetry* must match the version tracing-opentelemetry links against
+# (0.33 -> opentelemetry 0.32). Bump them together, never independently.
 opentelemetry = { version = "0.32", default-features = false, features = ["trace", "internal-logs"] }
 opentelemetry_sdk = { version = "0.32", default-features = false, features = ["trace", "rt-tokio", "internal-logs"] }
 opentelemetry-otlp = { version = "0.32", default-features = false, features = ["grpc-tonic", "http-proto", "trace", "internal-logs"] }
@@ -55,9 +57,10 @@ utoipa = { version = "5", features = ["axum_extras", "chrono", "ulid"] }
 utoipa-axum = "0.2"
 utoipa-scalar = { version = "0.3", features = ["axum"] }
 wiremock = "0.6"
-# Pinned to 2.7 so `[patch.crates-io]` below resolves to patches/yt-dlp-patched
-# (vendored 2.7.2). Bumping this silently drops the fork -- see PATCHES.md.
-yt-dlp = "2.7"
+# Pinned exactly so `[patch.crates-io]` below resolves to patches/yt-dlp-patched
+# (vendored 2.7.2). A caret req lets `cargo update` pick 2.8.x, which silently
+# drops the fork ([patch.unused] in Cargo.lock) -- see PATCHES.md.
+yt-dlp = "=2.7.2"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

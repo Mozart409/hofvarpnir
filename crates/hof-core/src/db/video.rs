@@ -245,7 +245,7 @@ pub async fn list_videos(
                        downloaded_at, created_at, updated_at
                 FROM videos
                 WHERE status = $1
-                ORDER BY created_at DESC
+                ORDER BY published_at DESC NULLS LAST, created_at DESC, id DESC
                 ",
             )
             .bind(&status)
@@ -260,7 +260,7 @@ pub async fn list_videos(
                        next_retry, last_error, file_path, file_size_bytes, video_height, video_codec,
                        downloaded_at, created_at, updated_at
                 FROM videos
-                ORDER BY created_at DESC
+                ORDER BY published_at DESC NULLS LAST, created_at DESC, id DESC
                 ",
             )
             .fetch_all(pool)
@@ -310,7 +310,7 @@ pub async fn list_videos_with_context(
             LIMIT 1
         ) sc ON true
         WHERE ($1::video_status IS NULL OR v.status = $1)
-        ORDER BY v.created_at DESC
+        ORDER BY v.published_at DESC NULLS LAST, v.created_at DESC, v.id DESC
         ",
     )
     .bind(status_filter)
@@ -360,7 +360,7 @@ pub async fn list_videos_paginated(
                           OR s.channel_title ILIKE '%' || $2 || '%'
                           OR s.url ILIKE '%' || $2 || '%')
                ))
-        ORDER BY v.created_at DESC
+        ORDER BY v.published_at DESC NULLS LAST, v.created_at DESC, v.id DESC
         LIMIT $3 OFFSET $4
         ",
     )
@@ -433,7 +433,7 @@ pub async fn list_videos_for_source(pool: &PgPool, source_id: Ulid) -> Result<Ve
         FROM videos v
         INNER JOIN source_videos sv ON sv.video_id = v.id
         WHERE sv.source_id = $1
-        ORDER BY v.created_at DESC
+        ORDER BY v.published_at DESC NULLS LAST, v.created_at DESC, v.id DESC
         ",
     )
     .bind(source_id.to_string())
@@ -478,7 +478,7 @@ pub async fn list_videos_for_source_with_context(
         INNER JOIN sources s ON s.id = sv.source_id
         INNER JOIN profiles p ON p.id = s.profile_id
         WHERE sv.source_id = $1
-        ORDER BY v.created_at DESC
+        ORDER BY v.published_at DESC NULLS LAST, v.created_at DESC, v.id DESC
         ",
     )
     .bind(source_id.to_string())
