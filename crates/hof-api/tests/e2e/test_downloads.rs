@@ -34,6 +34,18 @@ async fn seed_completed_video(
     .await
     .expect("create video");
 
+    // Link before marking completed, not after. `TestApp` spawns the real
+    // `CleanupActor`, which runs one pass immediately on start, and
+    // `list_videos_past_retention` treats a completed video with
+    // `downloaded_at` set and *no* source links as past retention — there is
+    // no source left to veto it. Seeding in the other order leaves a window in
+    // which that first pass can mark this video `Cleaned`, which is what made
+    // the download tests flaky. Once the link exists, the source's NULL
+    // retention means "keep forever" and cleanup skips it.
+    db::link_video_to_source(pool, source_id, video.id)
+        .await
+        .expect("link video to source");
+
     sqlx::query(
         r"
         UPDATE videos
@@ -49,10 +61,6 @@ async fn seed_completed_video(
     .execute(pool)
     .await
     .expect("mark video completed");
-
-    db::link_video_to_source(pool, source_id, video.id)
-        .await
-        .expect("link video to source");
 
     video.id
 }
