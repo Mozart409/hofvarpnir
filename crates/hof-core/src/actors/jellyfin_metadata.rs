@@ -80,6 +80,14 @@ pub struct JellyfinMetadataActorArgs {
     pub pool: PgPool,
     pub check_interval: Option<Duration>,
     pub broadcaster: ActivityBroadcaster,
+    /// Whether to start this actor's periodic loop on spawn.
+    ///
+    /// Always `true` in production. Tests set it `false` so that merely
+    /// constructing the app does not set a timer-driven actor loose on the
+    /// rows the test just seeded -- the loop writes to the same tables the
+    /// assertions read, which otherwise races every test that seeds a row in
+    /// a state the loop acts on.
+    pub autostart: bool,
 }
 
 impl Actor for JellyfinMetadataActor {
@@ -94,6 +102,7 @@ impl Actor for JellyfinMetadataActor {
             "Jellyfin metadata actor starting"
         );
 
+        let args_autostart = args.autostart;
         let actor = Self {
             pool: args.pool,
             http_client: reqwest::Client::new(),
@@ -104,10 +113,12 @@ impl Actor for JellyfinMetadataActor {
         };
 
         // Schedule periodic checks
-        actor_ref
-            .tell(ScheduleNextCheck)
-            .try_send()
-            .map_err(|e| color_eyre::eyre::eyre!("Failed to schedule first check: {e}"))?;
+        if args_autostart {
+            actor_ref
+                .tell(ScheduleNextCheck)
+                .try_send()
+                .map_err(|e| color_eyre::eyre::eyre!("Failed to schedule first check: {e}"))?;
+        }
 
         Ok(actor)
     }

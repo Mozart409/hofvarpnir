@@ -254,7 +254,8 @@ async fn delete_source_returns_204(pool: PgPool) {
 
 #[sqlx::test(migrations = "../hof-core/migrations")]
 async fn trigger_index_returns_conflict_when_paused(pool: PgPool) {
-    let app = TestApp::new(pool.clone()).await;
+    // Waits on a pause reaching the scheduler, so this one needs the listener.
+    let app = TestApp::with_settings_listener(pool.clone()).await;
     let user = UserBuilder::new().build(&pool).await;
     let profile = ProfileBuilder::new(user.id).build(&pool).await;
     let source = SourceBuilder::new(profile.id).build(&pool).await;

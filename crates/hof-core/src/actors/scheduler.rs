@@ -126,6 +126,14 @@ pub struct SchedulerArgs {
     pub broadcaster: ActivityBroadcaster,
     /// Process-local drain signal, threaded in from `ActorSystem`.
     pub drain: DrainToken,
+    /// Whether to start this actor's periodic loop on spawn.
+    ///
+    /// Always `true` in production. Tests set it `false` so that merely
+    /// constructing the app does not set a timer-driven actor loose on the
+    /// rows the test just seeded -- the loop writes to the same tables the
+    /// assertions read, which otherwise races every test that seeds a row in
+    /// a state the loop acts on.
+    pub autostart: bool,
 }
 
 impl Actor for SchedulerActor {
@@ -146,6 +154,7 @@ impl Actor for SchedulerActor {
             max_indexers_per_tick, "Scheduler actor starting"
         );
 
+        let autostart = args.autostart;
         let scheduler = Self {
             pool: args.pool,
             ytdlp: args.ytdlp,
@@ -160,7 +169,7 @@ impl Actor for SchedulerActor {
 
         // Start the scheduling loop.
         // Use try_send() to avoid potential deadlock from self-tell with bounded mailbox.
-        if let Err(e) = actor_ref.tell(StartScheduler).try_send() {
+        if autostart && let Err(e) = actor_ref.tell(StartScheduler).try_send() {
             error!(error = %e, "Failed to start scheduler loop");
             return Err(e.into());
         }
