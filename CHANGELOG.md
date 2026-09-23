@@ -2,6 +2,29 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.11.0 - 2026-09-23
+#### Features
+- (**web**) add a re-detect order action to the source detail page - (1298187) - Amadeus Mader
+#### Bug Fixes
+- (**api**) mount reset-order relative to its nest prefix - (91713bc) - Amadeus Mader
+- (**ci**) exclude tests from codeql by path - (de453d7) - Amadeus Mader
+- (**core**) reset sources latched on the unordered entry order - (6a71771) - Amadeus Mader
+- (**core**) order video listings by publish date, not insertion order - (5a65303) - Amadeus Mader
+- (**core**) stop recording a failed order detection as a verdict - (c077f85) - Amadeus Mader
+- (**core**) run database tests under sqlx::test instead of ignore - (aea5c68) - Amadeus Mader
+- (**deps**) default video fields the generic extractor omits - (47e9508) - Amadeus Mader
+- (**tools**) remove attic cache - (6f21f13) - Amadeus Mader
+#### Refactoring
+- (**config**) move dev config to encrypted .sops.env and drop dotenv-load - (d2f0546) - Amadeus Mader
+#### Miscellaneous Chores
+- (**agents**) add testing philosophy - (e1be446) - Amadeus Mader
+- (**css**) build css - (cd6c49a) - Amadeus Mader
+- (**deps**) upgrade deps - (d191917) - Amadeus Mader
+- (**test**) add e2e coverage for downloads, settings and the web ui - (56e5cb6) - Amadeus Mader
+- (**test**) drop unit tests that re-describe serde and struct shapes - (6d06399) - Amadeus Mader
+
+- - -
+
 ## v0.10.0 - 2026-09-18
 #### Features
 - (**deps**) upgrade deps and change argon2 usage to new functions - (5ab0d57) - Amadeus Mader
