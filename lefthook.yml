@@ -43,6 +43,13 @@ pre-commit:
       run: cargo deny check
       stage_fixed: true
 pre-push:
+  # Skip the whole suite when HEAD is a cog version-bump commit: the bump only
+  # touches Cargo.toml/Cargo.lock versions and CI reruns everything on main.
+  # Covers manual re-pushes of a release (cog's post_bump_hooks and
+  # sync-remotes already push with --no-verify). Skips when the command
+  # exits 0.
+  skip:
+    - run: git log -1 --format=%s | grep -qE '^chore\(version\):'
   # Sequential, NOT parallel. `just prepare` clears and regenerates `.sqlx/`,
   # while `test` and `clippy-all` both compile with `SQLX_OFFLINE=true` and
   # read that same directory -- running them concurrently makes the offline
