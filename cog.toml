@@ -20,10 +20,14 @@ pre_bump_hooks = [
     "SQLX_OFFLINE=true cargo check",
 ]
 
-# Publish the bump commit and tag once the bump succeeds locally.
+# Publish the bump commit and tag once the bump succeeds locally. Both
+# refspecs go in one push command, so pre-push would fire once instead of
+# twice -- and --no-verify skips it entirely: the bump commit is
+# machine-generated, pre_bump_hooks already ran `cargo check`, and CI reruns
+# the full gate (fmt/clippy/test/build) on the pushed commit plus release.yml
+# on the tag.
 post_bump_hooks = [
-    "git push origin main",
-    "git push origin v{{version}}",
+    "git push --no-verify origin main v{{version}}",
 ]
 
 [commit_types]
