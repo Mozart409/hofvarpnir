@@ -80,7 +80,8 @@ just --list              # List all available tasks
 just fmt                 # Format code
 just lint                # Run clippy
 just fix                 # Fix clippy issues
-just test                # Run tests with DB setup
+just test                # Run tests with DB setup (includes test-patches)
+just test-patches        # Offline tests of patches/yt-dlp-patched (own workspace)
 just dev                 # Run web server (config decrypted from .sops.env)
 just db-reset            # Reset database
 just mig-run             # Run migrations
@@ -555,6 +556,97 @@ Rules when touching this area:
   damage instead of unopenable (`moov atom not found`).
 
 Set `DOWNLOAD_VERIFY=false` to disable the gate without a code change.
+
+### FFmpeg exits 0 when it declines to overwrite
+
+Measured (ffmpeg 9.0.1): if the output path exists and `-y` is absent, FFmpeg
+prints `Not overwriting - exiting`, **exits 0 in milliseconds, and writes
+nothing**. This produced the production `moov atom not found` failures:
+
+1. A multi-GB MP4 combine (`-c copy -movflags +faststart`) hit the executor's
+   300s timeout and was killed before writing `moov`, leaving a partial file at
+   the output path.
+2. The timeout error advanced `execute_fallback_attempts` to the next stage,
+   which re-downloaded the streams into the same output path.
+3. That stage's combine ran without `-y`, exited 0 in ~20ms, and was reported
+   as success, publishing the killed file to verification.
+
+Guards, all required:
+
+- Combine passes `-y`.
+- Each fallback stage deletes any leftover output first.
+- The executor (`executor/process.rs`) turns an exit-0 "not overwriting" into
+  `CommandFailed`.
+- Combine's timeout is `max(DEFAULT_TIMEOUT, COMBINE_TIMEOUT_FLOOR)` (30 min).
+  The shared 300s default is sized for metadata calls, and the `+faststart`
+  rewrite pushed 2-5 GB muxes past it.
+- A timeout **stops** the fallback (`AttemptError::Abort`), returning
+  `DOWNLOAD_EXECUTION_FAILED` with the stage. Every stage re-downloads the full
+  streams, so advancing on a timeout just repeats the same work. Only
+  `AttemptError::TryNextStage` advances.
+
+## Diagnosing with traces and logs
+
+Every actor message runs in a kameo `actor.handle_message` span. It is a
+**root** span, *linked* (OTel link, not parent) to the sender, so one download
+is several linked traces rather than one. Inside a worker's `StartDownload`,
+the whole attempt is a single trace:
+
+```
+actor.handle_message (DownloadWorker / StartDownload)
+└ handle [video_id, trace_id]
+  └ execute_download [video_id, title]
+    └ download_video [url, policy]
+      └ download.fallback_attempt [stage, video_codec, outcome]   (one per stage)
+        └ download.execute [platform_video_id, video_format_id, video_height, video_codec_selected]
+          ├ download.format [format_id, path]
+          │ └ download_task [task_id, destination]   (runs on the manager's worker, parented back here)
+          └ ffmpeg.combine [video_bytes, audio_bytes, preexisting_output_bytes, output_bytes]
+            └ process [executable, args, pid, exit_code, duration_ms, timed_out, stderr_tail]
+    └ verify_media [path]
+```
+
+Key fields:
+
+- `video_id` (ULID) is on every download log line. Start there.
+- `trace_id` is recorded on handler spans (`crate::telemetry::record_trace_id`)
+  and the HTTP request span when OTLP export is on. Every log line under them
+  carries it, so a Loki line can be opened in Tempo.
+- `process.stderr_tail` holds the last 2000 chars of any subprocess's stderr,
+  which is where FFmpeg and yt-dlp explain themselves.
+- `ffmpeg.combine.preexisting_output_bytes` set means a previous attempt left
+  debris. An `output_bytes` far below `video_bytes + audio_bytes` means the mux
+  did not finish.
+
+When adding a new handler that starts a unit of work, declare
+`trace_id = tracing::field::Empty` in its `#[instrument]` fields and call
+`crate::telemetry::record_trace_id()` first. When spawning a task or queueing
+work for a background loop, carry the span (`.instrument(span)` or
+`Span::current()` captured at enqueue). A bare `tokio::spawn` starts a new trace
+and loses `video_id`.
+
+LogQL recipes (Loki label `service="hofvarpnir"`, logs are JSON):
+
+```logql
+# Everything for one video, oldest first
+{service="hofvarpnir"} |= "<video_id>" | json
+  | line_format "{{._target}} {{.level}} {{.message}} {{.error}}"
+
+# Subprocess timeouts and failures, with the stderr tail
+{service="hofvarpnir"} |~ "Process timed out|Command execution failed|refused to overwrite"
+  | json | line_format "{{.video_id}} {{.executable}} {{.message}} {{.stderr_tail}}"
+
+# Fallback stages that failed for a non-format reason
+{service="hofvarpnir"} |= "trying next fallback stage" | json
+  | line_format "{{.video_id}} {{.stage}} {{.error}}"
+
+# Verification failures by reason
+{service="hofvarpnir"} |= "failed verification" | json
+  | line_format "{{.video_id}} {{.file_size}} {{.error}}"
+```
+
+A file that fails verification with the **same `file_size` across attempts** is
+deterministic truncation (a killed mux or a stale file), not network damage.
 
 ### Testing guidance for this area
 

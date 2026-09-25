@@ -33,7 +33,7 @@ impl Downloader {
     /// # let libraries = Libraries::new(PathBuf::from("libs/yt-dlp"), PathBuf::from("libs/ffmpeg"));
     /// # let downloader = Downloader::builder(libraries, "output").build().await?;
     /// let playlist = downloader.fetch_playlist_infos("https://www.youtube.com/playlist?list=PLrAXtmErZgOeiKm4sgNOknGvNjby9efdf").await?;
-    /// println!("Playlist title: {}", playlist.title);
+    /// println!("Playlist title: {:?}", playlist.title);
     /// # Ok(())
     /// # }
     /// ```
