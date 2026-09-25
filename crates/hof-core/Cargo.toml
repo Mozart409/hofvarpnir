@@ -26,6 +26,11 @@ opentelemetry_sdk.workspace = true
 opentelemetry-otlp.workspace = true
 tracing-opentelemetry.workspace = true
 tracing-loki.workspace = true
+# Never imported: present only so Cargo feature unification switches
+# tracing-loki's (and openidconnect's) reqwest 0.12 to the system trust store.
+# Its `rustls-tls` feature means bundled webpki roots only, which rejects a
+# step-ca certificate however the mounted CA bundle is configured.
+reqwest-0-12 = { package = "reqwest", version = "0.12", default-features = false, features = ["rustls-tls-native-roots"] }
 dotenvy.workspace = true
 yt-dlp.workspace = true
 utoipa.workspace = true
@@ -36,10 +41,16 @@ rand = "0.10"
 hex = "0.4"
 openidconnect = "4"
 url = "2"
+percent-encoding.workspace = true
 
 [dev-dependencies]
+# TLS collector stand-in for tests/otel_export.rs. Already in the tree via
+# reqwest; `ring` is named explicitly because both rustls providers are
+# compiled in, so no process-default provider exists to fall back on.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 serde_json.workspace = true
 tempfile = "3"
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
 tokio = { workspace = true, features = ["test-util"] }
 wiremock.workspace = true
 

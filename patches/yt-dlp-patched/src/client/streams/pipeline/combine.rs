@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 #[cfg(cache)]
 use crate::cache::DownloadCache;
@@ -8,6 +9,15 @@ use crate::metadata::MetadataManager;
 use crate::model::Video;
 use crate::model::format::Format;
 use crate::{Downloader, utils};
+
+/// Lower bound on the FFmpeg combine timeout.
+///
+/// The shared executor timeout (300s by default) is sized for metadata calls,
+/// not for muxing. A multi-GB MP4 with `+faststart` is written, then read and
+/// rewritten to move `moov` to the front; in production that second pass
+/// pushed 2-5 GB muxes past 300s, and the kill left files with no `moov`.
+/// A longer configured timeout still wins.
+const COMBINE_TIMEOUT_FLOOR: Duration = Duration::from_secs(30 * 60);
 
 /// Returns the appropriate FFmpeg audio codec argument for muxing based on container compatibility.
 ///
@@ -483,6 +493,17 @@ impl Downloader {
     /// The optional `audio_codec_hint` (e.g. `"mp4a.40.2"`) takes precedence over the
     /// file-extension heuristic in [`audio_codec_for_mux`], providing robustness when the
     /// audio temp file has an unexpected extension.
+    #[tracing::instrument(
+        name = "ffmpeg.combine",
+        skip_all,
+        fields(
+            output_path = %output_path.display(),
+            video_bytes = tracing::field::Empty,
+            audio_bytes = tracing::field::Empty,
+            preexisting_output_bytes = tracing::field::Empty,
+            output_bytes = tracing::field::Empty,
+        )
+    )]
     pub(crate) async fn execute_ffmpeg_combine(
         &self,
         audio_path: &Path,
@@ -491,6 +512,26 @@ impl Downloader {
         metadata_file: Option<&Path>,
         audio_codec_hint: Option<&str>,
     ) -> Result<()> {
+        // Sizes on the span make a bad mux diagnosable from the trace alone: a
+        // non-empty preexisting output means an earlier attempt left debris,
+        // and output far from video+audio means the mux did not finish.
+        let span = tracing::Span::current();
+        let file_len = |p: &Path| std::fs::metadata(p).ok().map(|m| m.len());
+        if let Some(len) = file_len(video_path) {
+            span.record("video_bytes", len);
+        }
+        if let Some(len) = file_len(audio_path) {
+            span.record("audio_bytes", len);
+        }
+        if let Some(len) = file_len(output_path) {
+            span.record("preexisting_output_bytes", len);
+            tracing::warn!(
+                output_path = ?output_path,
+                preexisting_output_bytes = len,
+                "🎬 Combine output already exists and will be overwritten"
+            );
+        }
+
         let audio = audio_path.to_str().ok_or_else(|| Error::PathValidation {
             path: audio_path.to_path_buf(),
             reason: "Non-UTF8 audio path".to_string(),
@@ -513,7 +554,7 @@ impl Downloader {
             audio_codec = audio_codec,
             has_metadata = metadata_file.is_some(),
             ffmpeg_path = ?self.libraries.ffmpeg,
-            timeout = ?self.timeout,
+            timeout = ?self.timeout.max(COMBINE_TIMEOUT_FLOOR),
             "🎬 Executing FFmpeg combine operation"
         );
 
@@ -544,19 +585,33 @@ impl Downloader {
             builder = builder.args(["-movflags", "+faststart"]);
         }
 
-        let args = builder.output(output).build();
+        // Anything already at the output path is a leftover from an earlier,
+        // failed mux (e.g. one killed by the timeout before it wrote `moov`).
+        // Without `-y` FFmpeg declines to replace it, exits 0, and that stale
+        // file is reported as the combined result.
+        let args = builder.overwrite().output(output).build();
 
         tracing::debug!(
             args = ?args,
             "🎬 FFmpeg combine command arguments"
         );
 
-        let executor = Executor::new(self.libraries.ffmpeg.clone(), args, self.timeout);
+        let executor = Executor::new(
+            self.libraries.ffmpeg.clone(),
+            args,
+            self.timeout.max(COMBINE_TIMEOUT_FLOOR),
+        );
 
         executor.execute().await?;
 
+        let output_bytes = file_len(output_path);
+        if let Some(len) = output_bytes {
+            span.record("output_bytes", len);
+        }
+
         tracing::info!(
             output_path = ?output_path,
+            output_bytes = ?output_bytes,
             "✅ Audio and video combined successfully"
         );
 

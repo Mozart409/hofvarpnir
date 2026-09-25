@@ -6,7 +6,10 @@
 //! - Per-request ID generation and propagation via `x-request-id` header
 //! - OpenTelemetry trace export via OTLP (when `OTEL_EXPORTER_OTLP_ENDPOINT` is set)
 //!   - Protocol configurable via `OTEL_EXPORTER_OTLP_PROTOCOL` (`grpc` or `http/protobuf`)
-//! - Log shipping to Grafana Loki with `trace_id` correlation (when `LOKI_URL` is set)
+//!   - Auth headers from `OTEL_EXPORTER_OTLP_HEADERS`, sampling from
+//!     `OTEL_TRACES_SAMPLER`/`_ARG` (both read by the SDK itself)
+//! - Log shipping to Grafana Loki (when `LOKI_URL` is set); lines carry `trace_id`
+//!   wherever an enclosing span recorded one via [`record_trace_id`]
 //! - HTTP semantic convention attributes for service graph generation
 //!
 //! Both the OpenTelemetry and Loki pipelines are opt-in: if the respective env
@@ -37,11 +40,17 @@ pub struct TelemetryGuard {
 
 impl TelemetryGuard {
     /// Explicitly shut down the OpenTelemetry pipeline, flushing all pending spans.
+    ///
+    /// Idempotent: `Drop` calls this again after an explicit call.
     pub fn shutdown(&self) {
-        if let Some(provider) = &self.provider
-            && let Err(e) = provider.shutdown()
-        {
-            tracing::warn!(error = %e, "Failed to shut down OpenTelemetry tracer provider");
+        let Some(provider) = &self.provider else {
+            return;
+        };
+        match provider.shutdown() {
+            Ok(()) | Err(opentelemetry_sdk::error::OTelSdkError::AlreadyShutdown) => {}
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to shut down OpenTelemetry tracer provider");
+            }
         }
     }
 }
@@ -61,6 +70,7 @@ impl Drop for TelemetryGuard {
 /// - `OTEL_EXPORTER_OTLP_PROTOCOL` — `grpc` (default) or `http/protobuf`
 /// - `OTEL_SERVICE_NAME` — service name reported to the collector (default: `hofvarpnir`)
 /// - `LOKI_URL` — if set, ships logs to Grafana Loki (e.g. `http://localhost:3100`)
+/// - `LOKI_HEADERS` — extra Loki push headers, same format as `OTEL_EXPORTER_OTLP_HEADERS`
 ///
 /// Returns a [`TelemetryGuard`] that must be held until shutdown. Dropping it
 /// flushes the OpenTelemetry exporter.
@@ -192,9 +202,27 @@ fn init_loki_layer() -> (
     // OTEL_SERVICE_NAME; only a malformed key can fail here, which cannot
     // happen with a fixed literal.
     #[allow(clippy::expect_used)]
-    let builder = tracing_loki::builder()
+    let mut builder = tracing_loki::builder()
         .label("service", service_name)
         .expect("valid label");
+
+    // Same format as OTEL_EXPORTER_OTLP_HEADERS, so the push token behind the
+    // otel host's proxy can be passed to both pipelines as one string.
+    if let Ok(raw) = std::env::var("LOKI_HEADERS") {
+        for (key, value) in parse_header_list(&raw) {
+            builder = match builder.http_header(&key, &value) {
+                Ok(b) => b,
+                Err(e) => {
+                    // Shipping without the header would only earn a 401 per
+                    // batch, so refuse up front and say why.
+                    eprintln!(
+                        "Invalid LOKI_HEADERS entry `{key}`: {e}; Loki log shipping disabled"
+                    );
+                    return (None, None);
+                }
+            };
+        }
+    }
 
     match builder.build_url(url) {
         Ok((layer, task)) => (Some(layer), Some(task)),
@@ -202,6 +230,56 @@ fn init_loki_layer() -> (
             eprintln!("Failed to create Loki layer: {e}");
             (None, None)
         }
+    }
+}
+
+/// Parse the OTLP headers format: comma-separated `key=value` pairs, values
+/// percent-encoded (`Authorization=Bearer%20<token>`).
+///
+/// Mirrors how `opentelemetry-otlp` reads `OTEL_EXPORTER_OTLP_HEADERS`: keys
+/// and values are trimmed, a value that is not valid percent-encoded UTF-8 is
+/// used as written, and entries with an empty key or value are dropped.
+fn parse_header_list(input: &str) -> Vec<(String, String)> {
+    input
+        .split(',')
+        .map(str::trim)
+        .filter(|entry| !entry.is_empty())
+        .filter_map(|entry| {
+            let Some((key, value)) = entry.split_once('=') else {
+                // Never echo the entry: it may be a token missing its key.
+                eprintln!("Ignoring a header entry without `=` (expected key=value)");
+                return None;
+            };
+            let value = value.trim();
+            let decoded = percent_encoding::percent_decode_str(value)
+                .decode_utf8()
+                .map_or_else(|_| value.to_string(), std::borrow::Cow::into_owned);
+            Some((key.trim().to_string(), decoded))
+        })
+        .filter(|(key, value)| !key.is_empty() && !value.is_empty())
+        .collect()
+}
+
+/// Record the OpenTelemetry trace id on the current span's `trace_id` field.
+///
+/// Log lines carry the fields of every span in scope, so this is what lets a
+/// line found in Loki be opened as a trace. The span must declare
+/// `trace_id = tracing::field::Empty`; child spans and events inherit it.
+///
+/// Kameo starts every message handler as a new root span (linked, not
+/// parented, to the sender), so each handler that begins a unit of work calls
+/// this once at the top. No-op when OTLP export is disabled.
+pub fn record_trace_id() {
+    record_trace_id_on(&Span::current());
+}
+
+fn record_trace_id_on(span: &Span) {
+    use opentelemetry::trace::{TraceContextExt, TraceId};
+    use tracing_opentelemetry::OpenTelemetrySpanExt;
+
+    let trace_id = span.context().span().span_context().trace_id();
+    if trace_id != TraceId::INVALID {
+        span.record("trace_id", tracing::field::display(trace_id));
     }
 }
 
@@ -241,7 +319,7 @@ impl<B> MakeSpan<B> for RequestSpan {
         let path = request.uri().path();
         let query = request.uri().query().unwrap_or("");
 
-        tracing::span!(
+        let span = tracing::span!(
             Level::INFO,
             "HTTP request",
             "otel.kind" = "server",
@@ -250,7 +328,10 @@ impl<B> MakeSpan<B> for RequestSpan {
             "url.query" = %query,
             "http.response.status_code" = tracing::field::Empty,
             request_id = %request_id,
-        )
+            trace_id = tracing::field::Empty,
+        );
+        record_trace_id_on(&span);
+        span
     }
 }
 

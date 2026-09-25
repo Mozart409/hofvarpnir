@@ -80,6 +80,10 @@ pub(crate) struct DownloadTask {
     /// Optional byte sub-range to download: only `[start, end]` bytes are fetched and
     /// written from offset 0 in the destination file.
     pub(crate) range_constraint: Option<(u64, u64)>,
+    /// Span that was current when the task was enqueued. The task runs on the
+    /// manager's background worker, so without this the transfer would start a
+    /// fresh trace and lose the caller's context (e.g. which video it serves).
+    pub(crate) parent_span: tracing::Span,
 }
 
 impl std::fmt::Debug for DownloadTask {

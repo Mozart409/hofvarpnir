@@ -305,6 +305,14 @@ impl Downloader {
     }
 
     /// Internal function that handles downloading a format with or without preferences
+    #[tracing::instrument(
+        name = "download.format",
+        skip_all,
+        fields(
+            format_id = %format.format_id,
+            path = %path.display(),
+        )
+    )]
     pub(crate) async fn download_format_internal(
         &self,
         format: &Format,
