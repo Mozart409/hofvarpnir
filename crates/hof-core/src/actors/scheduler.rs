@@ -346,8 +346,9 @@ struct CheckSources;
 impl Message<CheckSources> for SchedulerActor {
     type Reply = ();
 
-    #[instrument(skip_all)]
+    #[instrument(skip_all, fields(trace_id = tracing::field::Empty))]
     async fn handle(&mut self, _msg: CheckSources, ctx: &mut Context<Self, Self::Reply>) {
+        crate::telemetry::record_trace_id();
         if !self.running {
             return;
         }
@@ -384,12 +385,13 @@ pub struct IndexSource {
 impl Message<IndexSource> for SchedulerActor {
     type Reply = Result<(), String>;
 
-    #[instrument(skip_all, fields(source_id = %msg.source_id))]
+    #[instrument(skip_all, fields(trace_id = tracing::field::Empty, source_id = %msg.source_id))]
     async fn handle(
         &mut self,
         msg: IndexSource,
         ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
+        crate::telemetry::record_trace_id();
         // Check if already being indexed. This is a more specific answer than
         // a pause or drain refusal, and it must be checked first: an index
         // already in flight for this source shouldn't be reported as
@@ -459,8 +461,9 @@ struct IndexingCompleted {
 impl Message<IndexingCompleted> for SchedulerActor {
     type Reply = ();
 
-    #[instrument(skip_all, fields(source_id = %msg.source_id))]
+    #[instrument(skip_all, fields(trace_id = tracing::field::Empty, source_id = %msg.source_id))]
     async fn handle(&mut self, msg: IndexingCompleted, _ctx: &mut Context<Self, Self::Reply>) {
+        crate::telemetry::record_trace_id();
         self.active_indexers.remove(&msg.source_id);
         self.last_indexed.insert(msg.source_id, Instant::now());
 
@@ -720,8 +723,9 @@ pub struct AddSource {
 impl Message<AddSource> for SchedulerActor {
     type Reply = ();
 
-    #[instrument(skip_all, fields(source_id = %msg.source.id))]
+    #[instrument(skip_all, fields(trace_id = tracing::field::Empty, source_id = %msg.source.id))]
     async fn handle(&mut self, msg: AddSource, ctx: &mut Context<Self, Self::Reply>) {
+        crate::telemetry::record_trace_id();
         info!(source_id = %msg.source.id, url = %msg.source.url, "Source added to scheduler");
 
         // Immediately trigger indexing for new sources
@@ -747,8 +751,9 @@ pub struct RemoveSource {
 impl Message<RemoveSource> for SchedulerActor {
     type Reply = ();
 
-    #[instrument(skip_all, fields(source_id = %msg.source_id))]
+    #[instrument(skip_all, fields(trace_id = tracing::field::Empty, source_id = %msg.source_id))]
     async fn handle(&mut self, msg: RemoveSource, _ctx: &mut Context<Self, Self::Reply>) {
+        crate::telemetry::record_trace_id();
         info!(source_id = %msg.source_id, "Source removed from scheduler");
 
         // Stop any active indexer for this source

@@ -342,6 +342,18 @@ impl<'a> DownloadBuilder<'a> {
     /// # Returns
     ///
     /// The output path together with the selected video and audio formats.
+    #[tracing::instrument(
+        name = "download.execute",
+        skip_all,
+        fields(
+            platform_video_id = %self.video.id,
+            output = %self.output.display(),
+            video_format_id = tracing::field::Empty,
+            audio_format_id = tracing::field::Empty,
+            video_height = tracing::field::Empty,
+            video_codec_selected = tracing::field::Empty,
+        )
+    )]
     pub async fn execute_detailed(self) -> Result<DownloadDetails> {
         // Use configured quality/codec or defaults
         let video_quality = self.video_quality.unwrap_or(VideoQuality::Best);
@@ -376,6 +388,16 @@ impl<'a> DownloadBuilder<'a> {
 
         let selected_video = SelectedFormat::from_format(video_format);
         let selected_audio = SelectedFormat::from_format(audio_format);
+
+        let span = tracing::Span::current();
+        span.record("video_format_id", video_format.format_id.as_str());
+        span.record("audio_format_id", audio_format.format_id.as_str());
+        if let Some(height) = selected_video.height {
+            span.record("video_height", height);
+        }
+        if let Some(codec) = selected_video.codec.as_deref() {
+            span.record("video_codec_selected", codec);
+        }
 
         tracing::debug!(
             video_format_id = %video_format.format_id,

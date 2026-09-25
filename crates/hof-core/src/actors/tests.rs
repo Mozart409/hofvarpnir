@@ -148,7 +148,103 @@ mod scheduler_tests {}
 
 #[cfg(test)]
 mod cleanup_tests {
+    use std::fs::File;
     use std::path::Path;
+    use std::time::{Duration, SystemTime};
+
+    use crate::actors::cleanup::{
+        ORPHAN_IDLE_THRESHOLD, is_orphaned_temp_file, is_ytdlp_temp_file,
+    };
+
+    const UUID: &str = "550e8400-e29b-41d4-a716-446655440000";
+
+    /// `ffmpeg` metadata/chapter passes write `<stem>_<uuid>_temp.<ext>` next to
+    /// the video; a process death mid-pass leaves it behind in `incomplete/`.
+    #[test]
+    fn test_ffmpeg_temp_output_is_temp_file() {
+        assert!(is_ytdlp_temp_file(Path::new(&format!(
+            "/dl/incomplete/Jardier/2026/LONG BEACH Racing_{UUID}_temp.mp4"
+        ))));
+        // create_temp_path's fallback when the file has no stem
+        assert!(is_ytdlp_temp_file(Path::new(&format!(
+            "/dl/output_{UUID}_temp.mkv"
+        ))));
+        // Titles are arbitrary Unicode; the UUID still sits at the end.
+        assert!(is_ytdlp_temp_file(Path::new(&format!(
+            "/dl/100hrs in Kuala Lumpur 🇲🇾_{UUID}_temp.mp4"
+        ))));
+    }
+
+    /// A real video whose title happens to end in `_temp` must never match:
+    /// deleting it destroys a finished download.
+    #[test]
+    fn test_title_ending_in_temp_is_not_temp_file() {
+        assert!(!is_ytdlp_temp_file(Path::new("/dl/My_temp.mp4")));
+        assert!(!is_ytdlp_temp_file(Path::new("/dl/Speedrun_any%_temp.mp4")));
+        // UUID-shaped slot (8-4-4-4-12, underscore before it), but not hex
+        assert!(!is_ytdlp_temp_file(Path::new(
+            "/dl/Title_zzzzzzzz-zzzz-zzzz-zzzz-zzzzzzzzzzzz_temp.mp4"
+        )));
+        // UUID-shaped but missing the separating underscore
+        assert!(!is_ytdlp_temp_file(Path::new(&format!(
+            "/dl/{UUID}_temp.mp4"
+        ))));
+    }
+
+    /// Titles with multi-byte characters where the UUID slot would begin must
+    /// not panic on a byte-offset slice.
+    #[test]
+    fn test_multibyte_title_does_not_panic() {
+        let name = format!("/dl/{}_temp.mp4", "🇲🇾".repeat(12));
+        assert!(!is_ytdlp_temp_file(Path::new(&name)));
+        let name = format!("/dl/{}é_temp.mp4", "a".repeat(35));
+        assert!(!is_ytdlp_temp_file(Path::new(&name)));
+    }
+
+    fn file_with_mtime(dir: &Path, name: &str, mtime: SystemTime) -> std::path::PathBuf {
+        let path = dir.join(name);
+        let file = File::create(&path).unwrap();
+        file.set_modified(mtime).unwrap();
+        path
+    }
+
+    /// Both sweeps run while downloads are live (startup's runs right after
+    /// pending downloads are kicked). A temp file still being written has a
+    /// fresh mtime and must survive; one idle past the threshold is orphaned.
+    #[tokio::test]
+    async fn test_orphan_requires_idle_temp_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let now = SystemTime::now();
+        let stale = now - ORPHAN_IDLE_THRESHOLD - Duration::from_mins(1);
+        let meta_name = format!("video_{UUID}_temp.mp4");
+
+        let live = file_with_mtime(dir.path(), "temp_video_live.mp4", now);
+        assert!(!is_orphaned_temp_file(&live).await);
+
+        let live_meta = file_with_mtime(dir.path(), &meta_name, now);
+        assert!(!is_orphaned_temp_file(&live_meta).await);
+
+        let dead = file_with_mtime(dir.path(), "temp_video_dead.mp4", stale);
+        assert!(is_orphaned_temp_file(&dead).await);
+
+        let dead_part = file_with_mtime(dir.path(), "video.mp4.part", stale);
+        assert!(is_orphaned_temp_file(&dead_part).await);
+
+        // Old finished videos are never temp files, however old.
+        let finished = file_with_mtime(dir.path(), "video.mp4", stale);
+        assert!(!is_orphaned_temp_file(&finished).await);
+
+        // Clock skew: an mtime in the future is not evidence of idleness.
+        let future = file_with_mtime(
+            dir.path(),
+            "temp_audio_skew.m4a",
+            now + Duration::from_hours(1),
+        );
+        assert!(!is_orphaned_temp_file(&future).await);
+
+        // Already gone (raced with another sweep): not an error, not orphaned.
+        assert!(!is_orphaned_temp_file(&dir.path().join("temp_video_gone.mp4")).await);
+    }
 
     #[test]
     fn test_is_ytdlp_temp_file() {
@@ -176,22 +272,6 @@ mod cleanup_tests {
 
         // NFO files are not temp files
         assert!(!is_ytdlp_temp_file(Path::new("/downloads/video.nfo")));
-    }
-
-    /// Helper function to check if a path is a yt-dlp temp file.
-    fn is_ytdlp_temp_file(path: &Path) -> bool {
-        let is_part = path
-            .extension()
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("part"));
-        let is_ytdl = path
-            .extension()
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("ytdl"));
-        let is_temp_merge = path.file_name().is_some_and(|name| {
-            let n = name.to_string_lossy();
-            n.starts_with("temp_audio_") || n.starts_with("temp_video_")
-        });
-
-        is_part || is_ytdl || is_temp_merge
     }
 }
 

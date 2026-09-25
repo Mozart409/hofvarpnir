@@ -481,12 +481,13 @@ impl Message<EnqueueDownload> for DownloadSupervisor {
     /// future edit of `dispatch_download` introduces into a logged,
     /// per-video failure instead of an actor death. Do not "simplify" it back
     /// into `self.dispatch_download(..).await`.
-    #[instrument(skip_all, fields(video_id = %msg.video.id))]
+    #[instrument(skip_all, fields(trace_id = tracing::field::Empty, video_id = %msg.video.id))]
     async fn handle(
         &mut self,
         msg: EnqueueDownload,
         ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
+        crate::telemetry::record_trace_id();
         let video_id = msg.video.id;
         let supervisor_ref = ctx.actor_ref().clone();
 
@@ -511,8 +512,9 @@ struct DownloadStarting {
 impl Message<DownloadStarting> for DownloadSupervisor {
     type Reply = ();
 
-    #[instrument(skip_all, fields(video_id = %msg.video_id))]
+    #[instrument(skip_all, fields(trace_id = tracing::field::Empty, video_id = %msg.video_id))]
     async fn handle(&mut self, msg: DownloadStarting, _ctx: &mut Context<Self, Self::Reply>) {
+        crate::telemetry::record_trace_id();
         debug!(video_id = %msg.video_id, "Download starting");
         self.last_download_start = Some(Instant::now());
 
@@ -584,8 +586,9 @@ struct DownloadCompleted {
 impl Message<DownloadCompleted> for DownloadSupervisor {
     type Reply = ();
 
-    #[instrument(skip_all, fields(video_id = %msg.video_id))]
+    #[instrument(skip_all, fields(trace_id = tracing::field::Empty, video_id = %msg.video_id))]
     async fn handle(&mut self, msg: DownloadCompleted, _ctx: &mut Context<Self, Self::Reply>) {
+        crate::telemetry::record_trace_id();
         self.active_downloads.remove(&msg.video_id);
         // Release the in-flight dispatch reservation so the video can be
         // dispatched again on a future tick (if still eligible).
@@ -624,8 +627,9 @@ pub struct ReportOutcome {
 impl Message<ReportOutcome> for DownloadSupervisor {
     type Reply = ();
 
-    #[instrument(skip_all)]
+    #[instrument(skip_all, fields(trace_id = tracing::field::Empty, video_id = %msg.outcome.video_id()))]
     async fn handle(&mut self, msg: ReportOutcome, _ctx: &mut Context<Self, Self::Reply>) {
+        crate::telemetry::record_trace_id();
         match msg.outcome {
             DownloadOutcome::Success {
                 video_id,
@@ -724,12 +728,13 @@ impl Message<ProcessPendingDownloads> for DownloadSupervisor {
     /// The return value is the number of videos found and processed by a
     /// complete sweep, `0` for a skipped or failed sweep, and the number
     /// dispatched so far for a sweep that aborted partway.
-    #[instrument(skip_all)]
+    #[instrument(skip_all, fields(trace_id = tracing::field::Empty))]
     async fn handle(
         &mut self,
         _msg: ProcessPendingDownloads,
         ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
+        crate::telemetry::record_trace_id();
         // Optimisation only, not the authoritative gate: skips the DB query
         // below when there is no point running it, since a pause will
         // discard whatever it returns. The real gate every dispatch path
@@ -927,12 +932,13 @@ impl Message<CancelDownload> for DownloadSupervisor {
     /// is `ask`-only; see [`CancelDownload`].
     type Reply = Result<(), String>;
 
-    #[instrument(skip_all, fields(video_id = %msg.video_id))]
+    #[instrument(skip_all, fields(trace_id = tracing::field::Empty, video_id = %msg.video_id))]
     async fn handle(
         &mut self,
         msg: CancelDownload,
         _ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
+        crate::telemetry::record_trace_id();
         // Stop the worker if actively downloading
         if let Some(worker_ref) = self.active_downloads.remove(&msg.video_id) {
             info!(video_id = %msg.video_id, "Cancelling active download");

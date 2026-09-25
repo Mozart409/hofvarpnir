@@ -87,6 +87,20 @@ pub async fn execute_command_to_file(
 ///
 /// Returns an error if the command fails, times out, or cannot be executed
 // LCOV_EXCL_START — requires real yt-dlp/ffmpeg binary on PATH
+#[tracing::instrument(
+    name = "process",
+    skip_all,
+    fields(
+        executable = tracing::field::Empty,
+        args = ?args,
+        timeout_secs = timeout.as_secs(),
+        pid = tracing::field::Empty,
+        exit_code = tracing::field::Empty,
+        duration_ms = tracing::field::Empty,
+        timed_out = false,
+        stderr_tail = tracing::field::Empty,
+    )
+)]
 async fn execute_command_internal(
     executable_path: impl Into<PathBuf>,
     args: &[String],
@@ -94,6 +108,9 @@ async fn execute_command_internal(
     output_path: Option<PathBuf>,
 ) -> Result<ProcessOutput> {
     let executable_path: PathBuf = executable_path.into();
+    let span = tracing::Span::current();
+    span.record("executable", tracing::field::display(executable_path.display()));
+    let started = std::time::Instant::now();
 
     tracing::debug!(
         executable = ?executable_path,
@@ -116,6 +133,11 @@ async fn execute_command_internal(
 
     command.stderr(std::process::Stdio::piped());
 
+    // If the caller drops this future (an outer download timeout, a cancelled
+    // task), kill the child too. Otherwise FFmpeg keeps running detached and
+    // finishes writing a temp or output file whose cleanup code never runs.
+    command.kill_on_drop(true);
+
     #[cfg(target_os = "windows")]
     command.creation_flags(0x08000000);
 
@@ -127,6 +149,9 @@ async fn execute_command_internal(
     );
 
     let mut child = command.spawn()?;
+    if let Some(pid) = child.id() {
+        span.record("pid", pid);
+    }
 
     tracing::debug!(
         executable = ?executable_path,
@@ -163,6 +188,8 @@ async fn execute_command_internal(
     let exit_status = match tokio::time::timeout(timeout, child.wait()).await {
         Ok(result) => result?,
         Err(_) => {
+            span.record("timed_out", true);
+            span.record("duration_ms", elapsed_ms(started));
             tracing::warn!(
                 executable = ?executable_path,
                 timeout_secs = timeout.as_secs(),
@@ -218,14 +245,40 @@ async fn execute_command_internal(
     let stdout = String::from_utf8_lossy(&stdout_result).to_string();
     let stderr = String::from_utf8_lossy(&stderr_result).to_string();
     let code = exit_status.code().unwrap_or(-1);
+    let stderr_tail = tail_chars(&stderr, STDERR_TAIL_CHARS);
+
+    span.record("exit_code", code);
+    span.record("duration_ms", elapsed_ms(started));
+    if !stderr_tail.is_empty() {
+        span.record("stderr_tail", stderr_tail);
+    }
 
     tracing::debug!(
         executable = ?executable_path,
         exit_code = code,
         stdout_len = stdout.len(),
         stderr_len = stderr.len(),
+        stderr_tail,
         "⚙️ Command output captured"
     );
+
+    // FFmpeg exits 0 when it declines to overwrite an existing output file,
+    // having written nothing. Treating that as success publishes whatever was
+    // already at the output path -- measured in production as a killed,
+    // moov-less MP4 left behind by an earlier timed-out mux.
+    if exit_status.success() && ffmpeg_refused_overwrite(&stderr) {
+        tracing::warn!(
+            executable = ?executable_path,
+            stderr_tail,
+            "⚙️ FFmpeg refused to overwrite existing output and wrote nothing"
+        );
+
+        return Err(Error::CommandFailed {
+            command: executable_path.display().to_string(),
+            exit_code: code,
+            stderr,
+        });
+    }
 
     if exit_status.success() {
         tracing::debug!(
@@ -240,11 +293,7 @@ async fn execute_command_internal(
     tracing::warn!(
         executable = ?executable_path,
         exit_code = code,
-        stderr_preview = if stderr.len() > 100 {
-            &stderr[..100]
-        } else {
-            &stderr
-        },
+        stderr_tail,
         "⚙️ Command execution failed"
     );
 
@@ -255,6 +304,32 @@ async fn execute_command_internal(
     })
 }
 // LCOV_EXCL_STOP
+
+/// How much of a child's stderr to keep on its span and in failure logs.
+///
+/// The end of stderr is where FFmpeg and yt-dlp put the reason they stopped.
+const STDERR_TAIL_CHARS: usize = 2000;
+
+/// Returns at most the last `max` characters of `s`, never splitting a char.
+fn tail_chars(s: &str, max: usize) -> &str {
+    let s = s.trim_end();
+    if max == 0 {
+        return "";
+    }
+    s.char_indices().rev().nth(max - 1).map_or(s, |(idx, _)| &s[idx..])
+}
+
+/// Whether FFmpeg's stderr says it skipped writing because the output existed.
+///
+/// Covers both forms: the interactive prompt answered by a closed stdin, and
+/// the `-nostdin` / `-n` form.
+fn ffmpeg_refused_overwrite(stderr: &str) -> bool {
+    stderr.contains("Not overwriting - exiting") || stderr.contains("already exists. Exiting.")
+}
+
+fn elapsed_ms(started: std::time::Instant) -> u64 {
+    u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
+}
 
 /// Helper function to read a stream into a buffer
 ///

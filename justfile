@@ -181,6 +181,14 @@ css-build:
 # Run `just prepare` after any schema change to keep that cache current.
 test: clear up
     SQLX_OFFLINE=true DATABASE_URL={{ test_database_url }} cargo test --all-features -- --include-ignored
+    just test-patches
+
+# The vendored yt-dlp fork is its own workspace (own Cargo.lock), wired in via
+# [patch.crates-io], so the root `cargo test` compiles it but never tests it.
+# Offline targets only: upstream's `integration` and `e2e` suites hit the network.
+test-patches:
+    cargo test --manifest-path patches/yt-dlp-patched/Cargo.toml --lib --test unit
+    cargo test --manifest-path patches/yt-dlp-patched/Cargo.toml --doc
 
 # E2E API tests against the lean postgres-test instance.
 # (#[sqlx::test] migrates each test database itself, so this only needs `up`)
@@ -197,6 +205,7 @@ e2e-only: clear
 ci: clear up
     SQLX_OFFLINE=true cargo build --release
     SQLX_OFFLINE=true DATABASE_URL={{ test_database_url }} cargo test --all-features -- --include-ignored
+    just test-patches
     SQLX_OFFLINE=true cargo clippy --workspace --all-targets --all-features -- -D warnings
 
 # Check Nix cache availability

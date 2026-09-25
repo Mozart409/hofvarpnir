@@ -6,7 +6,8 @@
 //! - Per-request ID generation and propagation via `x-request-id` header
 //! - OpenTelemetry trace export via OTLP (when `OTEL_EXPORTER_OTLP_ENDPOINT` is set)
 //!   - Protocol configurable via `OTEL_EXPORTER_OTLP_PROTOCOL` (`grpc` or `http/protobuf`)
-//! - Log shipping to Grafana Loki with `trace_id` correlation (when `LOKI_URL` is set)
+//! - Log shipping to Grafana Loki (when `LOKI_URL` is set); lines carry `trace_id`
+//!   wherever an enclosing span recorded one via [`record_trace_id`]
 //! - HTTP semantic convention attributes for service graph generation
 //!
 //! Both the OpenTelemetry and Loki pipelines are opt-in: if the respective env
@@ -205,6 +206,29 @@ fn init_loki_layer() -> (
     }
 }
 
+/// Record the OpenTelemetry trace id on the current span's `trace_id` field.
+///
+/// Log lines carry the fields of every span in scope, so this is what lets a
+/// line found in Loki be opened as a trace. The span must declare
+/// `trace_id = tracing::field::Empty`; child spans and events inherit it.
+///
+/// Kameo starts every message handler as a new root span (linked, not
+/// parented, to the sender), so each handler that begins a unit of work calls
+/// this once at the top. No-op when OTLP export is disabled.
+pub fn record_trace_id() {
+    record_trace_id_on(&Span::current());
+}
+
+fn record_trace_id_on(span: &Span) {
+    use opentelemetry::trace::{TraceContextExt, TraceId};
+    use tracing_opentelemetry::OpenTelemetrySpanExt;
+
+    let trace_id = span.context().span().span_context().trace_id();
+    if trace_id != TraceId::INVALID {
+        span.record("trace_id", tracing::field::display(trace_id));
+    }
+}
+
 /// Generates a ULID-based `x-request-id` for each incoming HTTP request.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct UlidRequestId;
@@ -241,7 +265,7 @@ impl<B> MakeSpan<B> for RequestSpan {
         let path = request.uri().path();
         let query = request.uri().query().unwrap_or("");
 
-        tracing::span!(
+        let span = tracing::span!(
             Level::INFO,
             "HTTP request",
             "otel.kind" = "server",
@@ -250,7 +274,10 @@ impl<B> MakeSpan<B> for RequestSpan {
             "url.query" = %query,
             "http.response.status_code" = tracing::field::Empty,
             request_id = %request_id,
-        )
+            trace_id = tracing::field::Empty,
+        );
+        record_trace_id_on(&span);
+        span
     }
 }
 
