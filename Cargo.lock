@@ -1703,7 +1703,7 @@ dependencies = [
 
 [[package]]
 name = "hof-api"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "axum",
  "axum-test",
@@ -1729,7 +1729,7 @@ dependencies = [
 
 [[package]]
 name = "hof-core"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "argon2",
  "chrono",
@@ -1771,7 +1771,7 @@ dependencies = [
 
 [[package]]
 name = "hof-tui"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "chrono",
  "color-eyre",
@@ -1789,7 +1789,7 @@ dependencies = [
 
 [[package]]
 name = "hof-web"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "axum",
  "axum-test",
