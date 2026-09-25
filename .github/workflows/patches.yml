@@ -51,3 +51,8 @@ jobs:
       # (dead-code in test helpers) and are deliberately not gated on.
       - name: Check yt-dlp-patched (all targets)
         run: nix develop .#default --command sh -c "cd patches/yt-dlp-patched && cargo check --all-targets --all-features"
+      # `cargo check --all-targets` never compiles doctests, so a doc example
+      # broken by a type change (Playlist.title -> Option) went unnoticed.
+      # The lib, `unit` and doc tests are offline; run them for real.
+      - name: Test yt-dlp-patched (offline targets)
+        run: nix develop .#default --command sh -c "cd patches/yt-dlp-patched && cargo test --lib --test unit && cargo test --doc"

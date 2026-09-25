@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use chrono::{DateTime, NaiveDate, TimeZone, Utc};
 use tokio::sync::mpsc;
-use tracing::{debug, info, instrument, warn};
+use tracing::{Instrument, debug, info, instrument, warn};
 use ulid::Ulid;
 use yt_dlp::Downloader;
 use yt_dlp::client::DownloadDetails;
@@ -616,6 +616,24 @@ impl YtdlpClient {
                 let video_ref = video.clone();
                 let output_path_ref = output_path.clone();
                 async move {
+                    // Stages share one output path. A failed stage can leave a
+                    // partial file there -- measured: an FFmpeg mux killed by
+                    // its timeout leaves a multi-GB MP4 with no `moov` atom --
+                    // and the next stage must not inherit it.
+                    match tokio::fs::remove_file(&output_path_ref).await {
+                        Ok(()) => warn!(
+                            path = %output_path_ref.display(),
+                            "Removed leftover output from a previous attempt"
+                        ),
+                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                        Err(e) => {
+                            return Err(AttemptError::Abort(format!(
+                                "Failed to remove leftover output {}: {e}",
+                                output_path_ref.display()
+                            )));
+                        }
+                    }
+
                     self.downloader
                         .download(&video_ref, &output_path_ref)
                         .video_quality(video_quality)
@@ -624,7 +642,14 @@ impl YtdlpClient {
                         .audio_codec(audio_codec)
                         .execute_detailed()
                         .await
-                        .map_err(|err| err.to_string())
+                        .map_err(|err| {
+                            let detail = err.to_string();
+                            if matches!(err, yt_dlp::error::Error::Timeout { .. }) {
+                                AttemptError::Abort(detail)
+                            } else {
+                                AttemptError::TryNextStage(detail)
+                            }
+                        })
                 }
             })
             .await?;
@@ -907,6 +932,16 @@ fn fallback_attempts(policy: &FormatPolicy) -> Vec<FallbackAttempt> {
     deduped
 }
 
+/// Why one fallback stage failed, and whether a later stage is worth trying.
+#[derive(Debug)]
+enum AttemptError {
+    /// A later stage may succeed, e.g. the preferred codec is not offered.
+    TryNextStage(String),
+    /// A later stage would repeat the same work and fail the same way, e.g. a
+    /// timeout: every stage re-downloads the full streams and re-muxes them.
+    Abort(String),
+}
+
 async fn execute_fallback_attempts<F, Fut>(
     attempts: &[FallbackAttempt],
     policy: &FormatPolicy,
@@ -914,7 +949,7 @@ async fn execute_fallback_attempts<F, Fut>(
 ) -> Result<(DownloadDetails, FallbackStage), YtdlpError>
 where
     F: FnMut(&FallbackAttempt) -> Fut,
-    Fut: Future<Output = Result<DownloadDetails, String>>,
+    Fut: Future<Output = Result<DownloadDetails, AttemptError>>,
 {
     let mut last_error = None;
     let mut last_stage = None;
@@ -931,15 +966,46 @@ where
             "Attempting format selection"
         );
 
-        match execute(attempt).await {
-            Ok(details) => return Ok((details, attempt.stage)),
-            Err(err) => {
-                last_error = Some(err);
-                debug!(
+        let span = tracing::info_span!(
+            "download.fallback_attempt",
+            stage = ?attempt.stage,
+            video_quality = ?attempt.video_quality,
+            video_codec = ?attempt.video_codec,
+            audio_codec = ?attempt.audio_codec,
+            outcome = tracing::field::Empty,
+        );
+
+        match execute(attempt).instrument(span.clone()).await {
+            Ok(details) => {
+                span.record("outcome", "ok");
+                return Ok((details, attempt.stage));
+            }
+            Err(AttemptError::Abort(detail)) => {
+                span.record("outcome", "aborted");
+                warn!(
+                    parent: &span,
                     stage = ?attempt.stage,
-                    error = last_error.as_deref(),
-                    "Format selection attempt failed"
+                    error = %detail,
+                    "Download attempt failed in a way no fallback stage can fix"
                 );
+                return Err(YtdlpError::DownloadExecutionFailed {
+                    preset: policy.preset.clone(),
+                    quality: policy.quality.clone(),
+                    stage: Some(attempt.stage),
+                    detail,
+                });
+            }
+            Err(AttemptError::TryNextStage(err)) => {
+                span.record("outcome", "failed");
+                // Warn, not debug: this is where non-format failures used to
+                // hide behind "trying the next codec".
+                warn!(
+                    parent: &span,
+                    stage = ?attempt.stage,
+                    error = %err,
+                    "Download attempt failed, trying next fallback stage"
+                );
+                last_error = Some(err);
             }
         }
     }
@@ -1717,7 +1783,9 @@ mod tests {
             let stage = attempt.stage;
             async move {
                 if stage == FallbackStage::PreferredCodecPair {
-                    return Err("preferred codec not available".to_string());
+                    return Err(AttemptError::TryNextStage(
+                        "preferred codec not available".to_string(),
+                    ));
                 }
                 Ok(test_download_details(
                     "/tmp/fallback-success.mp4",
@@ -1731,13 +1799,48 @@ mod tests {
         assert_eq!(selected_stage, FallbackStage::PreferredVideoCodec);
     }
 
+    /// A timeout is not a format problem: the next stage re-downloads the same
+    /// streams and hits the same limit. Production saw every stage re-fetch
+    /// 2-5 GB this way. The fallback must stop at the first timeout and report
+    /// an execution failure naming that stage, not format exhaustion.
+    #[tokio::test]
+    async fn test_fallback_stops_on_timeout() {
+        let policy = FormatPolicy::from(&Quality::Q1440p, &OutputPreset::Browser);
+        let attempts = fallback_attempts(&policy);
+        assert!(attempts.len() > 1, "test needs a later stage to skip");
+        let mut executed = Vec::new();
+
+        let error = execute_fallback_attempts(&attempts, &policy, |attempt| {
+            executed.push(attempt.stage);
+            async {
+                Err(AttemptError::Abort(
+                    "Timeout after 300s while executing command: ffmpeg".to_string(),
+                ))
+            }
+        })
+        .await
+        .expect_err("a timed-out stage must fail the download");
+
+        assert_eq!(executed, vec![FallbackStage::PreferredCodecPair]);
+        assert_eq!(
+            error.machine_code(),
+            Some(YtdlpError::DOWNLOAD_EXECUTION_FAILED)
+        );
+        assert_eq!(
+            error.fallback_stage(),
+            Some(FallbackStage::PreferredCodecPair)
+        );
+    }
+
     #[tokio::test]
     async fn test_fallback_exhaustion_returns_machine_readable_error_code() {
         let policy = FormatPolicy::from(&Quality::Q1080p, &OutputPreset::Browser);
         let attempts = fallback_attempts(&policy);
 
         let error = execute_fallback_attempts(&attempts, &policy, |_attempt| async {
-            Err("no compatible format".to_string())
+            Err(AttemptError::TryNextStage(
+                "no compatible format".to_string(),
+            ))
         })
         .await
         .expect_err("fallback exhaustion should fail");

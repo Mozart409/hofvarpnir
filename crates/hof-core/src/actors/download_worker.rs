@@ -74,6 +74,16 @@ pub enum DownloadOutcome {
     },
 }
 
+impl DownloadOutcome {
+    /// The video this outcome reports on.
+    #[must_use]
+    pub const fn video_id(&self) -> Ulid {
+        match self {
+            Self::Success { video_id, .. } | Self::Failed { video_id, .. } => *video_id,
+        }
+    }
+}
+
 /// The download worker actor.
 ///
 /// This actor is short-lived: it processes a single download and then stops.
@@ -114,8 +124,9 @@ impl Actor for DownloadWorker {
     type Args = DownloadWorkerArgs;
     type Error = color_eyre::eyre::Error;
 
-    #[instrument(skip_all, fields(video_id = %args.video.id))]
+    #[instrument(skip_all, fields(trace_id = tracing::field::Empty, video_id = %args.video.id))]
     async fn on_start(args: Self::Args, _actor_ref: ActorRef<Self>) -> Result<Self, Self::Error> {
+        crate::telemetry::record_trace_id();
         info!(
             video_id = %args.video.id,
             title = %args.video.title,
@@ -153,12 +164,13 @@ pub struct StartDownload;
 impl Message<StartDownload> for DownloadWorker {
     type Reply = DownloadOutcome;
 
-    #[instrument(skip_all, fields(video_id = %self.video.id))]
+    #[instrument(skip_all, fields(trace_id = tracing::field::Empty, video_id = %self.video.id))]
     async fn handle(
         &mut self,
         _msg: StartDownload,
         ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
+        crate::telemetry::record_trace_id();
         let start = Instant::now();
         let outcome = Box::pin(self.execute_download()).await;
         histogram!(crate::metrics::DOWNLOAD_DURATION_SECONDS).record(start.elapsed().as_secs_f64());

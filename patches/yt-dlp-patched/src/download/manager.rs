@@ -16,6 +16,7 @@ use tokio::task::JoinHandle;
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::{Stream, StreamExt};
 use tokio_util::sync::CancellationToken;
+use tracing::Instrument;
 
 use crate::download::config::speed_profile::SpeedProfile;
 // Re-export types for backward compatibility with `use crate::download::manager::*`
@@ -627,6 +628,7 @@ impl DownloadManager {
             progress_callback,
             http_headers,
             range_constraint,
+            parent_span: tracing::Span::current(),
         };
 
         tracing::debug!(id = id, url = url, destination = ?destination, priority = ?priority, "📥 Enqueuing download");
@@ -908,13 +910,23 @@ async fn process_queued_task(
 
     let task_id = task.id;
     let tasks = ctx.tasks.clone(); // clone before ctx is moved into run_download_task
-    let handle = tokio::spawn(run_download_task(
+    let span = tracing::info_span!(
+        parent: &task.parent_span,
+        "download_task",
         task_id,
-        task.url.clone(),
-        task.destination.clone(),
-        fetcher,
-        permit,
-        ctx,
-    ));
+        destination = %task.destination.display(),
+        range = ?task.range_constraint,
+    );
+    let handle = tokio::spawn(
+        run_download_task(
+            task_id,
+            task.url.clone(),
+            task.destination.clone(),
+            fetcher,
+            permit,
+            ctx,
+        )
+        .instrument(span),
+    );
     tasks.lock().await.insert(task_id, handle);
 }

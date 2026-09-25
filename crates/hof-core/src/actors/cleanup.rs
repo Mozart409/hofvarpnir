@@ -290,12 +290,13 @@ pub struct CleanupResult {
 impl Message<RunCleanup> for CleanupActor {
     type Reply = CleanupResult;
 
-    #[instrument(skip_all)]
+    #[instrument(skip_all, fields(trace_id = tracing::field::Empty))]
     async fn handle(
         &mut self,
         _msg: RunCleanup,
         _ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
+        crate::telemetry::record_trace_id();
         info!("Running cleanup");
         self.last_run_at = Some(Utc::now());
 
@@ -583,7 +584,7 @@ impl CleanupActor {
 
             while let Ok(Some(entry)) = entries.next_entry().await {
                 let path = entry.path();
-                if is_ytdlp_temp_file(&path) {
+                if is_orphaned_temp_file(&path).await {
                     info!(path = %path.display(), "Cleaning up orphaned temp file");
                     if let Err(e) = tokio::fs::remove_file(&path).await {
                         warn!(path = %path.display(), error = %e, "Failed to remove temp file");
@@ -657,11 +658,38 @@ pub struct CleanupPartFiles {
     pub directories: Vec<std::path::PathBuf>,
 }
 
+/// How long a temp file must go unmodified before a sweep may delete it.
+///
+/// Both sweeps run while downloads are live (the startup one right after
+/// pending downloads are kicked), and name patterns alone match the files of
+/// in-flight downloads too. Transfers and `ffmpeg` passes write continuously, so
+/// a live file's mtime keeps moving; one idle this long has no writer left.
+pub(crate) const ORPHAN_IDLE_THRESHOLD: Duration = Duration::from_hours(1);
+
+/// Whether `path` is a temp artifact that no live download is still writing.
+///
+/// A file that vanished or whose mtime lies in the future (clock skew) is not
+/// treated as orphaned.
+pub(crate) async fn is_orphaned_temp_file(path: &Path) -> bool {
+    if !is_ytdlp_temp_file(path) {
+        return false;
+    }
+    tokio::fs::metadata(path)
+        .await
+        .and_then(|m| m.modified())
+        .is_ok_and(|mtime| {
+            mtime
+                .elapsed()
+                .is_ok_and(|idle| idle >= ORPHAN_IDLE_THRESHOLD)
+        })
+}
+
 /// Check whether a file is a yt-dlp temporary artifact.
 ///
-/// Matches `.part`, `.ytdl` extensions and `temp_audio_*` / `temp_video_*`
-/// intermediate files left behind after failed merges.
-fn is_ytdlp_temp_file(path: &Path) -> bool {
+/// Matches `.part`, `.ytdl` extensions, `temp_audio_*` / `temp_video_*`
+/// intermediate files left behind after failed merges, and `ffmpeg`'s
+/// `<stem>_<uuid>_temp.<ext>` outputs from the metadata/chapter passes.
+pub(crate) fn is_ytdlp_temp_file(path: &Path) -> bool {
     // .part / .ytdl extensions
     let is_part = path
         .extension()
@@ -676,18 +704,52 @@ fn is_ytdlp_temp_file(path: &Path) -> bool {
         n.starts_with("temp_audio_") || n.starts_with("temp_video_")
     });
 
-    is_part || is_ytdl || is_temp_merge
+    is_part || is_ytdl || is_temp_merge || is_ffmpeg_temp_output(path)
+}
+
+/// Matches yt-dlp's `create_temp_path` naming: `<stem>_<uuid>_temp.<ext>`.
+///
+/// Requires a real hyphenated UUID so a video titled "..._temp" never matches.
+fn is_ffmpeg_temp_output(path: &Path) -> bool {
+    const UUID_LEN: usize = 36;
+
+    let Some(rest) = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .and_then(|stem| stem.strip_suffix("_temp"))
+    else {
+        return false;
+    };
+    let Some(uuid_start) = rest.len().checked_sub(UUID_LEN) else {
+        return false;
+    };
+    // `get`, not indexing: titles are arbitrary Unicode, and a byte offset
+    // into one is not guaranteed to land on a char boundary.
+    uuid_start
+        .checked_sub(1)
+        .and_then(|sep| rest.as_bytes().get(sep))
+        == Some(&b'_')
+        && rest.get(uuid_start..).is_some_and(is_hyphenated_uuid)
+}
+
+fn is_hyphenated_uuid(s: &str) -> bool {
+    s.len() == 36
+        && s.char_indices().all(|(i, c)| match i {
+            8 | 13 | 18 | 23 => c == '-',
+            _ => c.is_ascii_hexdigit(),
+        })
 }
 
 impl Message<CleanupPartFiles> for CleanupActor {
     type Reply = Result<usize, String>;
 
-    #[instrument(skip_all)]
+    #[instrument(skip_all, fields(trace_id = tracing::field::Empty))]
     async fn handle(
         &mut self,
         msg: CleanupPartFiles,
         _ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
+        crate::telemetry::record_trace_id();
         let mut cleaned = 0;
 
         for dir in msg.directories {
@@ -706,7 +768,7 @@ impl Message<CleanupPartFiles> for CleanupActor {
             while let Ok(Some(entry)) = entries.next_entry().await {
                 let path = entry.path();
 
-                if is_ytdlp_temp_file(&path) {
+                if is_orphaned_temp_file(&path).await {
                     info!(path = %path.display(), "Cleaning up orphaned temp file");
                     if let Err(e) = tokio::fs::remove_file(&path).await {
                         warn!(path = %path.display(), error = %e, "Failed to remove temp file");

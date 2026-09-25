@@ -198,12 +198,13 @@ pub struct RunCheck;
 impl Message<RunCheck> for JellyfinMetadataActor {
     type Reply = MetadataCheckResult;
 
-    #[instrument(skip_all)]
+    #[instrument(skip_all, fields(trace_id = tracing::field::Empty))]
     async fn handle(
         &mut self,
         _msg: RunCheck,
         ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
+        crate::telemetry::record_trace_id();
         if self.is_running {
             debug!("Metadata check already running, skipping");
             return MetadataCheckResult {
@@ -277,12 +278,13 @@ pub struct SourceMetadataResult {
 impl Message<TriggerSourceMetadata> for JellyfinMetadataActor {
     type Reply = SourceMetadataResult;
 
-    #[instrument(skip_all, fields(source_id = %msg.source_id))]
+    #[instrument(skip_all, fields(trace_id = tracing::field::Empty, source_id = %msg.source_id))]
     async fn handle(
         &mut self,
         msg: TriggerSourceMetadata,
         _ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
+        crate::telemetry::record_trace_id();
         match self.generate_source_metadata(msg.source_id).await {
             Ok(()) => SourceMetadataResult {
                 success: true,

@@ -130,8 +130,9 @@ impl Actor for SourceIndexerActor {
     type Args = SourceIndexerArgs;
     type Error = color_eyre::eyre::Error;
 
-    #[instrument(skip_all, fields(source_id = %args.source.id))]
+    #[instrument(skip_all, fields(trace_id = tracing::field::Empty, source_id = %args.source.id))]
     async fn on_start(args: Self::Args, actor_ref: ActorRef<Self>) -> Result<Self, Self::Error> {
+        crate::telemetry::record_trace_id();
         info!(
             source_id = %args.source.id,
             url = %args.source.url,
@@ -177,12 +178,13 @@ pub struct StartIndexing;
 impl Message<StartIndexing> for SourceIndexerActor {
     type Reply = IndexingResult;
 
-    #[instrument(skip_all, fields(source_id = %self.source.id))]
+    #[instrument(skip_all, fields(trace_id = tracing::field::Empty, source_id = %self.source.id))]
     async fn handle(
         &mut self,
         _msg: StartIndexing,
         ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
+        crate::telemetry::record_trace_id();
         let result = self.execute_indexing().await;
 
         // Send result back to the scheduler via oneshot channel
