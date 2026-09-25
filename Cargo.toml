@@ -27,7 +27,12 @@ metrics = "0.24"
 # (0.34 -> opentelemetry 0.33). Bump them together, never independently.
 opentelemetry = { version = "0.33", default-features = false, features = ["trace", "internal-logs"] }
 opentelemetry_sdk = { version = "0.33", default-features = false, features = ["trace", "rt-tokio", "internal-logs"] }
-opentelemetry-otlp = { version = "0.33", default-features = false, features = ["grpc-tonic", "http-proto", "trace", "internal-logs"] }
+# `reqwest-blocking-client`: without an HTTP client feature, `http/protobuf`
+# fails to build ("no HTTP client is configured") and tracing silently turns
+# off. Blocking, because the batch span processor exports from its own thread
+# with no tokio runtime. `reqwest-rustls` verifies via rustls-platform-verifier,
+# i.e. the system trust store, so a step-ca root in the mounted bundle works.
+opentelemetry-otlp = { version = "0.33", default-features = false, features = ["grpc-tonic", "http-proto", "reqwest-blocking-client", "reqwest-rustls", "trace", "internal-logs"] }
 tracing-opentelemetry = { version = "0.34", default-features = false }
 metrics-exporter-prometheus = { version = "0.18", default-features = false }
 maud = { version = "0.27", features = ["axum"] }
