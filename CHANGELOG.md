@@ -2,6 +2,22 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.12.0 - 2026-09-25
+#### Features
+- (**otel**) upgrade otel crates - (bc339d0) - Amadeus Mader
+- (**utoipa**) upgrade utoipa - (45972a7) - Amadeus Mader
+#### Bug Fixes
+- (**test**) gate timer-driven actor loops behind autostart flag - (2167887) - Amadeus Mader
+- (**test**) link seeded video to its source before marking it completed - (11ae680) - Amadeus Mader
+- (**ui**) extend background - (07e281b) - Amadeus Mader
+- (**ytdlp**) prefer original-language audio over auto-dubbed tracks - (68bd567) - Amadeus Mader
+#### Miscellaneous Chores
+- (**cargo**) updates for cargo - (91bb615) - Amadeus Mader
+- (**deps**) lock update - (7e210e0) - Amadeus Mader
+- (**deps**) upgrade flake - (a424f56) - Amadeus Mader
+
+- - -
+
 ## v0.11.0 - 2026-09-23
 #### Features
 - (**web**) add a re-detect order action to the source detail page - (1298187) - Amadeus Mader
