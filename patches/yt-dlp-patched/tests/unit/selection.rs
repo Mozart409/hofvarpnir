@@ -970,3 +970,122 @@ fn any_codec_preference_is_unaffected_by_the_ladder() {
 
     assert_eq!(selected.video_resolution.height, Some(1440));
 }
+
+// ============================== original-language audio ==============================
+//
+// YouTube serves one audio track per language on multi-language videos,
+// including auto-dubbed (AI-translated) tracks. yt-dlp marks them through
+// `language_preference`: 10 for the original track, 5 for the default track,
+// -1 for other languages and -10 for audio descriptions. Selection must stay
+// on the highest-preference track and only rank by codec/bitrate within it.
+
+fn make_lang_audio(id: &str, acodec: &str, abr: f64, quality: f64, lang: &str, pref: i64) -> Format {
+    Format {
+        language: Some(lang.to_string()),
+        language_preference: Some(pref),
+        ..make_audio_format(id, acodec, abr, 48000, 2, quality)
+    }
+}
+
+/// Mirrors a YouTube video with an English original and auto-dubbed tracks
+/// served at identical bitrates, the dubs listed after the original.
+fn make_dubbed_video() -> Video {
+    make_test_video(vec![
+        make_lang_audio("en-opus", "opus", 130.0, 3.0, "en", 10),
+        make_lang_audio("en-aac", "mp4a.40.2", 129.0, 3.0, "en", 10),
+        make_lang_audio("de-opus", "opus", 130.0, 3.0, "de", -1),
+        make_lang_audio("de-aac", "mp4a.40.2", 129.0, 3.0, "de", -1),
+        make_lang_audio("fr-opus", "opus", 130.0, 3.0, "fr", -1),
+    ])
+}
+
+#[test]
+fn original_language_wins_tie_against_later_dub() {
+    let video = make_dubbed_video();
+
+    let selected = video
+        .select_audio_format(AudioQuality::Best, AudioCodecPreference::Any)
+        .unwrap();
+
+    assert_eq!(selected.format_id, "en-opus");
+}
+
+#[test]
+fn original_language_wins_against_higher_bitrate_dub() {
+    let video = make_test_video(vec![
+        make_lang_audio("en", "opus", 128.0, 3.0, "en", 10),
+        make_lang_audio("de", "opus", 256.0, 10.0, "de", -1),
+    ]);
+
+    for quality in [AudioQuality::Best, AudioQuality::High, AudioQuality::CustomBitrate(256)] {
+        let selected = video
+            .select_audio_format(quality, AudioCodecPreference::Any)
+            .unwrap();
+        assert_eq!(selected.format_id, "en", "quality {quality:?}");
+    }
+}
+
+#[test]
+fn original_language_outranks_codec_preference() {
+    // AAC exists only on the dub: keep the original and relax the codec.
+    let video = make_test_video(vec![
+        make_lang_audio("en-opus", "opus", 130.0, 3.0, "en", 10),
+        make_lang_audio("de-aac", "mp4a.40.2", 129.0, 3.0, "de", -1),
+    ]);
+
+    let selected = video
+        .select_audio_format(AudioQuality::Best, AudioCodecPreference::AAC)
+        .unwrap();
+
+    assert_eq!(selected.format_id, "en-opus");
+}
+
+#[test]
+fn codec_preference_applies_within_original_language() {
+    let video = make_dubbed_video();
+
+    let selected = video
+        .select_audio_format(AudioQuality::Best, AudioCodecPreference::AAC)
+        .unwrap();
+
+    assert_eq!(selected.format_id, "en-aac");
+}
+
+#[test]
+fn worst_audio_stays_on_original_language() {
+    let video = make_test_video(vec![
+        make_lang_audio("en", "opus", 128.0, 3.0, "en", 10),
+        make_lang_audio("de", "opus", 48.0, 1.0, "de", -1),
+    ]);
+
+    assert_eq!(
+        video
+            .select_audio_format(AudioQuality::Worst, AudioCodecPreference::Any)
+            .unwrap()
+            .format_id,
+        "en"
+    );
+    assert_eq!(video.worst_audio_format().unwrap().format_id, "en");
+}
+
+#[test]
+fn best_audio_format_stays_on_original_language() {
+    let video = make_dubbed_video();
+
+    assert_eq!(video.best_audio_format().unwrap().format_id, "en-opus");
+}
+
+#[test]
+fn default_track_beats_descriptive_audio_without_original_flag() {
+    let video = make_test_video(vec![
+        make_lang_audio("en-default", "opus", 128.0, 3.0, "en", 5),
+        make_lang_audio("en-desc", "opus", 160.0, 5.0, "en", -10),
+        make_lang_audio("es", "opus", 160.0, 5.0, "es", -1),
+    ]);
+
+    let selected = video
+        .select_audio_format(AudioQuality::Best, AudioCodecPreference::Any)
+        .unwrap();
+
+    assert_eq!(selected.format_id, "en-default");
+}
