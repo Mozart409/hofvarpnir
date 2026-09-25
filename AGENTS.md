@@ -585,6 +585,31 @@ Guards, all required:
   streams, so advancing on a timeout just repeats the same work. Only
   `AttemptError::TryNextStage` advances.
 
+## Telemetry export over HTTPS
+
+Verified end to end by `crates/hof-core/tests/otel_export.rs`. That test
+re-runs its own binary as a child with a production-shaped environment and
+plays the proxy itself: HTTPS with a private-CA leaf, 401 unless the bearer
+token matches. Rules it pins down:
+
+- **The OTLP HTTP path needs an HTTP-client feature.** Without
+  `reqwest-blocking-client`, `http/protobuf` fails at startup with "no HTTP
+  client is configured" and tracing silently turns off. It is blocking
+  because the batch span processor exports from its own thread, which has no
+  tokio runtime.
+- **Two reqwest majors, two trust stories.** reqwest 0.13 (`rustls`)
+  verifies via `rustls-platform-verifier`, i.e. the system store. reqwest
+  0.12 (`tracing-loki`, `openidconnect`) with `rustls-tls` trusts only
+  bundled webpki roots and rejects step-ca. hof-core's never-imported
+  `reqwest-0-12` dependency turns on `rustls-tls-native-roots` through
+  feature unification. Removing it breaks Loki over HTTPS (measured).
+- **Never set a sampler on the tracer provider builder.** The SDK's default
+  config is what reads `OTEL_TRACES_SAMPLER`; an explicit `.with_sampler()`
+  silently overrides it.
+- **Rejections are loud.** A 401 logs
+  `ERROR opentelemetry_sdk: … BatchSpanProcessor.ExportError … status code: 401`
+  and `ERROR tracing_loki: couldn't send logs to loki … 401 Unauthorized`.
+
 ## Diagnosing with traces and logs
 
 Every actor message runs in a kameo `actor.handle_message` span. It is a
@@ -691,9 +716,14 @@ Required for development:
 
 Optional (observability):
 
-- `OTEL_EXPORTER_OTLP_ENDPOINT` - OTLP gRPC endpoint for trace export (e.g. `http://localhost:4317`)
+- `OTEL_EXPORTER_OTLP_ENDPOINT` - OTLP endpoint for trace export; enables export when set. Base URL only: `http/protobuf` appends `/v1/traces` itself (e.g. `https://otel.homelab.local`, or `http://localhost:4317` for gRPC)
+- `OTEL_EXPORTER_OTLP_PROTOCOL` - `grpc` (default) or `http/protobuf`. Use `http/protobuf` behind a reverse proxy.
+- `OTEL_EXPORTER_OTLP_HEADERS` / `OTEL_EXPORTER_OTLP_TRACES_HEADERS` - comma-separated `key=value`, values percent-encoded (`Authorization=Bearer%20<token>`); the traces variant wins. Read by the SDK on the HTTP path.
+- `OTEL_TRACES_SAMPLER` / `OTEL_TRACES_SAMPLER_ARG` - e.g. `parentbased_traceidratio` + `0.1`. Honored because the provider never sets a sampler; keep it that way.
 - `OTEL_SERVICE_NAME` - Service name for traces/logs (default: `hofvarpnir`)
-- `LOKI_URL` - Grafana Loki endpoint for log shipping (e.g. `http://localhost:3100`)
+- `LOKI_URL` - Grafana Loki base URL for log shipping; `/loki/api/v1/push` is appended (e.g. `http://localhost:3100`)
+- `LOKI_HEADERS` - extra headers for Loki pushes, same format as `OTEL_EXPORTER_OTLP_HEADERS`, so one token string can feed both. An invalid entry disables Loki at startup rather than 401ing every batch.
+- `SSL_CERT_FILE` - CA bundle for HTTPS export. Both exporters verify against the system trust store (see "Telemetry export over HTTPS" below), so a private CA such as step-ca works once its root is in this bundle.
 - `METRICS_ENABLED` - Set to `true` to enable Prometheus metrics at `/metrics`
 - `LOG_FORMAT` - Set to `json` for structured JSON log output
 - `DOWNLOAD_VERIFY` - Set to `false`/`0`/`no` to skip post-download verification (default: `true`). Requires `ffprobe` on PATH when enabled; startup fails without it.
