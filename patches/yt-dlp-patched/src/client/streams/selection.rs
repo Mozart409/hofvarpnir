@@ -178,9 +178,8 @@ impl VideoSelection for Video {
             "🧩 Selecting best audio format"
         );
 
-        self.formats
-            .iter()
-            .filter(|f| f.is_audio())
+        preferred_language_audio(&self.formats)
+            .into_iter()
             .max_by(|a, b| self.compare_audio_formats(a, b))
     }
 
@@ -208,9 +207,8 @@ impl VideoSelection for Video {
             "🧩 Selecting worst audio format"
         );
 
-        self.formats
-            .iter()
-            .filter(|f| f.is_audio())
+        preferred_language_audio(&self.formats)
+            .into_iter()
             .min_by(|a, b| self.compare_audio_formats(a, b))
     }
 
@@ -389,7 +387,9 @@ impl VideoSelection for Video {
             "🧩 Selecting audio format with preferences"
         );
 
-        let audio_formats: Vec<&Format> = self.formats.iter().filter(|f| f.is_audio()).collect();
+        // Language before codec: an original-language track in a non-preferred
+        // codec beats a preferred codec on a dubbed track.
+        let audio_formats = preferred_language_audio(&self.formats);
         if audio_formats.is_empty() {
             return None;
         }
@@ -615,6 +615,23 @@ where
         // Compare width then quality
         a_width.cmp(&b_width).then_with(|| video.compare_video_formats(a, b))
     })
+}
+
+/// Returns the audio formats that carry the video's preferred language.
+///
+/// Multi-language YouTube videos serve one audio track per language, including
+/// auto-dubbed (AI-translated) ones. yt-dlp ranks them via `language_preference`:
+/// 10 for the original track, 5 for the default track, -1 for other languages
+/// and -10 for audio descriptions. Only the highest-ranked tracks are kept, so
+/// bitrate and codec never pull selection onto a dub. When no format carries a
+/// preference (single-language videos), all audio formats are returned.
+fn preferred_language_audio(formats: &[Format]) -> Vec<&Format> {
+    let audio = formats.iter().filter(|f| f.is_audio());
+
+    match audio.clone().filter_map(|f| f.language_preference).max() {
+        Some(top) => audio.filter(|f| f.language_preference == Some(top)).collect(),
+        None => audio.collect(),
+    }
 }
 
 /// Selects the audio format with the closest bitrate to the target
