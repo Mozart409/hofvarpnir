@@ -198,8 +198,6 @@
       linuxDevPackages = with pkgs; [
         # keep-sorted start
         cachix
-        claude-code
-        opencode
         podman
         podman-compose
         trivy
