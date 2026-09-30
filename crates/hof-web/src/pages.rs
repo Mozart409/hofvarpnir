@@ -2417,7 +2417,6 @@ async fn create_api_key(
             // Store the token in session to display once
             let _ = session.insert(NEW_API_KEY_TOKEN, generated.token).await;
             set_flash(&session, "success", "API key created").await;
-            Redirect::to("/settings/api-keys").into_response()
         }
         Err(error) => {
             tracing::error!(%error, "failed to create API key");
@@ -2431,9 +2430,9 @@ async fn create_api_key(
             } else {
                 set_flash(&session, "error", "Failed to create API key").await;
             }
-            Redirect::to("/settings/api-keys").into_response()
         }
     }
+    Redirect::to("/settings/api-keys").into_response()
 }
 
 async fn roll_api_key(
@@ -2485,14 +2484,13 @@ async fn roll_api_key(
             // Store the new token in session to display once
             let _ = session.insert(NEW_API_KEY_TOKEN, generated.token).await;
             set_flash(&session, "success", "API key rolled - copy the new key").await;
-            Redirect::to("/settings/api-keys").into_response()
         }
         Err(error) => {
             tracing::error!(%error, "failed to roll API key");
             set_flash(&session, "error", "Failed to roll API key").await;
-            Redirect::to("/settings/api-keys").into_response()
         }
     }
+    Redirect::to("/settings/api-keys").into_response()
 }
 
 async fn delete_api_key(
@@ -2509,18 +2507,16 @@ async fn delete_api_key(
     match db::delete_api_key(&state.pool, key_id, auth.user_id, None).await {
         Ok(()) => {
             set_flash(&session, "success", "API key deleted").await;
-            Redirect::to("/settings/api-keys").into_response()
         }
         Err(db::DbError::NotFound) => {
             set_flash(&session, "error", "API key not found").await;
-            Redirect::to("/settings/api-keys").into_response()
         }
         Err(error) => {
             tracing::error!(%error, "failed to delete API key");
             set_flash(&session, "error", "Failed to delete API key").await;
-            Redirect::to("/settings/api-keys").into_response()
         }
     }
+    Redirect::to("/settings/api-keys").into_response()
 }
 
 async fn api_key_events(

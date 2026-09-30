@@ -34,7 +34,7 @@ cargo fmt --all -- --check
 # Run clippy. Lint levels live in Cargo.toml [workspace.lints.clippy] -- do NOT
 # add `-D clippy::pedantic -D clippy::nursery` here. Those flags are applied
 # after the manifest's lint levels and re-deny the whole group, silently
-# defeating the nine selective `allow` entries (option_if_let_else,
+# defeating the selective `allow` entries (option_if_let_else,
 # needless_pass_by_ref_mut, module_name_repetitions, ...). Cargo.toml is the
 # single source of truth. Test-only panic helpers are allowed via clippy.toml.
 cargo clippy --workspace --all-targets --all-features -- -D warnings

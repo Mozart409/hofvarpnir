@@ -15,3 +15,17 @@ crates/*/.sqlx/
 /result-ytdlp
 
 docs/superpowers/
+
+# Claude Code sandbox: bubblewrap masks these paths with /dev/null bind mounts,
+# which show up as untracked character devices inside the sandbox only.
+/.bash_profile
+/.bashrc
+/.gitconfig
+/.gitmodules
+/.idea
+/.mcp.json
+/.profile
+/.ripgreprc
+/.vscode
+/.zprofile
+/.zshrc
