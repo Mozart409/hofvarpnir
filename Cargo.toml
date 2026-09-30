@@ -103,6 +103,10 @@ module_name_repetitions = "allow"
 must_use_candidate = "allow"
 missing_errors_doc = "allow"
 missing_panics_doc = "allow"
+# Fires on every kameo `on_start`/`on_stop`/`handle` impl that happens not to
+# await. Its suggested fix (`-> impl Future` + `std::future::ready(..)`) is pure
+# ceremony against a trait signature kameo owns, and breaks early `?` returns.
+unused_async_trait_impl = "allow"
 # Selectively allow noisy nursery lints
 exhaustive_structs = "allow"
 needless_pass_by_ref_mut = "allow"
