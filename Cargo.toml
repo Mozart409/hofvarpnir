@@ -14,7 +14,6 @@ name = "hofvarpnir"
 [workspace.dependencies]
 argon2 = "0.6"
 axum = { version = "0.8", features = ["macros"] }
-axum-extra = { version = "0.12", features = ["typed-header"] }
 chrono = { version = "0.4", features = ["serde"] }
 color-eyre = "0.6.5"
 crossterm = "0.29"
@@ -48,12 +47,12 @@ sqlx = { version = "0.9", features = ["runtime-tokio","tls-rustls-aws-lc-rs", "p
 thiserror = "2"
 tokio = { version = "1", features = ["full"] }
 tokio-stream = "0.1"
-tower = "0.5"
 tower-http = { version = "0.7", features = ["cors", "trace", "fs", "request-id", "propagate-header"] }
 tower-sessions = "0.15"
-tower-sessions-core = "0.15"
-# Vendored + patched for sqlx 0.9 (upstream still pins sqlx 0.8). See patches/tower-sessions-sqlx-store.
-tower-sessions-sqlx-store = { version = "0.15", features = ["postgres"], path = "patches/tower-sessions-sqlx-store" }
+# Git rev, not crates.io: the last release (0.15.0) pins sqlx 0.8 and
+# tower-sessions-core 0.14. Upstream main moved to sqlx 0.9 in 75cb757
+# ("Update sqlx to 0.9.0"). Switch back to a version req once it is released.
+tower-sessions-sqlx-store = { git = "https://github.com/maxcountryman/tower-sessions-stores", rev = "75cb75792d0a8d9231723b07e7524897201ef73b", features = ["postgres"] }
 tracing = "0.1"
 tracing-loki = { version = "0.2", default-features = false, features = ["compat-0-2-1", "rustls"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
