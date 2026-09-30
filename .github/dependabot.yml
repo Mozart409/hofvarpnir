@@ -9,7 +9,9 @@ updates:
       interval: "weekly"
     open-pull-requests-limit: 5
     commit-message:
-      prefix: "chore(deps)"
+      # `include: scope` appends Dependabot's own "(deps)"/"(deps-dev)", so the
+      # prefix must not carry a scope of its own.
+      prefix: "chore"
       include: "scope"
     labels:
       - "dependencies"
@@ -21,8 +23,8 @@ updates:
       interval: "weekly"
     open-pull-requests-limit: 5
     commit-message:
+      # No `include: scope`: it would append "(deps)" -> "chore(ci)(deps):".
       prefix: "chore(ci)"
-      include: "scope"
     labels:
       - "dependencies"
       - "ci"
