@@ -25,6 +25,12 @@ updates:
     commit-message:
       # No `include: scope`: it would append "(deps)" -> "chore(ci)(deps):".
       prefix: "chore(ci)"
+    # codeql-action's init and analyze must run the same version (analyze
+    # rejects init's config otherwise), so they have to be bumped together.
+    groups:
+      codeql-action:
+        patterns:
+          - "github/codeql-action/*"
     labels:
       - "dependencies"
       - "ci"
