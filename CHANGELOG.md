@@ -2,6 +2,20 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.13.1 - 2026-09-30
+#### Bug Fixes
+- (**ci**) group codeql-action init and analyze bumps - (bcaa96c) - Amadeus Mader
+- (**ci**) stop dependabot doubling the commit scope - (fda961e) - Amadeus Mader
+#### Miscellaneous Chores
+- (**container**) drop observability stack from dev compose - (67a902c) - Amadeus Mader
+- (**deps**) drop unused deps and vendored tower-sessions-sqlx-store - (41073a4) - Amadeus Mader
+- (**git**) ignore claude code sandbox placeholder files - (04979a9) - Amadeus Mader
+- (**nix**) remove opencode and claude - (c3954e3) - Amadeus Mader
+- (**release**) skip redundant pre-push suite on release and mirror pushes - (362b16b) - Amadeus Mader
+- (**toolchain**) switch to nightly-2026-09-29 via fenix - (66139f9) - Amadeus Mader
+
+- - -
+
 ## v0.13.0 - 2026-09-25
 #### Features
 - (**telemetry**) export otlp/http and loki over https with bearer auth - (13813be) - Amadeus Mader
