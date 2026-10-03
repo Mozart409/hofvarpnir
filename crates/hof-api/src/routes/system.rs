@@ -35,6 +35,7 @@ pub fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(get_system_status))
         .routes(routes!(trigger_cleanup))
         .routes(routes!(restart_actor))
+        .routes(routes!(whoami))
 }
 
 // ============================================================================
@@ -174,6 +175,22 @@ pub struct ActorRestartResponse {
     /// The actor that was restarted, in its URL spelling.
     pub actor: String,
     pub message: String,
+}
+
+/// How the caller authenticated.
+#[derive(Debug, Clone, Copy, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthMethod {
+    Session,
+    ApiKey,
+}
+
+/// The caller's identity and effective permissions.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct WhoAmIResponse {
+    pub auth_method: AuthMethod,
+    /// Effective scopes. A session has full access, so it reports all of them.
+    pub scopes: Vec<ApiKeyScope>,
 }
 
 /// Error response body.
@@ -341,6 +358,34 @@ pub async fn get_system_status(State(state): State<AppState>, auth: Auth) -> imp
         }),
     )
         .into_response()
+}
+
+/// Describe the caller's authentication and effective scopes.
+///
+/// Requires no particular scope: any valid credential may inspect itself.
+/// Clients use it to adapt to what a key is allowed to do without probing
+/// write or delete endpoints.
+#[utoipa::path(
+    get,
+    path = "/whoami",
+    tag = "system",
+    responses(
+        (status = 200, description = "Caller identity and scopes", body = WhoAmIResponse),
+        (status = 401, description = "Unauthorized", body = ApiErrorResponse),
+    )
+)]
+pub async fn whoami(auth: Auth) -> Json<WhoAmIResponse> {
+    let response = match auth.scopes() {
+        Some(scopes) => WhoAmIResponse {
+            auth_method: AuthMethod::ApiKey,
+            scopes: scopes.to_vec(),
+        },
+        None => WhoAmIResponse {
+            auth_method: AuthMethod::Session,
+            scopes: vec![ApiKeyScope::Read, ApiKeyScope::Write, ApiKeyScope::Delete],
+        },
+    };
+    Json(response)
 }
 
 /// Trigger manual cleanup.
