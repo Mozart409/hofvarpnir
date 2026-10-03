@@ -67,7 +67,7 @@ struct PauseEnvelope {
 #[derive(Debug, Clone)]
 pub struct ApiClient {
     http: reqwest::Client,
-    /// Server base URL without trailing slash, e.g. `http://localhost:3000`.
+    /// Server base URL without trailing slash, e.g. `http://localhost:8080`.
     base: String,
 }
 

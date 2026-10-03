@@ -164,10 +164,10 @@ dev: clear up
 #
 #   HOF_API_TOKEN=hof_sk_... just tui
 #
-# HOF_API_URL defaults to http://localhost:3000 (the TUI's own default); set it
+# HOF_API_URL defaults to http://localhost:8080 (the TUI's own default); set it
 # when the server is not there -- e.g. `HOST`/`PORT` from .sops.env differ from
 # the defaults.
-tui_api_url := env_var_or_default("HOF_API_URL", "http://localhost:3000")
+tui_api_url := env_var_or_default("HOF_API_URL", "http://localhost:8080")
 
 # Run the terminal UI client against a running server.
 tui: clear

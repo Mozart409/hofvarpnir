@@ -1,13 +1,14 @@
 //! Runtime configuration for the TUI: API base URL and API token.
 //!
 //! Resolution order (CLI wins over env):
-//! - `--api-url <URL>` / `HOF_API_URL` / default `http://localhost:3000`
+//! - `--api-url <URL>` / `HOF_API_URL` / default `http://localhost:8080`
 //! - `--token <TOKEN>` / `HOF_API_TOKEN` (must be a `hof_sk_...` key; when
 //!   absent, the TUI asks for URL and token on a setup screen)
 
 /// Default server URL when neither `--api-url` nor `HOF_API_URL` is set.
-/// Matches the server's default `PORT` (3000).
-const DEFAULT_API_URL: &str = "http://localhost:3000";
+/// The port the development server is run on locally; the server's own
+/// compiled-in `PORT` default (3000) is not what dev setups use.
+const DEFAULT_API_URL: &str = "http://localhost:8080";
 
 /// Every API key minted by Hofvarpnir carries this prefix; the server rejects
 /// anything else, so fail fast locally instead of round-tripping a 401.
@@ -16,7 +17,7 @@ const TOKEN_PREFIX: &str = "hof_sk_";
 /// Resolved TUI configuration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
-    /// Server base URL, no trailing slash (e.g. `http://localhost:3000`).
+    /// Server base URL, no trailing slash (e.g. `http://localhost:8080`).
     pub api_url: String,
     /// API key sent as `Authorization: Bearer <token>`.
     pub token: String,
@@ -48,7 +49,7 @@ USAGE:
 
 OPTIONS:
     --api-url <URL>   Base URL of the Hofvarpnir server
-                      [env: HOF_API_URL] [default: http://localhost:3000]
+                      [env: HOF_API_URL] [default: http://localhost:8080]
     --token <TOKEN>   API key (hof_sk_...) [env: HOF_API_TOKEN]
                       When absent, a setup screen asks for URL and token.
     -h, --help        Print this help
