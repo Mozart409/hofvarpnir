@@ -2,6 +2,22 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.14.0 - 2026-10-03
+#### Features
+- (**api**) add whoami endpoint reporting api key scopes - (8a04378) - Amadeus Mader
+- (**tui**) add terminal client with setup screen, settings tab and reconnect backoff - (69f27f0) - Amadeus Mader
+- (**web**) live-update and edit runtime settings overrides - (e20b656) - Amadeus Mader
+#### Bug Fixes
+- (**core**) raise recursion limit for download worker send proof - (6a82fc0) - Amadeus Mader
+- (**pg**) pg listen only 127.0.0.1 - (84698d0) - Amadeus Mader
+- (**tui**) default api url to localhost:8080 - (53ce6fb) - Amadeus Mader
+#### Miscellaneous Chores
+- (**ci**) bump the codeql-action group with 2 updates - (b0b9b1e) - dependabot[bot]
+- (**git**) ignore nested sandbox mcp files - (0da78fe) - Amadeus Mader
+- (**yt-dlp**) drop redundant homepage from patched manifests - (db512e1) - Amadeus Mader
+
+- - -
+
 ## v0.13.1 - 2026-09-30
 #### Bug Fixes
 - (**ci**) group codeql-action init and analyze bumps - (bcaa96c) - Amadeus Mader
