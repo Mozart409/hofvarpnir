@@ -157,6 +157,22 @@ lint: clear
 dev: clear up
     {{ secrets }} 'cargo watch -c -x "run -p hof-web --bin hofvarpnir"'
 
+# Terminal UI client. Unlike `dev`, this needs no secrets injection: the server
+# is a separate process, and the only credential the TUI holds is an API key the
+# operator owns. Start the server first (`just dev` or `bacon serve` in another
+# terminal), then:
+#
+#   HOF_API_TOKEN=hof_sk_... just tui
+#
+# HOF_API_URL defaults to http://localhost:3000 (the TUI's own default); set it
+# when the server is not there -- e.g. `HOST`/`PORT` from .sops.env differ from
+# the defaults.
+tui_api_url := env_var_or_default("HOF_API_URL", "http://localhost:3000")
+
+# Run the terminal UI client against a running server.
+tui: clear
+    HOF_API_URL={{ tui_api_url }} cargo run -p hof-tui --bin hofvarpnir-tui
+
 # Tailwind CSS
 [working-directory('crates/hof-web/assets')]
 css-watch:
