@@ -113,12 +113,18 @@
           doCheck = false;
         });
 
-      # Standalone terminal UI client
-      hofvarpnir-tui = craneLib.buildPackage (commonArgs
+      # Standalone terminal UI client. Gets its own dependency build scoped
+      # to hof-tui, so consumers don't compile the server's dependency tree
+      # (sqlx, axum, ...) just to get the TUI.
+      tuiArgs =
+        commonArgs
         // {
-          inherit cargoArtifacts;
           pname = "hofvarpnir-tui";
           cargoExtraArgs = "-p hof-tui";
+        };
+      hofvarpnir-tui = craneLib.buildPackage (tuiArgs
+        // {
+          cargoArtifacts = craneLib.buildDepsOnly tuiArgs;
           doCheck = false;
         });
 
