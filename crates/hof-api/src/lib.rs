@@ -210,6 +210,8 @@ impl AppState {
         system::CleanupTriggerResponse,
         system::CleanupResultResponse,
         system::ActorRestartResponse,
+        system::AuthMethod,
+        system::WhoAmIResponse,
         settings::ResolvedU32,
         settings::ResolvedSecs,
         settings::PauseStateResponse,

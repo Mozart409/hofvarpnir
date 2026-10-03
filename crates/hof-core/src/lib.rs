@@ -8,6 +8,12 @@
 //! - Startup and crash recovery logic
 //! - Jellyfin metadata generation (NFO files and artwork)
 
+// The `Send` proof for `StartDownload`'s future walks the whole download
+// pipeline (fallback stages, segmented downloader, ffmpeg combine, verify)
+// and exceeds the default depth of 128, tripping the future-incompatible
+// `recursion_depth_exceeding_limit` lint (rust-lang/rust#159228).
+#![recursion_limit = "256"]
+
 pub mod actors;
 pub mod auth;
 pub mod config;

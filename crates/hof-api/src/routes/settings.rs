@@ -320,11 +320,18 @@ where
     }
 }
 
-/// Validate a [`PatchSettingsRequest`] against the same bounds the database
-/// `CHECK` constraints enforce, translating a violation into a
-/// human-readable message that names the offending field rather than
-/// letting the database reject it.
-fn validate_patch(request: &PatchSettingsRequest) -> Result<RuntimeSettingsPatch, String> {
+/// Validate a [`PatchSettingsRequest`] against the database `CHECK` bounds.
+///
+/// A violation becomes a human-readable message that names the offending
+/// field rather than letting the database reject it.
+///
+/// Public so the web control panel's form enforces the same bounds as the
+/// API instead of keeping a second copy of them.
+///
+/// # Errors
+///
+/// A message naming the first field that violates its bound.
+pub fn validate_patch(request: &PatchSettingsRequest) -> Result<RuntimeSettingsPatch, String> {
     Ok(RuntimeSettingsPatch {
         max_concurrent_downloads: validate_min(
             request.max_concurrent_downloads,

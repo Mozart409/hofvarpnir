@@ -14,7 +14,7 @@ services:
     # -c args still load postgresql.conf (shared_preload_libraries etc.).
     command: ["postgres", "-c", "max_connections=300"]
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     networks:
@@ -42,7 +42,7 @@ services:
     # database + pool per test (same reasoning as the dev service above).
     command: ["postgres", "-c", "max_connections=300", "-c", "fsync=off", "-c", "synchronous_commit=off", "-c", "full_page_writes=off"]
     ports:
-      - "5433:5432"
+      - "127.0.0.1:5433:5432"
     networks:
       - hofvarpnir
     healthcheck:
