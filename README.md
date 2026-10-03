@@ -54,29 +54,43 @@ cargo run --bin hofvarpnir-tui
 
 ### Install the TUI
 
-The TUI is included in the `0.14.0` release. It connects to a running
-Hofvarpnir server; on first launch, the setup screen lets you enter the API URL
-and API key. You can create an API key in the web UI under **Settings**.
+The TUI connects to a running Hofvarpnir server; on first launch, the setup
+screen lets you enter the API URL and API key. You can create an API key in the
+web UI under **Settings**.
 
-#### Prebuilt binaries (Linux)
-
-There is no separate TUI archive: each platform archive is named for
-`hofvarpnir` and contains both the server and TUI binaries. Download the
-[x86_64 archive](https://github.com/Mozart409/hofvarpnir/releases/download/v0.14.0/hofvarpnir-x86_64-unknown-linux-gnu-v0.14.0.tar.gz)
-or the [64-bit ARM archive](https://github.com/Mozart409/hofvarpnir/releases/download/v0.14.0/hofvarpnir-aarch64-unknown-linux-gnu-v0.14.0.tar.gz):
+#### Install script (Linux and macOS)
 
 ```bash
-set -eu
-VERSION=0.14.0
-TARGET=x86_64-unknown-linux-gnu # or aarch64-unknown-linux-gnu
-TMP_DIR="$(mktemp -d)"
-trap 'rm -rf "${TMP_DIR}"' EXIT
-curl -fL "https://github.com/Mozart409/hofvarpnir/releases/download/v${VERSION}/hofvarpnir-${TARGET}-v${VERSION}.tar.gz" \
-  -o "${TMP_DIR}/hofvarpnir.tar.gz"
-tar -xzf "${TMP_DIR}/hofvarpnir.tar.gz" -C "${TMP_DIR}"
-mkdir -p "${HOME}/.local/bin"
-install -m 755 "${TMP_DIR}/hofvarpnir-tui-${TARGET}" "${HOME}/.local/bin/hofvarpnir-tui"
+curl -fsSL https://raw.githubusercontent.com/Mozart409/hofvarpnir/main/scripts/install-tui.sh | bash
 ```
+
+The [script](scripts/install-tui.sh) detects your platform (x86_64/aarch64;
+glibc or musl on Linux), downloads the latest release, verifies its SHA-256
+checksum, and installs to `~/.local/bin`. Environment overrides:
+`HOFVARPNIR_VERSION=0.15.0` pins a specific version, `HOFVARPNIR_INSTALL_DIR`
+changes the install destination.
+
+#### Manual install
+
+Download `hofvarpnir-tui-<target>-v<version>.tar.gz` for your platform from the
+[latest release](https://github.com/Mozart409/hofvarpnir/releases/latest). The
+archive contains a single `hofvarpnir-tui` binary:
+
+```bash
+tar -xzf hofvarpnir-tui-*.tar.gz
+install -m 755 hofvarpnir-tui ~/.local/bin/
+```
+
+Available targets: `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`,
+`x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl` (static, for
+Alpine and old-glibc systems), `aarch64-apple-darwin` (Apple Silicon), and
+`x86_64-apple-darwin` (Intel).
+
+The server tarball keeps the plain `hofvarpnir-<target>-v<version>.tar.gz`
+name and contains only the server binary — most server deployments should use
+the container image instead. The macOS binaries are not notarized; if you
+downloaded one via a browser and Gatekeeper blocks it, run
+`xattr -d com.apple.quarantine ~/.local/bin/hofvarpnir-tui`.
 
 Make sure `~/.local/bin` is on your `PATH`, then start it with:
 
