@@ -2,6 +2,21 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.15.0 - 2026-10-03
+#### Features
+- (**ci**) split server and tui release artifacts, add musl and darwin tui builds - (8cef525) - Amadeus Mader
+- (**tools**) add tui install script - (9a0c249) - Amadeus Mader
+- (**tui**) update docs and add tui to flake outputs - (a98a743) - Amadeus Mader
+#### Bug Fixes
+- (**readme**) migrations run on application startup - (f65489f) - Amadeus Mader
+- (**tui**) clarify release archive install instructions - (30ca4f0) - Amadeus Mader
+#### Documentation
+- (**readme**) simplify tui install instructions - (05b5d2a) - Amadeus Mader
+#### Miscellaneous Chores
+- (**deps**) bump xxhash-rust in /patches/yt-dlp-patched - (d48f38f) - dependabot[bot]
+
+- - -
+
 ## v0.14.0 - 2026-10-03
 #### Features
 - (**api**) add whoami endpoint reporting api key scopes - (8a04378) - Amadeus Mader
