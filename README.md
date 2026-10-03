@@ -45,10 +45,7 @@ A self-hosted video archival system that downloads videos from YouTube (and othe
 # Build all crates
 cargo build --release
 
-# Run database migrations
-# (SQLx migrations in hof-core/migrations/)
-
-# Start the server (API + Web UI)
+# Start the server (API + Web UI; runs pending migrations on startup)
 cargo run --bin hof-server
 
 # Run the TUI client (in another terminal)
