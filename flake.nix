@@ -113,6 +113,15 @@
           doCheck = false;
         });
 
+      # Standalone terminal UI client
+      hofvarpnir-tui = craneLib.buildPackage (commonArgs
+        // {
+          inherit cargoArtifacts;
+          pname = "hofvarpnir-tui";
+          cargoExtraArgs = "-p hof-tui";
+          doCheck = false;
+        });
+
       containerUser = "hofvarpnir";
       containerUid = "1000";
       containerGid = "1000";
@@ -221,6 +230,7 @@
         {
           default = hofvarpnir;
           hofvarpnir = hofvarpnir;
+          hofvarpnir-tui = hofvarpnir-tui;
         }
         // pkgs.lib.optionalAttrs (system == "x86_64-linux" || system == "aarch64-linux") ({
             # OCI container image (Linux only) - builds Rust via Crane

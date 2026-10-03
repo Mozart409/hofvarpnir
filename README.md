@@ -12,6 +12,7 @@ A self-hosted video archival system that downloads videos from YouTube (and othe
 
 - **Multi-platform support**: YouTube and other platforms via yt-dlp auto-detection
 - **Web UI**: Modern web interface built with htmx and Tailwind CSS
+- **Terminal UI**: Standalone terminal client for managing downloads and monitoring live progress
 - **Automatic scheduling**: Per-source indexing frequency
 - **Resilient indexing**: Age-restricted, private, and unavailable videos are skipped and the scan continues, so a single problem entry never aborts indexing of the rest of a channel/playlist
 - **Health monitoring**: Surface sources that are enabled but persistently failing to index
@@ -25,7 +26,6 @@ A self-hosted video archival system that downloads videos from YouTube (and othe
 
 ## Planned
 
-- **TUI**: Terminal-based management interface
 - **Keyboard Shortcuts**: Vim motions
 
 ## Tech Stack
@@ -52,8 +52,50 @@ cargo build --release
 cargo run --bin hof-server
 
 # Run the TUI client (in another terminal)
-cargo run --bin hof-tui
+cargo run --bin hofvarpnir-tui
 ```
+
+### Install the TUI
+
+The TUI is included in the `0.14.0` release. It connects to a running
+Hofvarpnir server; on first launch, the setup screen lets you enter the API URL
+and API key. You can create an API key in the web UI under **Settings**.
+
+#### Prebuilt binaries (Linux)
+
+Release archives include both the server and TUI binaries. For Linux x86_64,
+use `x86_64-unknown-linux-gnu`; for 64-bit ARM, use
+`aarch64-unknown-linux-gnu`:
+
+```bash
+set -eu
+VERSION=0.14.0
+TARGET=x86_64-unknown-linux-gnu # or aarch64-unknown-linux-gnu
+TMP_DIR="$(mktemp -d)"
+trap 'rm -rf "${TMP_DIR}"' EXIT
+curl -fL "https://github.com/Mozart409/hofvarpnir/releases/download/v${VERSION}/hofvarpnir-${TARGET}-v${VERSION}.tar.gz" \
+  -o "${TMP_DIR}/hofvarpnir.tar.gz"
+tar -xzf "${TMP_DIR}/hofvarpnir.tar.gz" -C "${TMP_DIR}"
+mkdir -p "${HOME}/.local/bin"
+install -m 755 "${TMP_DIR}/hofvarpnir-tui-${TARGET}" "${HOME}/.local/bin/hofvarpnir-tui"
+```
+
+Make sure `~/.local/bin` is on your `PATH`, then start it with:
+
+```bash
+hofvarpnir-tui
+```
+
+#### Nix
+
+With Nix flakes enabled, install the TUI into your user profile:
+
+```bash
+nix profile install github:Mozart409/hofvarpnir#hofvarpnir-tui
+```
+
+Then run `hofvarpnir-tui`. The flake builds the standalone TUI package for
+x86_64 Linux, aarch64 Linux, and x86_64 macOS.
 
 ## Project Structure
 
