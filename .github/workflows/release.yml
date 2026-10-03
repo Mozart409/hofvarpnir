@@ -29,23 +29,98 @@ jobs:
       - name: Build binaries
         run: |
           nix develop .#ci --command cargo build --release --bin hofvarpnir --bin hofvarpnir-tui
-          mkdir -p dist
-          cp target/release/hofvarpnir dist/hofvarpnir-${{ matrix.target }}
-          cp target/release/hofvarpnir-tui dist/hofvarpnir-tui-${{ matrix.target }}
-      - name: Create tarball
+          mkdir -p dist/server dist/tui
+          cp target/release/hofvarpnir dist/server/hofvarpnir-${{ matrix.target }}
+          cp target/release/hofvarpnir-tui dist/tui/hofvarpnir-tui
+      - name: Create tarballs
         run: |
-          tar -czf hofvarpnir-${{ matrix.target }}-${{ github.ref_name }}.tar.gz -C dist .
-      - name: Upload tarball
+          # Server tarball keeps the historical name; it contains only the
+          # server binary since v0.15.0. The TUI ships in its own archive.
+          tar -czf hofvarpnir-${{ matrix.target }}-${{ github.ref_name }}.tar.gz -C dist/server .
+          tar -czf hofvarpnir-tui-${{ matrix.target }}-${{ github.ref_name }}.tar.gz -C dist/tui .
+          for f in *.tar.gz; do sha256sum "$f" | cut -d' ' -f1 > "$f.sha256"; done
+      - name: Upload server tarball
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: hofvarpnir-${{ matrix.target }}
-          path: hofvarpnir-${{ matrix.target }}-${{ github.ref_name }}.tar.gz
+          path: |
+            hofvarpnir-${{ matrix.target }}-${{ github.ref_name }}.tar.gz
+            hofvarpnir-${{ matrix.target }}-${{ github.ref_name }}.tar.gz.sha256
+      - name: Upload TUI tarball
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: hofvarpnir-tui-${{ matrix.target }}
+          path: |
+            hofvarpnir-tui-${{ matrix.target }}-${{ github.ref_name }}.tar.gz
+            hofvarpnir-tui-${{ matrix.target }}-${{ github.ref_name }}.tar.gz.sha256
       - name: Upload binary for container
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: binary-${{ matrix.target }}
           path: target/release/hofvarpnir
           retention-days: 1
+  build-tui-extra:
+    # TUI-only targets that don't go through Nix: musl (static, for Alpine and
+    # old-glibc machines) and macOS. hof-tui is a pure HTTP client (no hof-core,
+    # no sqlx), so a plain cargo build with the pinned rust-toolchain.toml is
+    # enough. rustup on the runner auto-installs the pinned nightly.
+    timeout-minutes: 60
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            musl: true
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+            musl: true
+          - runner: macos-15
+            target: aarch64-apple-darwin
+          # macos-15-intel is the last x86_64 macOS image (until Aug 2027).
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    env:
+      CC_x86_64_unknown_linux_musl: musl-gcc
+      CC_aarch64_unknown_linux_musl: musl-gcc
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Install musl toolchain
+        if: matrix.musl
+        # aws-lc-sys (rustls) compiles C code; musl-gcc is the cross compiler.
+        run: sudo apt-get update && sudo apt-get install -y musl-tools cmake
+      - name: Add Rust target
+        run: rustup target add ${{ matrix.target }}
+      - name: Build TUI
+        run: cargo build --release -p hof-tui --target ${{ matrix.target }}
+      - name: Verify musl binary is static
+        if: matrix.musl
+        run: |
+          ! file target/${{ matrix.target }}/release/hofvarpnir-tui | grep -q "dynamically linked" \
+            || { echo "::error::musl build is dynamically linked"; exit 1; }
+      - name: Package tarball
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp "target/${{ matrix.target }}/release/hofvarpnir-tui" dist/hofvarpnir-tui
+          tar -czf "hofvarpnir-tui-${{ matrix.target }}-${{ github.ref_name }}.tar.gz" -C dist .
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "hofvarpnir-tui-${{ matrix.target }}-${{ github.ref_name }}.tar.gz" | cut -d' ' -f1 \
+              > "hofvarpnir-tui-${{ matrix.target }}-${{ github.ref_name }}.tar.gz.sha256"
+          else
+            shasum -a 256 "hofvarpnir-tui-${{ matrix.target }}-${{ github.ref_name }}.tar.gz" | cut -d' ' -f1 \
+              > "hofvarpnir-tui-${{ matrix.target }}-${{ github.ref_name }}.tar.gz.sha256"
+          fi
+      - name: Upload TUI tarball
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: hofvarpnir-tui-${{ matrix.target }}
+          path: |
+            hofvarpnir-tui-${{ matrix.target }}-${{ github.ref_name }}.tar.gz
+            hofvarpnir-tui-${{ matrix.target }}-${{ github.ref_name }}.tar.gz.sha256
   container:
     needs: build
     timeout-minutes: 30
@@ -169,7 +244,7 @@ jobs:
             verify "${REPO}:${tag}"
           done
   release:
-    needs: [build, container-manifest]
+    needs: [build, build-tui-extra, container-manifest]
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
@@ -204,4 +279,6 @@ jobs:
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3
         with:
           tag_name: ${{ github.ref_name }}
-          files: artifacts/**/*.tar.gz
+          files: |
+            artifacts/**/*.tar.gz
+            artifacts/**/*.sha256
