@@ -24,6 +24,10 @@ docs/superpowers/
 /.gitmodules
 /.idea
 /.mcp.json
+# Unanchored: the sandbox also masks this in whatever subdirectory a command
+# runs from (e.g. crates/hof-web/.mcp.json). `.claude/` above already matches
+# at any depth.
+.mcp.json
 /.profile
 /.ripgreprc
 /.vscode
