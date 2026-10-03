@@ -60,9 +60,10 @@ and API key. You can create an API key in the web UI under **Settings**.
 
 #### Prebuilt binaries (Linux)
 
-Release archives include both the server and TUI binaries. For Linux x86_64,
-use `x86_64-unknown-linux-gnu`; for 64-bit ARM, use
-`aarch64-unknown-linux-gnu`:
+There is no separate TUI archive: each platform archive is named for
+`hofvarpnir` and contains both the server and TUI binaries. Download the
+[x86_64 archive](https://github.com/Mozart409/hofvarpnir/releases/download/v0.14.0/hofvarpnir-x86_64-unknown-linux-gnu-v0.14.0.tar.gz)
+or the [64-bit ARM archive](https://github.com/Mozart409/hofvarpnir/releases/download/v0.14.0/hofvarpnir-aarch64-unknown-linux-gnu-v0.14.0.tar.gz):
 
 ```bash
 set -eu
