@@ -2,6 +2,16 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.16.0 - 2026-10-04
+#### Features
+- (**tui**) load api url and token from config file - (5c35e57) - Amadeus Mader
+#### Bug Fixes
+- (**tui**) tui gets its own output - (07252b3) - Amadeus Mader
+#### Documentation
+- (**readme**) document agenix and sops-nix setup for the tui - (7bd43b7) - Amadeus Mader
+
+- - -
+
 ## v0.15.0 - 2026-10-03
 #### Features
 - (**ci**) split server and tui release artifacts, add musl and darwin tui builds - (8cef525) - Amadeus Mader
