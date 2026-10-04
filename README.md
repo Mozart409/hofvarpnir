@@ -109,6 +109,39 @@ nix profile install github:Mozart409/hofvarpnir#hofvarpnir-tui
 Then run `hofvarpnir-tui`. The flake builds the standalone TUI package for
 x86_64 Linux, aarch64 Linux, and x86_64 macOS.
 
+### Configure the TUI
+
+To skip the setup screen, put the server URL and API key in
+`$XDG_CONFIG_HOME/hofvarpnir/tui.toml` (normally `~/.config/hofvarpnir/tui.toml`;
+override with `--config <PATH>` or `HOF_TUI_CONFIG`). On first launch, press
+**Ctrl-S** on the setup screen to have the TUI write that file for you.
+
+```toml
+api_url = "https://hof.example.com"
+
+# Exactly one token source (or none, to be asked on start):
+token = "hof_sk_..."                         # file must be chmod 600
+# token_file = "/run/agenix/hofvarpnir-tui"  # read and trimmed
+# token_command = "pass show hofvarpnir"     # run via `sh -c`; stdout is the key
+```
+
+`--api-url` / `--token` win over `HOF_API_URL` / `HOF_API_TOKEN`, which win over
+the file. The TUI refuses an inline `token` in a file other users can read.
+With `token_file` or `token_command`, the file holds no secret, so it can live
+in a read-only, world-readable place, such as a home-manager generated
+`~/.config` with the key coming from agenix or sops-nix:
+
+```nix
+xdg.configFile."hofvarpnir/tui.toml".source = (pkgs.formats.toml { }).generate "tui.toml" {
+  api_url = "https://hof.example.com";
+  token_file = config.age.secrets.hofvarpnir-tui.path;
+  # or: token_command = "cat ${config.sops.secrets.hofvarpnir-tui.path}";
+};
+```
+
+`token_command` runs before the TUI takes over the terminal, so commands that
+prompt (gpg pinentry, `op read`) work.
+
 ## Project Structure
 
 ```

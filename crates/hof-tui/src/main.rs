@@ -16,7 +16,9 @@ async fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(RunError::Config(e)) => {
-            eprintln!("error: {e}\n\nusage: hofvarpnir-tui [--api-url URL] [--token TOKEN]");
+            eprintln!(
+                "error: {e}\n\nusage: hofvarpnir-tui [--api-url URL] [--token TOKEN] [--config PATH]"
+            );
             ExitCode::FAILURE
         }
         Err(RunError::Other(e)) => {
