@@ -7,6 +7,7 @@
 //! - `ProgressMsg` from the reconnecting SSE task (see [`crate::client`]).
 
 use std::collections::HashSet;
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use color_eyre::eyre::{Context, Result, eyre};
@@ -19,7 +20,7 @@ use tokio::sync::mpsc;
 
 use crate::app::{Action, App};
 use crate::client::{ApiClient, ApiClientError, ProgressMsg};
-use crate::config::{Config, ConfigError, PartialConfig};
+use crate::config::{self, Config, ConfigError, PartialConfig};
 use crate::setup::{self, Setup, SetupOutcome};
 use crate::types::{
     ActivityListResponse, ProfileResponse, SettingsResponse, SourceResponse, SystemStatusResponse,
@@ -103,6 +104,8 @@ struct Session {
     client: ApiClient,
     /// `None` when the server predates `GET /api/v1/system/whoami`.
     access: Option<WhoAmIResponse>,
+    /// Status line to show once the main UI is up, `(text, is_error)`.
+    notice: Option<(String, bool)>,
 }
 
 /// Upper bound for one connection attempt from the setup screen, so an
@@ -111,8 +114,8 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Entry point used by `main`: parse config, verify the token, run the loop.
 ///
-/// With no token from `--token` / `HOF_API_TOKEN`, a setup screen asks for
-/// URL and token before the main UI starts.
+/// With no token from `--token` / `HOF_API_TOKEN` / the config file, a setup
+/// screen asks for URL and token before the main UI starts.
 ///
 /// # Returns
 ///
@@ -147,7 +150,7 @@ pub async fn run(args: Vec<String>) -> Result<Exit, RunError> {
     let result = async {
         let session = match preconnected {
             Some(session) => session,
-            None => match run_setup(&mut terminal, partial.api_url).await? {
+            None => match run_setup(&mut terminal, partial.api_url, partial.save_path).await? {
                 Some(session) => session,
                 None => return Ok(()),
             },
@@ -195,7 +198,11 @@ async fn connect(config: &Config) -> Result<Session> {
         }
     };
 
-    Ok(Session { client, access })
+    Ok(Session {
+        client,
+        access,
+        notice: None,
+    })
 }
 
 /// Run the setup form until a connection succeeds (`Some`) or the user quits
@@ -203,12 +210,13 @@ async fn connect(config: &Config) -> Result<Session> {
 async fn run_setup(
     terminal: &mut ratatui::DefaultTerminal,
     api_url: String,
+    save_path: Option<PathBuf>,
 ) -> Result<Option<Session>> {
     // Bracketed paste delivers a pasted token as one `Event::Paste` instead
     // of a burst of key presses (where a trailing newline would submit).
     crossterm::execute!(std::io::stdout(), EnableBracketedPaste)
         .context("failed to enable bracketed paste")?;
-    let result = setup_loop(terminal, api_url).await;
+    let result = setup_loop(terminal, Setup::new(api_url, save_path)).await;
     drop(crossterm::execute!(
         std::io::stdout(),
         DisableBracketedPaste
@@ -218,9 +226,8 @@ async fn run_setup(
 
 async fn setup_loop(
     terminal: &mut ratatui::DefaultTerminal,
-    api_url: String,
+    mut setup: Setup,
 ) -> Result<Option<Session>> {
-    let mut setup = Setup::new(api_url);
     let mut events = EventStream::new();
     loop {
         terminal
@@ -258,7 +265,19 @@ async fn setup_loop(
                 let attempt = tokio::time::timeout(CONNECT_TIMEOUT, connect(&config)).await;
                 setup.connecting = false;
                 match attempt {
-                    Ok(Ok(session)) => return Ok(Some(session)),
+                    Ok(Ok(mut session)) => {
+                        if setup.save
+                            && let Some(path) = &setup.save_path
+                        {
+                            // A failed save (e.g. a read-only ~/.config) must
+                            // not cost the user a working connection.
+                            session.notice = Some(match config::save(path, &config) {
+                                Ok(()) => (format!("saved to {}", path.display()), false),
+                                Err(e) => (format!("could not save {}: {e}", path.display()), true),
+                            });
+                        }
+                        return Ok(Some(session));
+                    }
                     Ok(Err(e)) => setup.error = Some(e.to_string()),
                     Err(_) => {
                         setup.error = Some(format!(
@@ -444,11 +463,18 @@ fn spawn_refresh(
 
 /// The main draw/select loop. Owns all mutable state.
 async fn run_loop(terminal: &mut ratatui::DefaultTerminal, session: Session) -> Result<()> {
-    let Session { client, access } = session;
+    let Session {
+        client,
+        access,
+        notice,
+    } = session;
     let mut app = App {
         access,
         ..App::default()
     };
+    if let Some((text, is_error)) = notice {
+        app.set_message(text, is_error);
+    }
     let mut in_flight: HashSet<&'static str> = HashSet::new();
 
     let (loop_tx, mut loop_rx) = mpsc::channel::<LoopMsg>(64);

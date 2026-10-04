@@ -1,9 +1,14 @@
 //! Startup screen asking for server URL and API token.
 //!
-//! Shown when neither `--token` nor `HOF_API_TOKEN` is set. The event loop in
+//! Shown when no token comes from `--token`, `HOF_API_TOKEN`, or the config
+//! file. The event loop in
 //! [`crate::run`] owns a [`Setup`], feeds it key and paste events, and on
 //! [`SetupOutcome::Submit`] tries to connect; failures land back here in
-//! [`Setup::error`] so the user can correct the input.
+//! [`Setup::error`] so the user can correct the input. When no config file
+//! exists yet, Ctrl-S marks the entered values to be saved there once the
+//! connection succeeds.
+
+use std::path::PathBuf;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::Frame;
@@ -48,15 +53,21 @@ pub struct Setup {
     pub error: Option<String>,
     /// A connection attempt is in progress.
     pub connecting: bool,
+    /// Config file the values can be saved to; `None` hides the option.
+    pub save_path: Option<PathBuf>,
+    /// Save URL and token to [`Self::save_path`] after connecting (Ctrl-S).
+    pub save: bool,
 }
 
 impl Setup {
     /// Start with the URL prefilled (from `--api-url`, `HOF_API_URL`, or the
-    /// default) and focus on the empty token field.
+    /// default) and focus on the empty token field. Saving is opt-in: it
+    /// writes a secret to disk.
     #[must_use]
-    pub fn new(url: String) -> Self {
+    pub fn new(url: String, save_path: Option<PathBuf>) -> Self {
         Self {
             url,
+            save_path,
             ..Self::default()
         }
     }
@@ -87,6 +98,10 @@ impl Setup {
             }
             KeyCode::Char('u') if ctrl => {
                 self.focused_mut().clear();
+                None
+            }
+            KeyCode::Char('s') if ctrl => {
+                self.save = !self.save && self.save_path.is_some();
                 None
             }
             KeyCode::Tab | KeyCode::BackTab | KeyCode::Up | KeyCode::Down => {
@@ -137,10 +152,11 @@ pub fn draw(frame: &mut Frame, setup: &Setup) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let [intro, url, token, status, hints] = Layout::vertical([
+    let [intro, url, token, save, status, hints] = Layout::vertical([
         Constraint::Length(2),
         Constraint::Length(3),
         Constraint::Length(3),
+        Constraint::Length(1),
         Constraint::Min(1),
         Constraint::Length(1),
     ])
@@ -148,7 +164,7 @@ pub fn draw(frame: &mut Frame, setup: &Setup) {
 
     frame.render_widget(
         Paragraph::new(
-            "No API token given (--token / HOF_API_TOKEN). Create one in the web UI under Settings.",
+            "No API token given (--token, HOF_API_TOKEN, or config file). Create one in the web UI under Settings.",
         )
         .style(Style::default().fg(Color::DarkGray))
         .wrap(Wrap { trim: true }),
@@ -156,6 +172,18 @@ pub fn draw(frame: &mut Frame, setup: &Setup) {
     );
     draw_field(frame, setup, Field::Url, " Server URL ", url);
     draw_field(frame, setup, Field::Token, " API token (hof_sk_…) ", token);
+
+    if let Some(path) = &setup.save_path {
+        let (mark, style) = if setup.save {
+            ("[x]", Style::default().fg(Color::Cyan))
+        } else {
+            ("[ ]", Style::default().fg(Color::DarkGray))
+        };
+        frame.render_widget(
+            Paragraph::new(format!("{mark} [Ctrl-S] save to {}", path.display())).style(style),
+            save,
+        );
+    }
 
     let status_line = if setup.connecting {
         Line::from(Span::styled(

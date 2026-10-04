@@ -109,6 +109,86 @@ nix profile install github:Mozart409/hofvarpnir#hofvarpnir-tui
 Then run `hofvarpnir-tui`. The flake builds the standalone TUI package for
 x86_64 Linux, aarch64 Linux, and x86_64 macOS.
 
+### Configure the TUI
+
+To skip the setup screen, put the server URL and API key in
+`$XDG_CONFIG_HOME/hofvarpnir/tui.toml` (normally `~/.config/hofvarpnir/tui.toml`;
+override with `--config <PATH>` or `HOF_TUI_CONFIG`). On first launch, press
+**Ctrl-S** on the setup screen to have the TUI write that file for you.
+
+```toml
+api_url = "https://hof.example.com"
+
+# Exactly one token source (or none, to be asked on start):
+token = "hof_sk_..."                         # file must be chmod 600
+# token_file = "/run/agenix/hofvarpnir-tui"  # read and trimmed
+# token_command = "pass show hofvarpnir"     # run via `sh -c`; stdout is the key
+```
+
+`--api-url` / `--token` win over `HOF_API_URL` / `HOF_API_TOKEN`, which win over
+the file. The TUI refuses an inline `token` in a file other users can read.
+With `token_file` or `token_command` the file holds no secret, so it can live
+somewhere read-only and world-readable, such as the Nix store (see below).
+
+`token_command` runs before the TUI takes over the terminal, so commands that
+prompt (gpg pinentry, `op read`) work. A trailing newline from the file or
+command is trimmed.
+
+#### NixOS: API key from agenix or sops-nix
+
+Keep the key in an encrypted secret and let home-manager generate a
+`tui.toml` that only points at the decrypted file. Put just the `hof_sk_...`
+key in the secret (e.g. `agenix -e secrets/hofvarpnir-tui.age`).
+
+**agenix, NixOS module.** The secret is decrypted to `/run/agenix/<name>`,
+owned by root with mode `0400` by default, so set `owner` or the TUI cannot
+read it:
+
+```nix
+# configuration.nix
+age.secrets.hofvarpnir-tui = {
+  file = ./secrets/hofvarpnir-tui.age;
+  owner = "alice";
+};
+
+# home-manager, used as a NixOS module (provides `osConfig`)
+xdg.configFile."hofvarpnir/tui.toml".source = (pkgs.formats.toml { }).generate "tui.toml" {
+  api_url = "https://hof.example.com";
+  token_file = osConfig.age.secrets.hofvarpnir-tui.path;
+};
+```
+
+**agenix, home-manager module.** The secret is decrypted to
+`$XDG_RUNTIME_DIR/agenix/<name>` and owned by you, but on Linux its `.path` is
+the literal string `${XDG_RUNTIME_DIR}/agenix/<name>`, expanded only at
+runtime. `token_file` takes paths literally, so use `token_command`, which runs
+through `sh` and expands the variable:
+
+```nix
+age.secrets.hofvarpnir-tui.file = ./secrets/hofvarpnir-tui.age;
+
+xdg.configFile."hofvarpnir/tui.toml".source = (pkgs.formats.toml { }).generate "tui.toml" {
+  api_url = "https://hof.example.com";
+  token_command = "cat \"${config.age.secrets.hofvarpnir-tui.path}\"";
+};
+```
+
+**sops-nix** works the same way through `sops.secrets`:
+
+- NixOS module: decrypted to `/run/secrets/<name>`, root-owned `0400` by
+  default. Set `sops.secrets.hofvarpnir-tui.owner = "alice";` and use
+  `token_file = osConfig.sops.secrets.hofvarpnir-tui.path;`.
+- home-manager module: decrypted to `~/.config/sops-nix/secrets/<name>` by
+  default, a real path, so
+  `token_file = config.sops.secrets.hofvarpnir-tui.path;` works. If you move
+  it with `sops.defaultSymlinkPath = "%r/secrets";` (e.g. because `~/.config`
+  is read-only), the path contains a literal `%r`; use
+  `token_command = "cat \"$XDG_RUNTIME_DIR/secrets/hofvarpnir-tui\"";` instead.
+
+After a rebuild, `hofvarpnir-tui` should open the main view directly. If it
+reports a `token_file` / `token_command` error, run the same `cat` yourself
+to check the secret's path and permissions.
+
 ## Project Structure
 
 ```

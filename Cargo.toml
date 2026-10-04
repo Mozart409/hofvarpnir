@@ -47,6 +47,8 @@ sqlx = { version = "0.9", features = ["runtime-tokio","tls-rustls-aws-lc-rs", "p
 thiserror = "2"
 tokio = { version = "1", features = ["full"] }
 tokio-stream = "0.1"
+# Parses and writes the TUI config file (`hof-tui` config.rs).
+toml = "1"
 tower-http = { version = "0.7", features = ["cors", "trace", "fs", "request-id", "propagate-header"] }
 tower-sessions = "0.15"
 # Git rev, not crates.io: the last release (0.15.0) pins sqlx 0.8 and
