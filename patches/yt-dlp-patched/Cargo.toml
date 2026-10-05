@@ -19,7 +19,6 @@ description = "🎬️ A Rust library (with auto dependencies installation) for 
 license = "GPL-3.0-only"
 readme = "README.md"
 documentation = "https://docs.rs/yt-dlp"
-homepage = "https://github.com/boul2gom/yt-dlp"
 repository = "https://github.com/boul2gom/yt-dlp"
 
 categories = ["api-bindings", "asynchronous", "multimedia", "multimedia::audio", "multimedia::video"]

@@ -15,3 +15,21 @@ crates/*/.sqlx/
 /result-ytdlp
 
 docs/superpowers/
+
+# Claude Code sandbox: bubblewrap masks these paths with /dev/null bind mounts,
+# which show up as untracked character devices inside the sandbox only.
+/.bash_profile
+/.bashrc
+/.gitconfig
+/.gitmodules
+/.idea
+/.mcp.json
+# Unanchored: the sandbox also masks this in whatever subdirectory a command
+# runs from (e.g. crates/hof-web/.mcp.json). `.claude/` above already matches
+# at any depth.
+.mcp.json
+/.profile
+/.ripgreprc
+/.vscode
+/.zprofile
+/.zshrc

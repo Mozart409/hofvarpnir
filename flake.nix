@@ -8,7 +8,10 @@
     # for that one system only, so Linux stays on nixos-unstable.
     nixpkgs-darwin.url = "github:NixOS/nixpkgs/nixpkgs-26.05-darwin";
     flake-utils.url = "github:numtide/flake-utils";
-    rust-overlay.url = "github:oxalica/rust-overlay";
+    fenix = {
+      url = "github:nix-community/fenix";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
     crane.url = "github:ipetkov/crane";
   };
 
@@ -17,7 +20,7 @@
     nixpkgs,
     nixpkgs-darwin,
     flake-utils,
-    rust-overlay,
+    fenix,
     crane,
   }:
     flake-utils.lib.eachSystem ["x86_64-linux" "aarch64-linux" "x86_64-darwin"] (system: let
@@ -29,7 +32,7 @@
         inherit system;
         config.allowUnfree = true;
         overlays = [
-          rust-overlay.overlays.default
+          fenix.overlays.default
           # nixos-unstable lags upstream yt-dlp releases (which ship almost
           # daily to patch broken site extractors); pin to the latest
           # released version until nixpkgs catches up.
@@ -51,9 +54,12 @@
       ociImageRevision = builtins.getEnv "OCI_IMAGE_REVISION";
       ociImageCreated = builtins.getEnv "OCI_IMAGE_CREATED";
 
-      rust = pkgs.rust-bin.stable."1.97.1".default.override {
-        extensions = ["rustfmt" "clippy" "rust-src"];
+      nightlyManifest = fenix.packages.${system}.fromToolchainName {
+        name = "nightly-2026-09-29";
+        sha256 = "sha256-SscAmi14f6gEF45aegZ7H4KPhWI6Fg73zEF9N4gU7z4=";
       };
+      rust = nightlyManifest.withComponents ["cargo" "clippy" "rust-src" "rustc" "rustfmt"];
+      rustAnalyzer = nightlyManifest.rust-analyzer;
 
       # Crane for building Rust packages
       craneLib = (crane.mkLib pkgs).overrideToolchain rust;
@@ -104,6 +110,21 @@
           cargoExtraArgs = "-p hof-web";
 
           # Don't run tests during build (run separately)
+          doCheck = false;
+        });
+
+      # Standalone terminal UI client. Gets its own dependency build scoped
+      # to hof-tui, so consumers don't compile the server's dependency tree
+      # (sqlx, axum, ...) just to get the TUI.
+      tuiArgs =
+        commonArgs
+        // {
+          pname = "hofvarpnir-tui";
+          cargoExtraArgs = "-p hof-tui";
+        };
+      hofvarpnir-tui = craneLib.buildPackage (tuiArgs
+        // {
+          cargoArtifacts = craneLib.buildDepsOnly tuiArgs;
           doCheck = false;
         });
 
@@ -186,6 +207,7 @@
         podman-tui
         postgresql_17
         rust
+        rustAnalyzer
         sccache
         sqlx-cli
         sqruff
@@ -214,6 +236,7 @@
         {
           default = hofvarpnir;
           hofvarpnir = hofvarpnir;
+          hofvarpnir-tui = hofvarpnir-tui;
         }
         // pkgs.lib.optionalAttrs (system == "x86_64-linux" || system == "aarch64-linux") ({
             # OCI container image (Linux only) - builds Rust via Crane

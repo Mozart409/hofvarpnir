@@ -12,6 +12,7 @@ A self-hosted video archival system that downloads videos from YouTube (and othe
 
 - **Multi-platform support**: YouTube and other platforms via yt-dlp auto-detection
 - **Web UI**: Modern web interface built with htmx and Tailwind CSS
+- **Terminal UI**: Standalone terminal client for managing downloads and monitoring live progress
 - **Automatic scheduling**: Per-source indexing frequency
 - **Resilient indexing**: Age-restricted, private, and unavailable videos are skipped and the scan continues, so a single problem entry never aborts indexing of the rest of a channel/playlist
 - **Health monitoring**: Surface sources that are enabled but persistently failing to index
@@ -25,7 +26,6 @@ A self-hosted video archival system that downloads videos from YouTube (and othe
 
 ## Planned
 
-- **TUI**: Terminal-based management interface
 - **Keyboard Shortcuts**: Vim motions
 
 ## Tech Stack
@@ -45,15 +45,149 @@ A self-hosted video archival system that downloads videos from YouTube (and othe
 # Build all crates
 cargo build --release
 
-# Run database migrations
-# (SQLx migrations in hof-core/migrations/)
-
-# Start the server (API + Web UI)
+# Start the server (API + Web UI; runs pending migrations on startup)
 cargo run --bin hof-server
 
 # Run the TUI client (in another terminal)
-cargo run --bin hof-tui
+cargo run --bin hofvarpnir-tui
 ```
+
+### Install the TUI
+
+The TUI connects to a running Hofvarpnir server; on first launch, the setup
+screen lets you enter the API URL and API key. You can create an API key in the
+web UI under **Settings**.
+
+#### Install script (Linux and macOS)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Mozart409/hofvarpnir/main/scripts/install-tui.sh | bash
+```
+
+The [script](scripts/install-tui.sh) detects your platform (x86_64/aarch64;
+glibc or musl on Linux), downloads the latest release, verifies its SHA-256
+checksum, and installs to `~/.local/bin`. Environment overrides:
+`HOFVARPNIR_VERSION=0.15.0` pins a specific version, `HOFVARPNIR_INSTALL_DIR`
+changes the install destination.
+
+#### Manual install
+
+Download `hofvarpnir-tui-<target>-v<version>.tar.gz` for your platform from the
+[latest release](https://github.com/Mozart409/hofvarpnir/releases/latest). The
+archive contains a single `hofvarpnir-tui` binary:
+
+```bash
+tar -xzf hofvarpnir-tui-*.tar.gz
+install -m 755 hofvarpnir-tui ~/.local/bin/
+```
+
+Available targets: `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`,
+`x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl` (static, for
+Alpine and old-glibc systems), `aarch64-apple-darwin` (Apple Silicon), and
+`x86_64-apple-darwin` (Intel).
+
+The server tarball keeps the plain `hofvarpnir-<target>-v<version>.tar.gz`
+name and contains only the server binary — most server deployments should use
+the container image instead. The macOS binaries are not notarized; if you
+downloaded one via a browser and Gatekeeper blocks it, run
+`xattr -d com.apple.quarantine ~/.local/bin/hofvarpnir-tui`.
+
+Make sure `~/.local/bin` is on your `PATH`, then start it with:
+
+```bash
+hofvarpnir-tui
+```
+
+#### Nix
+
+With Nix flakes enabled, install the TUI into your user profile:
+
+```bash
+nix profile install github:Mozart409/hofvarpnir#hofvarpnir-tui
+```
+
+Then run `hofvarpnir-tui`. The flake builds the standalone TUI package for
+x86_64 Linux, aarch64 Linux, and x86_64 macOS.
+
+### Configure the TUI
+
+To skip the setup screen, put the server URL and API key in
+`$XDG_CONFIG_HOME/hofvarpnir/tui.toml` (normally `~/.config/hofvarpnir/tui.toml`;
+override with `--config <PATH>` or `HOF_TUI_CONFIG`). On first launch, press
+**Ctrl-S** on the setup screen to have the TUI write that file for you.
+
+```toml
+api_url = "https://hof.example.com"
+
+# Exactly one token source (or none, to be asked on start):
+token = "hof_sk_..."                         # file must be chmod 600
+# token_file = "/run/agenix/hofvarpnir-tui"  # read and trimmed
+# token_command = "pass show hofvarpnir"     # run via `sh -c`; stdout is the key
+```
+
+`--api-url` / `--token` win over `HOF_API_URL` / `HOF_API_TOKEN`, which win over
+the file. The TUI refuses an inline `token` in a file other users can read.
+With `token_file` or `token_command` the file holds no secret, so it can live
+somewhere read-only and world-readable, such as the Nix store (see below).
+
+`token_command` runs before the TUI takes over the terminal, so commands that
+prompt (gpg pinentry, `op read`) work. A trailing newline from the file or
+command is trimmed.
+
+#### NixOS: API key from agenix or sops-nix
+
+Keep the key in an encrypted secret and let home-manager generate a
+`tui.toml` that only points at the decrypted file. Put just the `hof_sk_...`
+key in the secret (e.g. `agenix -e secrets/hofvarpnir-tui.age`).
+
+**agenix, NixOS module.** The secret is decrypted to `/run/agenix/<name>`,
+owned by root with mode `0400` by default, so set `owner` or the TUI cannot
+read it:
+
+```nix
+# configuration.nix
+age.secrets.hofvarpnir-tui = {
+  file = ./secrets/hofvarpnir-tui.age;
+  owner = "alice";
+};
+
+# home-manager, used as a NixOS module (provides `osConfig`)
+xdg.configFile."hofvarpnir/tui.toml".source = (pkgs.formats.toml { }).generate "tui.toml" {
+  api_url = "https://hof.example.com";
+  token_file = osConfig.age.secrets.hofvarpnir-tui.path;
+};
+```
+
+**agenix, home-manager module.** The secret is decrypted to
+`$XDG_RUNTIME_DIR/agenix/<name>` and owned by you, but on Linux its `.path` is
+the literal string `${XDG_RUNTIME_DIR}/agenix/<name>`, expanded only at
+runtime. `token_file` takes paths literally, so use `token_command`, which runs
+through `sh` and expands the variable:
+
+```nix
+age.secrets.hofvarpnir-tui.file = ./secrets/hofvarpnir-tui.age;
+
+xdg.configFile."hofvarpnir/tui.toml".source = (pkgs.formats.toml { }).generate "tui.toml" {
+  api_url = "https://hof.example.com";
+  token_command = "cat \"${config.age.secrets.hofvarpnir-tui.path}\"";
+};
+```
+
+**sops-nix** works the same way through `sops.secrets`:
+
+- NixOS module: decrypted to `/run/secrets/<name>`, root-owned `0400` by
+  default. Set `sops.secrets.hofvarpnir-tui.owner = "alice";` and use
+  `token_file = osConfig.sops.secrets.hofvarpnir-tui.path;`.
+- home-manager module: decrypted to `~/.config/sops-nix/secrets/<name>` by
+  default, a real path, so
+  `token_file = config.sops.secrets.hofvarpnir-tui.path;` works. If you move
+  it with `sops.defaultSymlinkPath = "%r/secrets";` (e.g. because `~/.config`
+  is read-only), the path contains a literal `%r`; use
+  `token_command = "cat \"$XDG_RUNTIME_DIR/secrets/hofvarpnir-tui\"";` instead.
+
+After a rebuild, `hofvarpnir-tui` should open the main view directly. If it
+reports a `token_file` / `token_command` error, run the same `cat` yourself
+to check the secret's path and permissions.
 
 ## Project Structure
 

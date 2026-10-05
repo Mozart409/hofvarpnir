@@ -650,3 +650,117 @@ fn pushed_urls(body: &str) -> Vec<String> {
         })
         .collect()
 }
+
+/// The runtime panel's override form writes exactly the knobs that changed,
+/// clears an override when its field is emptied, enforces the API's bounds,
+/// and leaves the row untouched on a no-op or rejected submit.
+///
+/// Artifact: the persisted `runtime_settings` row after each step.
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn runtime_settings_form_patches_only_changed_overrides(pool: sqlx::PgPool) {
+    use hof_core::db::{self, RuntimeSettingsPatch};
+
+    let app = helpers::TestWebApp::new(pool.clone()).await;
+    let user = UserBuilder::new().build(&pool).await;
+    // `runtime_settings.updated_by` references `users`, so the earlier
+    // writer has to be a real account.
+    let other = UserBuilder::new().build(&pool).await;
+    app.login_as(&user).await;
+
+    // Pre-existing state: a drain-timeout override someone else set, and an
+    // indefinite indexing pause that the form must not disturb.
+    let paused_until = hof_core::runtime_config::indefinite_pause();
+    db::patch_runtime_settings(
+        &pool,
+        &RuntimeSettingsPatch {
+            drain_timeout_secs: Some(Some(600)),
+            indexing_paused_until: Some(Some(paused_until)),
+            updated_by: Some(other.id.to_string()),
+            ..RuntimeSettingsPatch::default()
+        },
+    )
+    .await
+    .unwrap();
+
+    let page = app.server.get("/settings/runtime").await;
+    page.assert_status_ok();
+    let html = page.text();
+    assert!(html.contains(r#"sse-connect="/settings/runtime/events""#));
+    assert!(
+        html.contains(r#"name="drain_timeout_secs""#) && html.contains(r#"value="600""#),
+        "existing override should prefill its input"
+    );
+
+    // Set two knobs (one at its 0 lower bound), clear the drain override,
+    // leave the rest empty.
+    let response = app
+        .server
+        .post("/settings/runtime/settings")
+        .form(&[
+            ("max_concurrent_downloads", "4"),
+            ("max_indexers_per_tick", ""),
+            ("rate_limit_delay_secs", "0"),
+            ("check_interval_secs", ""),
+            ("cleanup_interval_secs", ""),
+            ("drain_timeout_secs", ""),
+        ])
+        .await;
+    assert_eq!(response.status_code(), StatusCode::SEE_OTHER);
+
+    let row = db::get_runtime_settings(&pool).await.unwrap();
+    assert_eq!(row.max_concurrent_downloads, Some(4));
+    assert_eq!(row.rate_limit_delay_secs, Some(0));
+    assert_eq!(
+        row.drain_timeout_secs, None,
+        "emptied field clears override"
+    );
+    assert_eq!(row.max_indexers_per_tick, None);
+    assert_eq!(row.check_interval_secs, None);
+    assert_eq!(
+        row.indexing_paused_until,
+        Some(paused_until),
+        "pause untouched"
+    );
+    assert_eq!(
+        row.updated_by.as_deref(),
+        Some(user.id.to_string().as_str())
+    );
+    let saved_at = row.updated_at;
+
+    let html = app.server.get("/settings/runtime").await.text();
+    assert!(
+        html.contains("Saved: Max concurrent downloads, Rate-limit delay, Drain timeout."),
+        "success flash should list exactly the changed knobs"
+    );
+
+    // Out of bounds: rejected with the API's message, row unchanged.
+    app.server
+        .post("/settings/runtime/settings")
+        .form(&[
+            ("max_concurrent_downloads", "4"),
+            ("rate_limit_delay_secs", "0"),
+            ("check_interval_secs", "0"),
+        ])
+        .await;
+    let html = app.server.get("/settings/runtime").await.text();
+    assert!(
+        html.contains("check_interval_secs must be &gt;= 1"),
+        "{html}"
+    );
+    let row = db::get_runtime_settings(&pool).await.unwrap();
+    assert_eq!(row.check_interval_secs, None);
+    assert_eq!(row.updated_at, saved_at);
+
+    // Resubmitting the current values is a no-op: the audit stamp holds.
+    app.server
+        .post("/settings/runtime/settings")
+        .form(&[
+            ("max_concurrent_downloads", "4"),
+            ("rate_limit_delay_secs", "0"),
+        ])
+        .await;
+    let html = app.server.get("/settings/runtime").await.text();
+    assert!(html.contains("No changes to save."));
+    let row = db::get_runtime_settings(&pool).await.unwrap();
+    assert_eq!(row.updated_at, saved_at);
+}

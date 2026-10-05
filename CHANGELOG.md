@@ -2,6 +2,61 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.16.0 - 2026-10-04
+#### Features
+- (**tui**) load api url and token from config file - (5c35e57) - Amadeus Mader
+#### Bug Fixes
+- (**tui**) tui gets its own output - (07252b3) - Amadeus Mader
+#### Documentation
+- (**readme**) document agenix and sops-nix setup for the tui - (7bd43b7) - Amadeus Mader
+
+- - -
+
+## v0.15.0 - 2026-10-03
+#### Features
+- (**ci**) split server and tui release artifacts, add musl and darwin tui builds - (8cef525) - Amadeus Mader
+- (**tools**) add tui install script - (9a0c249) - Amadeus Mader
+- (**tui**) update docs and add tui to flake outputs - (a98a743) - Amadeus Mader
+#### Bug Fixes
+- (**readme**) migrations run on application startup - (f65489f) - Amadeus Mader
+- (**tui**) clarify release archive install instructions - (30ca4f0) - Amadeus Mader
+#### Documentation
+- (**readme**) simplify tui install instructions - (05b5d2a) - Amadeus Mader
+#### Miscellaneous Chores
+- (**deps**) bump xxhash-rust in /patches/yt-dlp-patched - (d48f38f) - dependabot[bot]
+
+- - -
+
+## v0.14.0 - 2026-10-03
+#### Features
+- (**api**) add whoami endpoint reporting api key scopes - (8a04378) - Amadeus Mader
+- (**tui**) add terminal client with setup screen, settings tab and reconnect backoff - (69f27f0) - Amadeus Mader
+- (**web**) live-update and edit runtime settings overrides - (e20b656) - Amadeus Mader
+#### Bug Fixes
+- (**core**) raise recursion limit for download worker send proof - (6a82fc0) - Amadeus Mader
+- (**pg**) pg listen only 127.0.0.1 - (84698d0) - Amadeus Mader
+- (**tui**) default api url to localhost:8080 - (53ce6fb) - Amadeus Mader
+#### Miscellaneous Chores
+- (**ci**) bump the codeql-action group with 2 updates - (b0b9b1e) - dependabot[bot]
+- (**git**) ignore nested sandbox mcp files - (0da78fe) - Amadeus Mader
+- (**yt-dlp**) drop redundant homepage from patched manifests - (db512e1) - Amadeus Mader
+
+- - -
+
+## v0.13.1 - 2026-09-30
+#### Bug Fixes
+- (**ci**) group codeql-action init and analyze bumps - (bcaa96c) - Amadeus Mader
+- (**ci**) stop dependabot doubling the commit scope - (fda961e) - Amadeus Mader
+#### Miscellaneous Chores
+- (**container**) drop observability stack from dev compose - (67a902c) - Amadeus Mader
+- (**deps**) drop unused deps and vendored tower-sessions-sqlx-store - (41073a4) - Amadeus Mader
+- (**git**) ignore claude code sandbox placeholder files - (04979a9) - Amadeus Mader
+- (**nix**) remove opencode and claude - (c3954e3) - Amadeus Mader
+- (**release**) skip redundant pre-push suite on release and mirror pushes - (362b16b) - Amadeus Mader
+- (**toolchain**) switch to nightly-2026-09-29 via fenix - (66139f9) - Amadeus Mader
+
+- - -
+
 ## v0.13.0 - 2026-09-25
 #### Features
 - (**telemetry**) export otlp/http and loki over https with bearer auth - (13813be) - Amadeus Mader

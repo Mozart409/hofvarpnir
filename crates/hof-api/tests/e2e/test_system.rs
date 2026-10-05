@@ -257,3 +257,33 @@ async fn restart_actor_requires_write_scope(pool: PgPool) {
 
     response.assert_status(StatusCode::FORBIDDEN);
 }
+
+/// `whoami` must report each key's exact scopes, including a key that lacks
+/// `read` (it must not be gated behind the scopes it reports on).
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn whoami_reports_exact_scopes_per_key(pool: PgPool) {
+    let app = TestApp::new(pool.clone()).await;
+    let user = UserBuilder::new().build(&pool).await;
+    let read_write = ApiKeyBuilder::new(user.id).read_write().build(&pool).await;
+    let delete_only = ApiKeyBuilder::new(user.id).delete_only().build(&pool).await;
+    let full = ApiKeyBuilder::new(user.id).full_access().build(&pool).await;
+
+    for (key, expected) in [
+        (&read_write, serde_json::json!(["Read", "Write"])),
+        (&delete_only, serde_json::json!(["Delete"])),
+        (&full, serde_json::json!(["Read", "Write", "Delete"])),
+    ] {
+        let response = app
+            .server
+            .get("/api/v1/system/whoami")
+            .add_header("Authorization", key.bearer())
+            .await;
+        response.assert_status_ok();
+        let body: serde_json::Value = response.json();
+        assert_eq!(body["auth_method"], "api_key");
+        assert_eq!(body["scopes"], expected, "key scopes {:?}", key.scopes);
+    }
+
+    let unauthenticated = app.server.get("/api/v1/system/whoami").await;
+    unauthenticated.assert_status(StatusCode::UNAUTHORIZED);
+}

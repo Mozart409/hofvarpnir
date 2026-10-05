@@ -11,14 +11,18 @@ pub(crate) mod pause;
 pub(crate) mod settings_table;
 pub(crate) mod timings;
 
+use std::convert::Infallible;
 use std::sync::Arc;
 use std::time::Duration;
 
 use axum::Router;
 use axum::extract::State;
 use axum::response::IntoResponse;
+use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::routing::{get, post};
 use chrono::{DateTime, Utc};
+use futures::Stream;
+use futures::stream::unfold;
 use hof_api::AppState;
 use hof_core::actors::cleanup::{CleanupStatus, GetCleanupStatus};
 use hof_core::actors::download_supervisor::{GetSupervisorStatus, SupervisorStatus};
@@ -37,6 +41,11 @@ use crate::pages::{NavItem, layout_with_flash, take_flash};
 pub(crate) fn routes() -> Router<AppState> {
     Router::new()
         .route("/settings/runtime", get(runtime_page))
+        .route("/settings/runtime/events", get(runtime_events_sse))
+        .route(
+            "/settings/runtime/settings",
+            post(settings_table::settings_submit),
+        )
         .route("/settings/runtime/pause", post(pause::pause_submit))
         .route("/settings/runtime/resume", post(pause::resume_submit))
         .route("/settings/runtime/shutdown", post(drain::shutdown_submit))
@@ -96,6 +105,73 @@ async fn runtime_page(
     session: Session,
 ) -> impl IntoResponse {
     let flash = take_flash(&session).await;
+    let view = build_view(&state).await;
+
+    layout_with_flash(
+        "Runtime",
+        NavItem::Runtime,
+        flash,
+        maud::html! {
+            // Settings changes from anywhere (API, TUI, another browser tab)
+            // land in the `runtime_config` watch channel via LISTEN/NOTIFY;
+            // the SSE endpoint re-renders the panel on each one.
+            div hx-ext="sse" sse-connect="/settings/runtime/events" {
+                div id="runtime-panel" sse-swap="runtime-update" hx-swap="innerHTML" {
+                    (panel_body(&view))
+                }
+            }
+            script src="/assets/runtime-countdown.js" defer {}
+            script src="/assets/runtime-live.js" defer {}
+        },
+    )
+    .into_response()
+}
+
+/// The panel sections, shared by the full page and the SSE fragment.
+fn panel_body(view: &PanelView) -> Markup {
+    maud::html! {
+        (actors::section(view))
+        (pause::section(view))
+        (drain::section(view))
+        (settings_table::section(view))
+        (timings::section(view))
+    }
+}
+
+/// Coalesce window for bursts of settings changes (e.g. a pause plus a knob
+/// edit landing together), so the panel re-renders once.
+const RUNTIME_SSE_COALESCE: Duration = Duration::from_millis(300);
+
+/// `GET /settings/runtime/events` — push a re-rendered panel whenever the
+/// effective settings change.
+async fn runtime_events_sse(
+    _auth: AuthUser,
+    State(state): State<AppState>,
+) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    let rx = state.runtime_config.subscribe();
+    let stream = unfold((rx, state), |(mut rx, state)| async move {
+        // `changed` errors only once the sender is gone (shutdown): end the
+        // stream so the browser's reconnect finds the restarted server.
+        rx.changed().await.ok()?;
+        tokio::time::sleep(RUNTIME_SSE_COALESCE).await;
+        // Changes during the window are covered by this render.
+        rx.mark_unchanged();
+        let view = build_view(&state).await;
+        let event = Event::default()
+            .event("runtime-update")
+            .data(panel_body(&view).into_string());
+        Some((Ok(event), (rx, state)))
+    });
+
+    Sse::new(stream).keep_alive(
+        KeepAlive::new()
+            .interval(Duration::from_secs(15))
+            .text("keep-alive"),
+    )
+}
+
+/// Gather everything the panel renders from.
+async fn build_view(state: &AppState) -> PanelView {
     let now = Utc::now();
     let settings = state.runtime_config.current();
 
@@ -117,7 +193,7 @@ async fn runtime_page(
         }
     };
 
-    let view = PanelView {
+    PanelView {
         now,
         settings,
         row,
@@ -149,22 +225,7 @@ async fn runtime_page(
         },
         ytdlp_timeout: YTDLP_COMMAND_TIMEOUT,
         min_index_interval: Duration::from_secs(MIN_INDEX_INTERVAL_SECS),
-    };
-
-    layout_with_flash(
-        "Runtime",
-        NavItem::Runtime,
-        flash,
-        maud::html! {
-            (actors::section(&view))
-            (pause::section(&view))
-            (drain::section(&view))
-            (settings_table::section(&view))
-            (timings::section(&view))
-            script src="/assets/runtime-countdown.js" defer {}
-        },
-    )
-    .into_response()
+    }
 }
 
 /// Provenance badge.
