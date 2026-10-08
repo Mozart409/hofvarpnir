@@ -48,7 +48,7 @@ pub struct ListActivityQuery {
     /// Maximum number of events to return (default: 50, max: 200).
     #[serde(default = "default_limit")]
     pub limit: i64,
-    /// Number of events to skip for pagination.
+    /// Number of events to skip for pagination (negative values are treated as 0).
     #[serde(default)]
     pub offset: i64,
     /// Filter by severity level.
@@ -179,7 +179,8 @@ pub struct ErrorResponse {
         ("offset" = Option<i64>, Query, description = "Number of events to skip"),
         ("severity" = Option<ActivitySeverity>, Query, description = "Filter by severity"),
         ("event_type" = Option<ActivityEventType>, Query, description = "Filter by activity event type"),
-        ("source_id" = Option<String>, Query, description = "Filter by source ID")
+        ("source_id" = Option<String>, Query, description = "Filter by source ID"),
+        ("search" = Option<String>, Query, description = "Case-insensitive substring match against the event message")
     ),
     responses(
         (status = 200, description = "List of activity events", body = ActivityListResponse),
@@ -218,41 +219,18 @@ pub async fn list_activity(
         None => None,
     };
 
-    // Get total count
-    let severity_filter = query.severity.clone();
+    let offset = query.offset.max(0);
     let search: Option<String> = query
         .search
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned);
-    let total = match db::count_activity_events(
-        &state.pool,
-        severity_filter,
-        query.event_type.clone(),
-        source_id,
-        search.as_deref(),
-    )
-    .await
-    {
-        Ok(count) => count,
-        Err(e) => {
-            tracing::error!(error = %e, "Failed to count activity events");
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: "Failed to count activity events".to_string(),
-                }),
-            )
-                .into_response();
-        }
-    };
 
-    // Get events
-    match db::list_activity_events(
+    match activity_page(
         &state.pool,
         limit,
-        query.offset,
+        offset,
         query.severity,
         query.event_type,
         source_id,
@@ -260,7 +238,7 @@ pub async fn list_activity(
     )
     .await
     {
-        Ok(events) => {
+        Ok((events, total)) => {
             let responses: Vec<ActivityEventResponse> =
                 events.into_iter().map(Into::into).collect();
             (
@@ -269,7 +247,7 @@ pub async fn list_activity(
                     events: responses,
                     total,
                     limit,
-                    offset: query.offset,
+                    offset,
                 }),
             )
                 .into_response()
@@ -285,6 +263,52 @@ pub async fn list_activity(
                 .into_response()
         }
     }
+}
+
+/// Fetch one page of activity events plus the filtered total.
+///
+/// Both queries run on a single pooled connection. The handler used to
+/// acquire twice in sequence (count, then page), so under pool pressure it
+/// waited out the acquire queue twice; production logs show each of those
+/// waits at ~3 s on `/api/v1/activity`.
+///
+/// The `COUNT(*)` is skipped when the page itself proves the total: a page
+/// shorter than `limit` is the last one, so `total = offset + len`. That holds
+/// unless the page is empty at a non-zero offset (paged past the end), where
+/// the true total is unknown and is counted. Only a full page still needs the
+/// count, which keeps a filtered or `search=` request to one statement in the
+/// common case.
+#[allow(clippy::too_many_arguments)]
+async fn activity_page(
+    pool: &sqlx::PgPool,
+    limit: i64,
+    offset: i64,
+    severity: Option<ActivitySeverity>,
+    event_type: Option<ActivityEventType>,
+    source_id: Option<Ulid>,
+    search: Option<&str>,
+) -> Result<(Vec<ActivityEvent>, i64), db::DbError> {
+    let mut conn = pool.acquire().await?;
+
+    let events = db::list_activity_events(
+        &mut *conn,
+        limit,
+        offset,
+        severity.clone(),
+        event_type.clone(),
+        source_id,
+        search,
+    )
+    .await?;
+
+    let len = i64::try_from(events.len()).unwrap_or(i64::MAX);
+    let total = if len < limit && (len > 0 || offset == 0) {
+        offset.saturating_add(len)
+    } else {
+        db::count_activity_events(&mut *conn, severity, event_type, source_id, search).await?
+    };
+
+    Ok((events, total))
 }
 
 /// List unhealthy sources.

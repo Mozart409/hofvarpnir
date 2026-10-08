@@ -1,6 +1,7 @@
 //! Activity event database operations.
 
 use chrono::{DateTime, Utc};
+use sqlx::PgExecutor;
 use sqlx::postgres::PgPool;
 use tokio::sync::broadcast;
 use tracing::instrument;
@@ -93,6 +94,30 @@ pub struct CreateActivityEvent<'a> {
 
 /// Create a new activity event.
 ///
+/// # Asynchronous commit
+///
+/// The insert commits with `synchronous_commit = off`, scoped to its own
+/// transaction by `SET LOCAL`. The commit returns as soon as the WAL record
+/// is in Postgres' WAL buffers instead of waiting for the WAL `fdatasync`.
+///
+/// Why: in production a single-row insert here took 6-15 s
+/// (`slow statement` events with `elapsed` up to 15.6 s, measured by sqlx
+/// *after* the connection was acquired). Reads on the same pool stayed at
+/// ~1 ms. The time went to the commit flush: the database VM's disk sits on
+/// a spinning-disk ZFS pool shared with the download disk, and the Postgres
+/// log shows checkpoints writing ~50 buffers with `sync=14-23 s,
+/// longest=2-12 s`. Every awaited `log_activity` call on an actor's message
+/// path (the download supervisor's `ReportOutcome`, the retention sweep) paid
+/// that flush, and every connection held through it shrank the pool for the
+/// API.
+///
+/// The trade-off is narrow. An asynchronous commit can only be lost if the
+/// *Postgres server* crashes within ~3x `wal_writer_delay` (600 ms by
+/// default) of it; it cannot corrupt the database or reorder commits, and an
+/// application crash loses nothing. The activity log is a diagnostic record,
+/// and losing its last half-second on a server crash is cheaper than blocking
+/// downloads on disk latency.
+///
 /// # Errors
 ///
 /// Returns an error if the database operation fails.
@@ -102,6 +127,10 @@ pub async fn create_activity_event(
     data: CreateActivityEvent<'_>,
 ) -> Result<ActivityEvent, DbError> {
     let id = Ulid::generate();
+    let mut tx = pool.begin().await?;
+    sqlx::query("SET LOCAL synchronous_commit = off")
+        .execute(&mut *tx)
+        .await?;
     let row = sqlx::query_as::<_, ActivityEventRow>(
         r"
         INSERT INTO activity_events (id, event_type, severity, message, source_id, video_id, profile_id)
@@ -116,8 +145,9 @@ pub async fn create_activity_event(
     .bind(data.source_id.map(|id| id.to_string()))
     .bind(data.video_id.map(|id| id.to_string()))
     .bind(data.profile_id.map(|id| id.to_string()))
-    .fetch_one(pool)
+    .fetch_one(&mut *tx)
     .await?;
+    tx.commit().await?;
 
     Ok(ActivityEvent::try_from(row)?)
 }
@@ -129,9 +159,9 @@ pub async fn create_activity_event(
 /// # Errors
 ///
 /// Returns an error if the database operation fails.
-#[instrument(skip(pool), fields(otel.kind = "client", db.system = "postgresql"))]
-pub async fn list_activity_events(
-    pool: &PgPool,
+#[instrument(skip(executor), fields(otel.kind = "client", db.system = "postgresql"))]
+pub async fn list_activity_events<'e, E: PgExecutor<'e>>(
+    executor: E,
     limit: i64,
     offset: i64,
     severity: Option<ActivitySeverity>,
@@ -157,7 +187,7 @@ pub async fn list_activity_events(
     .bind(search)
     .bind(limit)
     .bind(offset)
-    .fetch_all(pool)
+    .fetch_all(executor)
     .await?;
 
     rows.into_iter()
@@ -239,9 +269,9 @@ pub async fn list_unhealthy_sources(
 /// # Errors
 ///
 /// Returns an error if the database operation fails.
-#[instrument(skip(pool), fields(otel.kind = "client", db.system = "postgresql"))]
-pub async fn count_activity_events(
-    pool: &PgPool,
+#[instrument(skip(executor), fields(otel.kind = "client", db.system = "postgresql"))]
+pub async fn count_activity_events<'e, E: PgExecutor<'e>>(
+    executor: E,
     severity: Option<ActivitySeverity>,
     event_type: Option<ActivityEventType>,
     source_id: Option<Ulid>,
@@ -261,7 +291,7 @@ pub async fn count_activity_events(
     .bind(event_type)
     .bind(source_id.map(|id| id.to_string()))
     .bind(search)
-    .fetch_one(pool)
+    .fetch_one(executor)
     .await?;
 
     Ok(row.0)

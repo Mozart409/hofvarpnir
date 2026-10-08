@@ -322,3 +322,79 @@ async fn activity_blank_search_is_ignored(pool: PgPool) {
     let body: serde_json::Value = response.json();
     assert_eq!(body["total"], 1);
 }
+
+// ---------------------------------------------------------------------------
+// Pagination totals
+// ---------------------------------------------------------------------------
+
+/// `total` must be the filtered row count on every page, however it is derived.
+///
+/// The handler skips `COUNT(*)` when a page proves the total on its own, so
+/// the ways it can go wrong are: reporting `offset + limit` for a *full* page
+/// (there may be more rows), reporting `offset` for a page *past the end*
+/// (the page is empty, so it proves nothing), ignoring the filter when it does
+/// count, and a negative offset reaching Postgres as `OFFSET -n` (a 500).
+/// Seven events, five of which match `search=quota`, paged two at a time,
+/// cover each of those, including the TUI's `search=` + `offset=` paging.
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn activity_total_is_exact_on_every_page(pool: PgPool) {
+    let app = TestApp::new(pool.clone()).await;
+    let user = UserBuilder::new().build(&pool).await;
+    let key = ApiKeyBuilder::new(user.id).read_only().build(&pool).await;
+    let profile = ProfileBuilder::new(user.id).build(&pool).await;
+    let source = SourceBuilder::new(profile.id).build(&pool).await;
+
+    let now = Utc::now();
+    for minute in 0..7_i64 {
+        let message = if minute < 5 {
+            format!("Disk quota exceeded #{minute}")
+        } else {
+            format!("Indexed {minute} new videos")
+        };
+        insert_event(
+            &pool,
+            source.id,
+            "source_error",
+            "error",
+            &message,
+            now - Duration::minutes(minute),
+        )
+        .await;
+    }
+
+    // (query, expected total, expected events on the page)
+    let cases = [
+        // Full first page: the count must run, not report offset + limit.
+        ("search=quota&limit=2&offset=0", 5, 2),
+        // Full middle page.
+        ("search=quota&limit=2&offset=2", 5, 2),
+        // Short last page: total derivable as offset + len.
+        ("search=quota&limit=2&offset=4", 5, 1),
+        // Exactly at the end: empty page at a non-zero offset proves nothing.
+        ("search=quota&limit=2&offset=5", 5, 0),
+        // Far past the end.
+        ("search=quota&limit=2&offset=50", 5, 0),
+        // Unfiltered, short first page.
+        ("limit=50", 7, 7),
+        // Negative offset is treated as 0 rather than surfacing a SQL error.
+        ("search=quota&limit=2&offset=-3", 5, 2),
+    ];
+
+    for (query, expected_total, expected_len) in cases {
+        let response = app
+            .server
+            .get(&format!("/api/v1/activity?{query}"))
+            .add_header("Authorization", key.bearer())
+            .await;
+
+        response.assert_status_ok();
+        let body: serde_json::Value = response.json();
+        assert_eq!(body["total"], expected_total, "total for `{query}`");
+        let events = body["events"].as_array().expect("events array");
+        assert_eq!(events.len(), expected_len, "page size for `{query}`");
+        assert!(
+            body["offset"].as_i64().expect("offset") >= 0,
+            "offset for `{query}`"
+        );
+    }
+}
