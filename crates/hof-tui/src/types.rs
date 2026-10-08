@@ -161,6 +161,16 @@ impl ActivitySeverity {
             Self::Error => "error",
         }
     }
+
+    /// Value for the `severity` query parameter (the server's serde name).
+    pub const fn as_query(self) -> &'static str {
+        match self {
+            Self::Info => "Info",
+            Self::Success => "Success",
+            Self::Warning => "Warning",
+            Self::Error => "Error",
+        }
+    }
 }
 
 /// Type of an activity event. Unknown variants degrade to `Other` so a newer

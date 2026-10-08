@@ -14,6 +14,7 @@ use serde::de::DeserializeOwned;
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
+use crate::search::ActivityFilter;
 use crate::sse::SseParser;
 use crate::types::{
     ActivityListResponse, ApiErrorResponse, PauseModule, PauseSummaryResponse, ProfileResponse,
@@ -219,14 +220,22 @@ impl ApiClient {
             .await
     }
 
-    /// `GET /api/v1/activity?limit=N`.
-    pub async fn list_activity(&self, limit: i64) -> Result<ActivityListResponse, ApiClientError> {
-        self.request(
-            Method::GET,
-            "/api/v1/activity",
-            &[("limit", limit.to_string())],
-        )
-        .await
+    /// `GET /api/v1/activity?limit=N&offset=M`, newest first, narrowed by
+    /// `filter`.
+    pub async fn list_activity(
+        &self,
+        limit: i64,
+        offset: usize,
+        filter: &ActivityFilter,
+    ) -> Result<ActivityListResponse, ApiClientError> {
+        let mut query = vec![("limit", limit.to_string()), ("offset", offset.to_string())];
+        if let Some(severity) = filter.severity {
+            query.push(("severity", severity.as_query().to_string()));
+        }
+        if let Some(search) = &filter.search {
+            query.push(("search", search.clone()));
+        }
+        self.request(Method::GET, "/api/v1/activity", &query).await
     }
 
     /// `POST /api/v1/system/pause` — pause indexing and downloads

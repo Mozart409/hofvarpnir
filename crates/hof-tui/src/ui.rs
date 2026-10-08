@@ -9,8 +9,8 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, Tabs, Wrap};
 
 use crate::app::{
-    App, EditSetting, Popup, SETTINGS_ROWS, SettingsRow, Tab, fmt_time, human_bytes,
-    human_duration, progress_bar, short_codec, source_name, truncate,
+    App, EditSetting, InputMode, Paging, Popup, SETTINGS_ROWS, SettingsRow, Tab, fmt_time,
+    human_bytes, human_duration, pause_label, progress_bar, short_codec, source_name, truncate,
 };
 use crate::types::{
     ActivitySeverity, ApiKeyScope, AuthMethod, PauseModule, Provenance, VideoStatus,
@@ -231,6 +231,10 @@ fn draw_message(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_hints(frame: &mut Frame, app: &App, area: Rect) {
+    if app.input == InputMode::Search {
+        draw_search_prompt(frame, app, area);
+        return;
+    }
     let tab_hints = match app.tab {
         Tab::Downloads => "r retry | c cancel | d delete | f filter | Enter detail",
         Tab::Sources => "i index now | d delete | Enter detail",
@@ -246,8 +250,13 @@ fn draw_hints(frame: &mut Frame, app: &App, area: Rect) {
     } else {
         String::new()
     };
+    let search = if app.query(app.tab).is_empty() {
+        "/ search"
+    } else {
+        "/ edit search | Esc clear search"
+    };
     let text = format!(
-        " q quit | 1-5/Tab tabs | j/k/↑/↓ move | p pause/resume | F5 refresh | {tab_hints}{filter}"
+        " q quit | 1-5/Tab tabs | j/k/↑/↓ move | p pause/resume | F5 refresh | {search} | {tab_hints}{filter}"
     );
     frame.render_widget(
         Paragraph::new(text).style(Style::default().fg(Color::DarkGray)),
@@ -255,9 +264,50 @@ fn draw_hints(frame: &mut Frame, app: &App, area: Rect) {
     );
 }
 
+/// The `/` prompt in place of the key hints, with the terminal cursor at
+/// the end of the query.
+fn draw_search_prompt(frame: &mut Frame, app: &App, area: Rect) {
+    let query = app.query(app.tab);
+    let apply = if app.tab == Tab::Activity {
+        "Enter search server (error/warn/info/ok filter severity)"
+    } else {
+        "Enter keep"
+    };
+    let line = Line::from(vec![
+        Span::styled(
+            "/",
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(query.to_string()),
+        Span::styled(
+            format!("   {apply} | Esc clear | ↑/↓ move"),
+            Style::default().fg(Color::DarkGray),
+        ),
+    ]);
+    frame.render_widget(Paragraph::new(line), area);
+    let len = u16::try_from(query.chars().count()).unwrap_or(u16::MAX);
+    let x = area
+        .x
+        .saturating_add(1)
+        .saturating_add(len)
+        .min(area.right().saturating_sub(1));
+    frame.set_cursor_position((x, area.y));
+}
+
 // ----------------------------------------------------------------------
 // Tables
 // ----------------------------------------------------------------------
+
+/// Table title: ` Name (count) `, or ` Name (shown/loaded) /query ` while
+/// a search narrows the rows.
+fn table_title(app: &App, tab: Tab, shown: usize, loaded: usize) -> String {
+    let query = app.query(tab);
+    if query.is_empty() {
+        format!(" {} ({loaded}) ", tab.title())
+    } else {
+        format!(" {} ({shown}/{loaded}) /{query} ", tab.title())
+    }
+}
 
 fn header_style() -> Style {
     Style::default()
@@ -285,9 +335,10 @@ fn draw_downloads(frame: &mut Frame, app: &mut App, area: Rect) {
     let header =
         Row::new(["STATUS", "TITLE", "SOURCE", "PROGRESS", "SIZE", "INFO"]).style(header_style());
 
-    let rows: Vec<Row> = app
-        .downloads
+    let visible = app.visible(Tab::Downloads);
+    let rows: Vec<Row> = visible
         .iter()
+        .filter_map(|&i| app.downloads.get(i))
         .map(|v| {
             let progress_cell = if v.status == VideoStatus::Downloading {
                 app.progress.get(&v.id).map_or_else(
@@ -342,11 +393,12 @@ fn draw_downloads(frame: &mut Frame, app: &mut App, area: Rect) {
     ];
     let table = Table::new(rows, widths)
         .header(header)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(format!(" Downloads ({}) ", app.downloads.len())),
-        )
+        .block(Block::default().borders(Borders::ALL).title(table_title(
+            app,
+            Tab::Downloads,
+            visible.len(),
+            app.downloads.len(),
+        )))
         .row_highlight_style(selected_style())
         .highlight_symbol("▶ ");
     frame.render_stateful_widget(table, area, &mut app.downloads_state);
@@ -365,9 +417,10 @@ fn draw_sources(frame: &mut Frame, app: &mut App, area: Rect) {
     ])
     .style(header_style());
 
-    let rows: Vec<Row> = app
-        .sources
+    let visible = app.visible(Tab::Sources);
+    let rows: Vec<Row> = visible
         .iter()
+        .filter_map(|&i| app.sources.get(i))
         .map(|s| {
             let enabled = if s.enabled {
                 Cell::from("●").style(Style::default().fg(Color::Green))
@@ -408,11 +461,12 @@ fn draw_sources(frame: &mut Frame, app: &mut App, area: Rect) {
     ];
     let table = Table::new(rows, widths)
         .header(header)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(format!(" Sources ({}) ", app.sources.len())),
-        )
+        .block(Block::default().borders(Borders::ALL).title(table_title(
+            app,
+            Tab::Sources,
+            visible.len(),
+            app.sources.len(),
+        )))
         .row_highlight_style(selected_style())
         .highlight_symbol("▶ ");
     frame.render_stateful_widget(table, area, &mut app.sources_state);
@@ -430,9 +484,10 @@ fn draw_profiles(frame: &mut Frame, app: &mut App, area: Rect) {
     ])
     .style(header_style());
 
-    let rows: Vec<Row> = app
-        .profiles
+    let visible = app.visible(Tab::Profiles);
+    let rows: Vec<Row> = visible
         .iter()
+        .filter_map(|&i| app.profiles.get(i))
         .map(|p| {
             let mut flags = String::new();
             if p.include_shorts {
@@ -470,11 +525,12 @@ fn draw_profiles(frame: &mut Frame, app: &mut App, area: Rect) {
     ];
     let table = Table::new(rows, widths)
         .header(header)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(format!(" Profiles ({}) ", app.profiles.len())),
-        )
+        .block(Block::default().borders(Borders::ALL).title(table_title(
+            app,
+            Tab::Profiles,
+            visible.len(),
+            app.profiles.len(),
+        )))
         .row_highlight_style(selected_style())
         .highlight_symbol("▶ ");
     frame.render_stateful_widget(table, area, &mut app.profiles_state);
@@ -516,23 +572,41 @@ fn draw_activity(frame: &mut Frame, app: &mut App, area: Rect) {
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(format!(" Activity ({}) ", app.activity.len())),
+                .title(activity_title(app)),
         )
         .row_highlight_style(selected_style())
         .highlight_symbol("▶ ");
     frame.render_stateful_widget(table, area, &mut app.activity_state);
 }
 
-fn pause_text(state: &crate::types::PauseStateResponse) -> (String, Style) {
-    if !state.paused {
-        return ("running".to_string(), Style::default().fg(Color::Green));
+/// ` Activity (loaded of total) `, the search sent to the server, and
+/// whether the next page is on its way.
+fn activity_title(app: &App) -> String {
+    let mut title = format!(
+        " Activity ({} of {}) ",
+        app.activity.len(),
+        app.activity_total
+    );
+    // The applied filter, not the prompt text, which is not sent until Enter.
+    if !app.activity_filter.is_empty() {
+        title.push('/');
+        title.push_str(&app.activity_filter.describe());
+        title.push(' ');
     }
-    let text = match state.until {
-        _ if state.indefinite => "paused (indefinite)".to_string(),
-        Some(until) => format!("paused until {}", fmt_time(until)),
-        None => "paused".to_string(),
-    };
-    (text, Style::default().fg(Color::Yellow))
+    if app.activity_paging == Paging::Loading {
+        title.push_str("loading more… ");
+    } else if app.activity_has_more() {
+        title.push_str("↓ for more ");
+    }
+    title
+}
+
+fn pause_style(state: &crate::types::PauseStateResponse) -> Style {
+    if state.paused {
+        Style::default().fg(Color::Yellow)
+    } else {
+        Style::default().fg(Color::Green)
+    }
 }
 
 fn draw_settings(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -546,20 +620,19 @@ fn draw_settings(frame: &mut Frame, app: &mut App, area: Rect) {
     };
 
     let header = Row::new(["SETTING", "VALUE", "SOURCE", "DESCRIPTION"]).style(header_style());
-    let rows: Vec<Row> = SETTINGS_ROWS
+    let visible = app.visible(Tab::Settings);
+    let rows: Vec<Row> = visible
         .iter()
+        .filter_map(|&i| SETTINGS_ROWS.get(i))
         .map(|row| match *row {
             SettingsRow::Pause(module) => {
-                let (label, state) = match module {
-                    PauseModule::Indexing => ("Indexing", &settings.pause.indexing),
-                    PauseModule::Downloads | PauseModule::All => {
-                        ("Downloads", &settings.pause.downloads)
-                    }
+                let state = match module {
+                    PauseModule::Indexing => &settings.pause.indexing,
+                    PauseModule::Downloads | PauseModule::All => &settings.pause.downloads,
                 };
-                let (text, style) = pause_text(state);
                 Row::new(vec![
-                    Cell::from(label),
-                    Cell::from(text).style(style),
+                    Cell::from(row.label()),
+                    Cell::from(pause_label(state)).style(pause_style(state)),
                     Cell::from("-").style(Style::default().fg(Color::DarkGray)),
                     Cell::from("Enter toggles pause / resume"),
                 ])
@@ -598,7 +671,12 @@ fn draw_settings(frame: &mut Frame, app: &mut App, area: Rect) {
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(" Settings ")
+                .title(table_title(
+                    app,
+                    Tab::Settings,
+                    visible.len(),
+                    SETTINGS_ROWS.len(),
+                ))
                 .title_bottom(
                     Line::from(Span::styled(
                         " database overrides env overrides default ",

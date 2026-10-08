@@ -4,16 +4,17 @@
 //! ([`App::handle_key`] returns the [`Action`] to execute, if any), async
 //! fetch results, and SSE progress events. Rendering lives in `ui.rs`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::widgets::TableState;
 
+use crate::search::{self, ActivityFilter};
 use crate::types::{
-    ActivityEventResponse, ActivityEventType, ActivitySeverity, ApiKeyScope, OutputPreset,
-    PauseModule, PauseSummaryResponse, ProfileResponse, ProgressEvent, Provenance, Quality,
-    ResolvedValue, SettingsResponse, SourceResponse, SourceType, SystemStatusResponse,
-    VideoResponse, VideoStatus, WhoAmIResponse,
+    ActivityEventResponse, ActivityEventType, ActivityListResponse, ActivitySeverity, ApiKeyScope,
+    OutputPreset, PauseModule, PauseStateResponse, PauseSummaryResponse, ProfileResponse,
+    ProgressEvent, Provenance, Quality, ResolvedValue, SettingsResponse, SourceResponse,
+    SourceType, SystemStatusResponse, VideoResponse, VideoStatus, WhoAmIResponse,
 };
 
 /// Top-level tabs, left to right.
@@ -222,6 +223,39 @@ pub enum SettingsRow {
     Pause(PauseModule),
 }
 
+impl SettingsRow {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Pause(PauseModule::Indexing) => "Indexing",
+            Self::Pause(PauseModule::Downloads | PauseModule::All) => "Downloads",
+            Self::Knob(knob) => knob.label(),
+        }
+    }
+
+    /// The VALUE column: the knob's value, or the module's pause state.
+    pub fn value(self, settings: &SettingsResponse) -> String {
+        match self {
+            Self::Pause(PauseModule::Indexing) => pause_label(&settings.pause.indexing),
+            Self::Pause(PauseModule::Downloads | PauseModule::All) => {
+                pause_label(&settings.pause.downloads)
+            }
+            Self::Knob(knob) => knob.format(knob.get(settings).value),
+        }
+    }
+}
+
+/// A module's pause state as shown in the settings table.
+pub fn pause_label(state: &PauseStateResponse) -> String {
+    if !state.paused {
+        return "running".to_string();
+    }
+    match state.until {
+        _ if state.indefinite => "paused (indefinite)".to_string(),
+        Some(until) => format!("paused until {}", fmt_time(until)),
+        None => "paused".to_string(),
+    }
+}
+
 pub const SETTINGS_ROWS: [SettingsRow; 8] = [
     SettingsRow::Pause(PauseModule::Indexing),
     SettingsRow::Pause(PauseModule::Downloads),
@@ -268,6 +302,8 @@ pub enum Action {
     UpdateSetting(Knob, Option<u64>),
     /// Refetch the current tab's data (filter changed, tab switched, F5).
     Refresh,
+    /// Fetch the next page of activity events below the loaded ones.
+    LoadMoreActivity,
 }
 
 impl Action {
@@ -283,7 +319,7 @@ impl Action {
             Self::DeleteDownload(_) | Self::DeleteSource(_) | Self::DeleteProfile(_) => {
                 ApiKeyScope::Delete
             }
-            Self::Refresh => ApiKeyScope::Read,
+            Self::Refresh | Self::LoadMoreActivity => ApiKeyScope::Read,
         }
     }
 }
@@ -330,6 +366,32 @@ pub struct StatusMessage {
 /// How long one-off feedback (action results, validation errors) stays up.
 pub const MESSAGE_TTL: std::time::Duration = std::time::Duration::from_secs(8);
 
+/// Who receives key presses outside popups.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum InputMode {
+    /// Navigation and row actions.
+    #[default]
+    Normal,
+    /// Typing into the current tab's `/` query.
+    Search,
+}
+
+/// State of the next Activity page.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Paging {
+    #[default]
+    Idle,
+    /// A next-page fetch is in flight.
+    Loading,
+    /// A page came back short: the oldest matching event is loaded. The
+    /// server's `total` may still be higher, counting events newer than
+    /// the first page, which the next refresh picks up.
+    End,
+}
+
+/// Activity events fetched per page.
+pub const ACTIVITY_PAGE: i64 = 50;
+
 /// Downloads-tab status filter, cycled with `f`.
 pub const STATUS_FILTER_CYCLE: [Option<VideoStatus>; 6] = [
     None,
@@ -357,7 +419,12 @@ pub struct App {
     pub downloads: Vec<VideoResponse>,
     pub sources: Vec<SourceResponse>,
     pub profiles: Vec<ProfileResponse>,
+    /// Loaded pages of activity events, newest first.
     pub activity: Vec<ActivityEventResponse>,
+    /// Events matching [`Self::activity_filter`] on the server.
+    pub activity_total: i64,
+    /// Whether the next activity page is loading, or there is none.
+    pub activity_paging: Paging,
     pub status: Option<SystemStatusResponse>,
     pub settings: Option<SettingsResponse>,
 
@@ -372,6 +439,14 @@ pub struct App {
 
     /// Current status filter for the downloads list.
     pub status_filter: Option<VideoStatus>,
+
+    /// `/` search query per tab, indexed by [`Tab::index`].
+    pub queries: [String; 5],
+    /// Whether the `/` prompt has the keyboard.
+    pub input: InputMode,
+    /// The Activity query as last sent to the server (applied on Enter,
+    /// since each change refetches).
+    pub activity_filter: ActivityFilter,
 
     /// The API key's scopes from `whoami`; `None` when the server is too old
     /// to report them.
@@ -408,31 +483,72 @@ impl App {
         }
     }
 
-    /// Row count of the current tab.
-    const fn current_len(&self) -> usize {
-        match self.tab {
-            Tab::Downloads => self.downloads.len(),
-            Tab::Sources => self.sources.len(),
-            Tab::Profiles => self.profiles.len(),
-            Tab::Activity => self.activity.len(),
-            Tab::Settings => {
-                if self.settings.is_some() {
-                    SETTINGS_ROWS.len()
-                } else {
-                    0
-                }
-            }
+    const fn state(&self, tab: Tab) -> &TableState {
+        match tab {
+            Tab::Downloads => &self.downloads_state,
+            Tab::Sources => &self.sources_state,
+            Tab::Profiles => &self.profiles_state,
+            Tab::Activity => &self.activity_state,
+            Tab::Settings => &self.settings_state,
         }
     }
 
-    const fn selected(&self) -> Option<usize> {
-        match self.tab {
-            Tab::Downloads => self.downloads_state.selected(),
-            Tab::Sources => self.sources_state.selected(),
-            Tab::Profiles => self.profiles_state.selected(),
-            Tab::Activity => self.activity_state.selected(),
-            Tab::Settings => self.settings_state.selected(),
+    /// The `/` query typed on `tab`.
+    pub fn query(&self, tab: Tab) -> &str {
+        self.queries.get(tab.index()).map_or("", String::as_str)
+    }
+
+    /// Indices of the rows `tab` shows: the loaded rows its query matches.
+    /// The table's selection indexes into this list, not the data vector.
+    pub fn visible(&self, tab: Tab) -> Vec<usize> {
+        let terms = search::terms(self.query(tab));
+        match tab {
+            Tab::Downloads => matching(&self.downloads, |v| {
+                search::matches(
+                    &terms,
+                    &[
+                        &v.title,
+                        v.source_display_name.as_deref().unwrap_or_default(),
+                    ],
+                    &[],
+                )
+            }),
+            Tab::Sources => matching(&self.sources, |s| {
+                let enabled = if s.enabled { "enabled" } else { "disabled" };
+                search::matches(
+                    &terms,
+                    &[
+                        &source_name(s),
+                        self.profile_name(&s.profile_id).unwrap_or_default(),
+                    ],
+                    &[enabled],
+                )
+            }),
+            Tab::Profiles => matching(&self.profiles, |p| search::matches(&terms, &[&p.name], &[])),
+            // Filtered by the server; see `activity_filter`.
+            Tab::Activity => (0..self.activity.len()).collect(),
+            Tab::Settings => match &self.settings {
+                Some(settings) => matching(&SETTINGS_ROWS, |row| {
+                    search::matches(&terms, &[row.label(), &row.value(settings)], &[])
+                }),
+                None => Vec::new(),
+            },
         }
+    }
+
+    /// Row count of the current tab.
+    fn current_len(&self) -> usize {
+        self.visible(self.tab).len()
+    }
+
+    const fn selected(&self) -> Option<usize> {
+        self.state(self.tab).selected()
+    }
+
+    /// Data index of the selected row of `tab`.
+    fn selected_index(&self, tab: Tab) -> Option<usize> {
+        let row = self.state(tab).selected()?;
+        self.visible(tab).get(row).copied()
     }
 
     fn select_wrapping(&mut self, delta: isize) {
@@ -466,7 +582,8 @@ impl App {
 
     pub fn set_downloads(&mut self, downloads: Vec<VideoResponse>) {
         self.downloads = downloads;
-        Self::clamp_selection(&mut self.downloads_state, self.downloads.len());
+        let len = self.visible(Tab::Downloads).len();
+        Self::clamp_selection(&mut self.downloads_state, len);
         // Drop progress entries for videos no longer listed (e.g. deleted).
         let ids: std::collections::HashSet<&str> =
             self.downloads.iter().map(|v| v.id.as_str()).collect();
@@ -475,22 +592,75 @@ impl App {
 
     pub fn set_sources(&mut self, sources: Vec<SourceResponse>) {
         self.sources = sources;
-        Self::clamp_selection(&mut self.sources_state, self.sources.len());
+        let len = self.visible(Tab::Sources).len();
+        Self::clamp_selection(&mut self.sources_state, len);
     }
 
     pub fn set_settings(&mut self, settings: SettingsResponse) {
         self.settings = Some(settings);
-        Self::clamp_selection(&mut self.settings_state, SETTINGS_ROWS.len());
+        let len = self.visible(Tab::Settings).len();
+        Self::clamp_selection(&mut self.settings_state, len);
     }
 
     pub fn set_profiles(&mut self, profiles: Vec<ProfileResponse>) {
         self.profiles = profiles;
-        Self::clamp_selection(&mut self.profiles_state, self.profiles.len());
+        let len = self.visible(Tab::Profiles).len();
+        Self::clamp_selection(&mut self.profiles_state, len);
+        // Sources match on profile names, so their visible rows may change.
+        let len = self.visible(Tab::Sources).len();
+        Self::clamp_selection(&mut self.sources_state, len);
     }
 
-    pub fn set_activity(&mut self, resp: crate::types::ActivityListResponse) {
-        self.activity = resp.events;
+    /// Apply a refresh of the first activity page fetched for `filter`.
+    /// Pages loaded below it are kept while they still line up with it, and
+    /// the selection stays on the same event. Returns `false` when the
+    /// search changed since the request, so the caller can refetch.
+    pub fn set_activity(&mut self, filter: &ActivityFilter, resp: ActivityListResponse) -> bool {
+        if *filter != self.activity_filter {
+            return false;
+        }
+        let selected_id = self.selected_activity().map(|e| e.id.clone());
+        self.activity_total = resp.total;
+        let (page_len, last) = (resp.events.len(), is_last_page(&resp));
+        self.activity = merge_first_page(resp.events, std::mem::take(&mut self.activity));
+        // Only the fresh page is loaded: it alone says whether more exist.
+        if self.activity.len() == page_len && self.activity_paging != Paging::Loading {
+            self.activity_paging = if last { Paging::End } else { Paging::Idle };
+        }
+        self.reselect_activity(selected_id.as_deref());
+        true
+    }
+
+    /// Append a next page fetched for `filter`, skipping events already
+    /// listed (new events shift the offsets between requests).
+    pub fn append_activity(&mut self, filter: &ActivityFilter, resp: ActivityListResponse) {
+        if *filter != self.activity_filter {
+            self.activity_paging = Paging::Idle;
+            return;
+        }
+        self.activity_total = resp.total;
+        self.activity_paging = if is_last_page(&resp) {
+            Paging::End
+        } else {
+            Paging::Idle
+        };
+        let seen: HashSet<String> = self.activity.iter().map(|e| e.id.clone()).collect();
+        self.activity
+            .extend(resp.events.into_iter().filter(|e| !seen.contains(&e.id)));
         Self::clamp_selection(&mut self.activity_state, self.activity.len());
+    }
+
+    fn reselect_activity(&mut self, id: Option<&str>) {
+        match id.and_then(|id| self.activity.iter().position(|e| e.id == id)) {
+            Some(i) => self.activity_state.select(Some(i)),
+            None => Self::clamp_selection(&mut self.activity_state, self.activity.len()),
+        }
+    }
+
+    /// Older activity events exist on the server than are loaded.
+    pub fn activity_has_more(&self) -> bool {
+        self.activity_paging != Paging::End
+            && i64::try_from(self.activity.len()).is_ok_and(|len| len < self.activity_total)
     }
 
     pub fn apply_progress(&mut self, event: ProgressEvent) {
@@ -561,6 +731,9 @@ impl App {
         if self.popup.is_some() {
             return self.handle_popup_key(key);
         }
+        if self.input == InputMode::Search {
+            return self.handle_search_key(key);
+        }
 
         match key.code {
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -584,14 +757,8 @@ impl App {
             KeyCode::Char('3') => self.switch_to(Tab::Profiles),
             KeyCode::Char('4') => self.switch_to(Tab::Activity),
             KeyCode::Char('5') => self.switch_to(Tab::Settings),
-            KeyCode::Char('j') | KeyCode::Down => {
-                self.select_wrapping(1);
-                None
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                self.select_wrapping(-1);
-                None
-            }
+            KeyCode::Char('j') | KeyCode::Down => self.move_down(),
+            KeyCode::Char('k') | KeyCode::Up => self.move_up(),
             KeyCode::Char('g') | KeyCode::Home => {
                 if self.current_len() > 0 {
                     self.current_state_mut().select(Some(0));
@@ -603,8 +770,13 @@ impl App {
                 if len > 0 {
                     self.current_state_mut().select(Some(len - 1));
                 }
+                self.load_more_at_bottom()
+            }
+            KeyCode::Char('/') => {
+                self.input = InputMode::Search;
                 None
             }
+            KeyCode::Esc => self.clear_search(),
             KeyCode::Char('p') => Some(Action::TogglePause),
             KeyCode::F(5) => Some(Action::Refresh),
             KeyCode::Enter if self.tab == Tab::Settings => self.activate_setting(),
@@ -614,6 +786,126 @@ impl App {
             }
             _ => self.handle_tab_key(key),
         }
+    }
+
+    fn move_down(&mut self) -> Option<Action> {
+        // At the bottom of the loaded activity, fetch the next page instead
+        // of wrapping to the top.
+        let at_bottom = self
+            .selected()
+            .is_some_and(|i| i.saturating_add(1) >= self.current_len());
+        if self.tab == Tab::Activity && at_bottom && self.activity_has_more() {
+            return self.load_more_at_bottom();
+        }
+        self.select_wrapping(1);
+        self.load_more_at_bottom()
+    }
+
+    fn move_up(&mut self) -> Option<Action> {
+        self.select_wrapping(-1);
+        // `k` on the first row wraps to the last one.
+        self.load_more_at_bottom()
+    }
+
+    /// Fetch the next activity page once the selection reaches the last
+    /// loaded event.
+    fn load_more_at_bottom(&mut self) -> Option<Action> {
+        let at_bottom = self
+            .selected()
+            .is_some_and(|i| i.saturating_add(1) >= self.current_len());
+        if self.tab != Tab::Activity
+            || !at_bottom
+            || self.activity_paging == Paging::Loading
+            || !self.activity_has_more()
+        {
+            return None;
+        }
+        self.activity_paging = Paging::Loading;
+        Some(Action::LoadMoreActivity)
+    }
+
+    // ------------------------------------------------------------------
+    // Search
+    // ------------------------------------------------------------------
+
+    /// Keys while the `/` prompt is open: text edits the current tab's
+    /// query, which filters live (Activity: on Enter); Enter keeps it, Esc
+    /// clears it, arrows still move the selection.
+    fn handle_search_key(&mut self, key: KeyEvent) -> Option<Action> {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        match key.code {
+            KeyCode::Char('c') if ctrl => {
+                self.should_quit = true;
+                None
+            }
+            KeyCode::Esc => self.clear_search(),
+            KeyCode::Enter => {
+                self.input = InputMode::Normal;
+                self.apply_activity_search()
+            }
+            KeyCode::Down => self.move_down(),
+            KeyCode::Up => self.move_up(),
+            KeyCode::Backspace => {
+                if self.query(self.tab).is_empty() {
+                    self.input = InputMode::Normal;
+                    return self.apply_activity_search();
+                }
+                self.edit_query(|q| {
+                    q.pop();
+                });
+                None
+            }
+            KeyCode::Char('u') if ctrl => {
+                self.edit_query(String::clear);
+                None
+            }
+            KeyCode::Char(c) if !ctrl => {
+                self.edit_query(|q| q.push(c));
+                None
+            }
+            _ => None,
+        }
+    }
+
+    /// Change the current tab's query and select its first match.
+    fn edit_query(&mut self, edit: impl FnOnce(&mut String)) {
+        if let Some(query) = self.queries.get_mut(self.tab.index()) {
+            edit(query);
+        }
+        // Activity keeps its rows until the query is sent on Enter.
+        if self.tab != Tab::Activity {
+            let first = (self.current_len() > 0).then_some(0);
+            self.current_state_mut().select(first);
+        }
+    }
+
+    /// Esc: close the prompt and drop the current tab's query.
+    fn clear_search(&mut self) -> Option<Action> {
+        self.input = InputMode::Normal;
+        let activity_filtered = self.tab == Tab::Activity && !self.activity_filter.is_empty();
+        if self.query(self.tab).is_empty() && !activity_filtered {
+            return None;
+        }
+        self.edit_query(String::clear);
+        self.apply_activity_search()
+    }
+
+    /// On Activity, send a changed query to the server: drop the loaded
+    /// pages and refetch from the first.
+    fn apply_activity_search(&mut self) -> Option<Action> {
+        if self.tab != Tab::Activity {
+            return None;
+        }
+        let filter = ActivityFilter::parse(self.query(Tab::Activity));
+        if filter == self.activity_filter {
+            return None;
+        }
+        self.activity_filter = filter;
+        self.activity.clear();
+        self.activity_total = 0;
+        self.activity_paging = Paging::Idle;
+        self.activity_state.select(None);
+        Some(Action::Refresh)
     }
 
     fn switch_to(&mut self, tab: Tab) -> Option<Action> {
@@ -725,9 +1017,7 @@ impl App {
     }
 
     pub fn selected_setting(&self) -> Option<SettingsRow> {
-        self.settings.as_ref()?;
-        self.settings_state
-            .selected()
+        self.selected_index(Tab::Settings)
             .and_then(|i| SETTINGS_ROWS.get(i))
             .copied()
     }
@@ -828,26 +1118,22 @@ impl App {
     }
 
     fn selected_download(&self) -> Option<&VideoResponse> {
-        self.downloads_state
-            .selected()
+        self.selected_index(Tab::Downloads)
             .and_then(|i| self.downloads.get(i))
     }
 
     fn selected_source(&self) -> Option<&SourceResponse> {
-        self.sources_state
-            .selected()
+        self.selected_index(Tab::Sources)
             .and_then(|i| self.sources.get(i))
     }
 
     fn selected_profile(&self) -> Option<&ProfileResponse> {
-        self.profiles_state
-            .selected()
+        self.selected_index(Tab::Profiles)
             .and_then(|i| self.profiles.get(i))
     }
 
     fn selected_activity(&self) -> Option<&ActivityEventResponse> {
-        self.activity_state
-            .selected()
+        self.selected_index(Tab::Activity)
             .and_then(|i| self.activity.get(i))
     }
 
@@ -865,6 +1151,42 @@ impl App {
         if let Some(popup) = popup {
             self.popup = Some(popup);
         }
+    }
+}
+
+/// Indices of the `items` that `keep` accepts.
+fn matching<T>(items: &[T], keep: impl Fn(&T) -> bool) -> Vec<usize> {
+    items
+        .iter()
+        .enumerate()
+        .filter(|(_, item)| keep(item))
+        .map(|(i, _)| i)
+        .collect()
+}
+
+/// A page shorter than requested: nothing older is left.
+fn is_last_page(resp: &ActivityListResponse) -> bool {
+    usize::try_from(ACTIVITY_PAGE).is_ok_and(|page| resp.events.len() < page)
+}
+
+/// Put a refreshed first page on top of the loaded events. The pages below
+/// it stay when the page's oldest event is among them: everything after
+/// that event is still in order. Otherwise more events arrived than a page
+/// holds (or the list was empty), and only the fresh page is kept.
+fn merge_first_page(
+    page: Vec<ActivityEventResponse>,
+    loaded: Vec<ActivityEventResponse>,
+) -> Vec<ActivityEventResponse> {
+    let overlap = page
+        .last()
+        .and_then(|oldest| loaded.iter().position(|e| e.id == oldest.id));
+    match overlap {
+        Some(pos) => {
+            let mut merged = page;
+            merged.extend(loaded.into_iter().skip(pos.saturating_add(1)));
+            merged
+        }
+        None => page,
     }
 }
 

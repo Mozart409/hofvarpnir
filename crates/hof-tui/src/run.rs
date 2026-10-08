@@ -18,9 +18,10 @@ use futures::StreamExt;
 use reqwest::StatusCode;
 use tokio::sync::mpsc;
 
-use crate::app::{Action, App};
+use crate::app::{ACTIVITY_PAGE, Action, App, Paging};
 use crate::client::{ApiClient, ApiClientError, ProgressMsg};
 use crate::config::{self, Config, ConfigError, PartialConfig};
+use crate::search::ActivityFilter;
 use crate::setup::{self, Setup, SetupOutcome};
 use crate::types::{
     ActivityListResponse, ProfileResponse, SettingsResponse, SourceResponse, SystemStatusResponse,
@@ -65,9 +66,6 @@ fn is_outage(error: &ApiClientError) -> bool {
     }
 }
 
-/// How many activity events to fetch per refresh.
-const ACTIVITY_LIMIT: i64 = 100;
-
 /// Messages from background tasks back to the event loop.
 #[derive(Debug)]
 enum LoopMsg {
@@ -75,7 +73,10 @@ enum LoopMsg {
     Downloads(Result<Vec<VideoResponse>, ApiClientError>),
     Sources(Result<Vec<SourceResponse>, ApiClientError>),
     Profiles(Result<Vec<ProfileResponse>, ApiClientError>),
-    Activity(Result<ActivityListResponse, ApiClientError>),
+    /// First activity page, for the filter it was fetched with.
+    Activity(ActivityFilter, Result<ActivityListResponse, ApiClientError>),
+    /// A next activity page, for the filter it was fetched with.
+    ActivityMore(ActivityFilter, Result<ActivityListResponse, ApiClientError>),
     Settings(Result<SettingsResponse, ApiClientError>),
     /// An action finished; the string is a short human-readable confirmation.
     Action(Result<String, ApiClientError>),
@@ -373,7 +374,7 @@ pub async fn execute_action(
                 )
             })
         }
-        Action::Refresh => Ok(String::new()),
+        Action::Refresh | Action::LoadMoreActivity => Ok(String::new()),
     }
 }
 
@@ -446,15 +447,14 @@ fn spawn_refresh(
             }
         }
         crate::app::Tab::Activity => {
+            // Only the first page: pages loaded below it are merged, not
+            // refetched (see `App::set_activity`).
             if in_flight.insert("activity") {
                 let (client, tx) = (client.clone(), tx.clone());
+                let filter = app.activity_filter.clone();
                 tokio::spawn(async move {
-                    drop(
-                        tx.send(LoopMsg::Activity(
-                            client.list_activity(ACTIVITY_LIMIT).await,
-                        ))
-                        .await,
-                    );
+                    let result = client.list_activity(ACTIVITY_PAGE, 0, &filter).await;
+                    drop(tx.send(LoopMsg::Activity(filter, result)).await);
                 });
             }
         }
@@ -570,6 +570,15 @@ fn dispatch_action(
         spawn_refresh(client, loop_tx, app, in_flight);
         return;
     }
+    if action == Action::LoadMoreActivity {
+        let (client, loop_tx) = (client.clone(), loop_tx.clone());
+        let (offset, filter) = (app.activity.len(), app.activity_filter.clone());
+        tokio::spawn(async move {
+            let result = client.list_activity(ACTIVITY_PAGE, offset, &filter).await;
+            drop(loop_tx.send(LoopMsg::ActivityMore(filter, result)).await);
+        });
+        return;
+    }
     if let Some(scope) = app.missing_scope(&action) {
         app.set_message(
             format!("this API key lacks the `{}` scope", scope.label()),
@@ -636,13 +645,26 @@ fn handle_loop_msg(
                 Err(e) => report_fetch_error(app, &e),
             }
         }
-        LoopMsg::Activity(result) => {
+        LoopMsg::Activity(filter, result) => {
             in_flight.remove("activity");
             match result {
-                Ok(activity) => app.set_activity(activity),
+                Ok(activity) => {
+                    // The search changed while this was in flight, and the
+                    // refetch for it was deduped against this request.
+                    if !app.set_activity(&filter, activity) {
+                        spawn_refresh(client, loop_tx, app, in_flight);
+                    }
+                }
                 Err(e) => report_fetch_error(app, &e),
             }
         }
+        LoopMsg::ActivityMore(filter, result) => match result {
+            Ok(activity) => app.append_activity(&filter, activity),
+            Err(e) => {
+                app.activity_paging = Paging::Idle;
+                report_fetch_error(app, &e);
+            }
+        },
         LoopMsg::Settings(result) => {
             in_flight.remove("settings");
             match result {

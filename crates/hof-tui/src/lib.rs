@@ -7,6 +7,7 @@ pub mod app;
 pub mod client;
 pub mod config;
 pub mod run;
+pub mod search;
 pub mod setup;
 pub mod sse;
 pub mod types;
