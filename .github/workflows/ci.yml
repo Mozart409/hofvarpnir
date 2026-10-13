@@ -36,7 +36,7 @@ jobs:
       - name: Build binary
         run: nix develop .#ci --command cargo build --release --bin hofvarpnir
       - name: Upload binary
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: binary-${{ matrix.target }}
           path: target/release/hofvarpnir
@@ -138,7 +138,7 @@ jobs:
           # substitute fails (e.g. a corrupted NAR on cache.nixos.org).
           nix build --impure --fallback .#containerFromBinary
       - name: Upload container image
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: container-${{ matrix.arch }}
           path: result
