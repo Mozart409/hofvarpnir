@@ -749,8 +749,8 @@ This repo uses [Conventional Commits](https://www.conventionalcommits.org/) (enf
   - Keep to a single line — bodies are the exception, not the rule.
 - **Types used:** `feat`, `fix`, `chore` (also `release` for version-bump commits).
 - **Scope** is short and contextual to what changed. Observed scopes include:
-  `deps`, `version`, `release`, `ci`, `tools`, `flake`, `container`, `oci`, `harbor`,
-  `just`, `logo`. For feature work, scope by area (e.g. `api-keys`, `activity`, `schedule`,
+  `deps`, `version`, `release`, `ci`, `tools`, `flake`, `container`, `oci`,
+  `just`, `logo` (`harbor` is gone with the decommissioned registry). For feature work, scope by area (e.g. `api-keys`, `activity`, `schedule`,
   `web`, `core`).
 - **Version bumps:** `chore(version): vX.Y.Z`.
 
