@@ -167,7 +167,7 @@ Deployed logs also show recurring, unrelated failures:
 ```
 tracing_loki: couldn't send logs to loki error_count=1 backoff_time=0ns
 error=HTTP status server error (500 Internal Server Error) for url
-(http://otel.homelab.local:3100/loki/api/v1/push)
+(http://otel.homelab.internal:3100/loki/api/v1/push)
 ```
 
 Server-side 500 from the Loki push endpoint — logs are silently dropped. Does

@@ -12,9 +12,9 @@ production-auth follow-up that plan deferred
 Export works. `hosts/jellyfin/hofvarpnir.nix` in the homelab repo runs:
 
 ```
-OTEL_EXPORTER_OTLP_ENDPOINT = "http://otel.homelab.local:4317"   # plain gRPC
+OTEL_EXPORTER_OTLP_ENDPOINT = "http://otel.homelab.internal:4317"   # plain gRPC
 OTEL_EXPORTER_OTLP_PROTOCOL = "grpc"
-LOKI_URL                    = "http://otel.homelab.local:3100"   # plain HTTP
+LOKI_URL                    = "http://otel.homelab.internal:3100"   # plain HTTP
 ```
 
 Spans land in Tempo, logs land in Loki. Both go **in clear text to raw ports**.
@@ -34,7 +34,7 @@ That is this todo. Two app-side changes retire both rules.
 
 ## Change 1 — send `Authorization`
 
-The receiving end is already built: Caddy on `otel.homelab.local` has
+The receiving end is already built: Caddy on `otel.homelab.internal` has
 
 ```
 handle /v1/* { reverse_proxy @push localhost:4318; respond 401 }
@@ -57,7 +57,7 @@ percent-encoded values).
 
 ## Change 2 — trust step-ca
 
-Once the endpoint is `https://otel.homelab.local`, TLS is a step-ca leaf, and
+Once the endpoint is `https://otel.homelab.internal`, TLS is a step-ca leaf, and
 the current build almost certainly rejects it. This is a known, repeated
 homelab failure mode — reqwest built with rustls verifies against **bundled
 webpki-roots** and ignores the system trust store, so `SSL_CERT_FILE` and the
@@ -78,7 +78,7 @@ for webpki roots is enough to change behaviour.
 Through Caddy, use `http/protobuf`:
 
 ```
-OTEL_EXPORTER_OTLP_ENDPOINT = "https://otel.homelab.local"
+OTEL_EXPORTER_OTLP_ENDPOINT = "https://otel.homelab.internal"
 OTEL_EXPORTER_OTLP_PROTOCOL = "http/protobuf"
 OTEL_EXPORTER_OTLP_HEADERS  = "Authorization=Bearer%20<push-token>"
 ```
@@ -148,7 +148,7 @@ Before the fix, all three scenarios failed as predicted below.
   `OTEL_EXPORTER_OTLP_PROTOCOL`. Requests hit exactly `/v1/traces` and
   `/loki/api/v1/push`.
 - **Change 4 — not needed.** The premise was stale: otel's Prometheus already
-  has a `hofvarpnir` scrape job (`https://hofvarpnir.homelab.local/metrics`),
+  has a `hofvarpnir` scrape job (`https://hofvarpnir.homelab.internal/metrics`),
   and on 2026-09-26 it reported `up=1` with 170 series.
 - **Change 5 — done, nothing to change.** The provider sets no sampler, so the
   SDK's env-derived default applies; ratio 0 exports no spans.
@@ -172,10 +172,10 @@ Reference env:
 `hosts/jellyfin/hofvarpnir.nix`, token via the host's secret mechanism:
 
 ```
-OTEL_EXPORTER_OTLP_ENDPOINT = "https://otel.homelab.local"
+OTEL_EXPORTER_OTLP_ENDPOINT = "https://otel.homelab.internal"
 OTEL_EXPORTER_OTLP_PROTOCOL = "http/protobuf"
 OTEL_EXPORTER_OTLP_HEADERS  = "Authorization=Bearer%20<push-token>"
-LOKI_URL                    = "https://otel.homelab.local"
+LOKI_URL                    = "https://otel.homelab.internal"
 LOKI_HEADERS                = "Authorization=Bearer%20<push-token>"
 SSL_CERT_FILE               = "/etc/ssl/certs/ca-certificates.crt"  # must contain the step-ca root
 OTEL_TRACES_SAMPLER         = "parentbased_traceidratio"            # optional
