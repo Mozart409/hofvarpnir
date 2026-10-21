@@ -2,6 +2,23 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.17.0 - 2026-10-21
+#### Features
+- (**tui**) add / search and paged activity tab - (a73fdd4) - Amadeus Mader
+#### Bug Fixes
+- (**hofvarpnir**) bump yanked yoke-derive to 0.8.4 - (4325db3) - Amadeus Mader
+- (**hofvarpnir**) bump zip to 9.0.5 in the vendored yt-dlp for RUSTSEC-2026-0367..0369 - (37b9aa0) - Amadeus Mader
+- (**hofvarpnir**) bump rustls, rustls-webpki and webpki roots for RUSTSEC-2026-0346..0349 and 0381..0383 - (41c235f) - Amadeus Mader
+- (**hofvarpnir**) speed up activity inserts and listing - (769e24a) - Amadeus Mader
+#### Documentation
+- (**hofvarpnir**) use homelab.internal for otel endpoints - (b97e73b) - Amadeus Mader
+- (**rust**) drop harbor from the agents guide and adr records - (4659a8a) - Amadeus Mader
+#### Miscellaneous Chores
+- (**deps**) pin subflake locks to the root flake.lock revisions - (539f9e5) - Amadeus Mader
+- (**rust**) remove the harbor push scripts - (c7e8eb3) - Amadeus Mader
+
+- - -
+
 ## v0.16.0 - 2026-10-04
 #### Features
 - (**tui**) load api url and token from config file - (5c35e57) - Amadeus Mader
