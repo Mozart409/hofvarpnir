@@ -148,6 +148,12 @@ must be re-applied on every re-sync or `hof-core` will not compile.
 The fork also carries a nested `crates/media-seek` member, which Cargo resolves
 through the same patch entry.
 
+### 3. Dependency bumps
+
+| Dependency | Upstream 2.7.2 | Fork | Why |
+| --- | --- | --- | --- |
+| `zip` | `8.5.1` | `9.0.5` | RUSTSEC-2026-0367, -0368, -0369 (SUID bits and symlink escapes on extract), fixed only in 9.x. `src/utils/fs.rs::extract_zip` builds unchanged against 9.x. Keep it at least this new on a re-sync. |
+
 ## Mechanical fallout, and the conventions to follow
 
 Making a field `Option` breaks call sites across the crate. Follow the existing
