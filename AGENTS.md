@@ -716,7 +716,7 @@ Required for development:
 
 Optional (observability):
 
-- `OTEL_EXPORTER_OTLP_ENDPOINT` - OTLP endpoint for trace export; enables export when set. Base URL only: `http/protobuf` appends `/v1/traces` itself (e.g. `https://otel.homelab.local`, or `http://localhost:4317` for gRPC)
+- `OTEL_EXPORTER_OTLP_ENDPOINT` - OTLP endpoint for trace export; enables export when set. Base URL only: `http/protobuf` appends `/v1/traces` itself (e.g. `https://otel.homelab.internal`, or `http://localhost:4317` for gRPC)
 - `OTEL_EXPORTER_OTLP_PROTOCOL` - `grpc` (default) or `http/protobuf`. Use `http/protobuf` behind a reverse proxy.
 - `OTEL_EXPORTER_OTLP_HEADERS` / `OTEL_EXPORTER_OTLP_TRACES_HEADERS` - comma-separated `key=value`, values percent-encoded (`Authorization=Bearer%20<token>`); the traces variant wins. Read by the SDK on the HTTP path.
 - `OTEL_TRACES_SAMPLER` / `OTEL_TRACES_SAMPLER_ARG` - e.g. `parentbased_traceidratio` + `0.1`. Honored because the provider never sets a sampler; keep it that way.
