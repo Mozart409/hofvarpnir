@@ -194,6 +194,7 @@ pub async fn verify_media(path: &Path, expect: &Expectations) -> Result<(), Veri
 }
 
 /// Read duration and stream types via `ffprobe`.
+#[instrument(skip_all)]
 async fn run_probe(path: &Path) -> Result<Probe, VerificationError> {
     let mut command = Command::new("ffprobe");
     command
@@ -240,6 +241,7 @@ async fn run_probe(path: &Path) -> Result<Probe, VerificationError> {
 }
 
 /// Read the whole file through `ffmpeg` without decoding, checking framing.
+#[instrument(skip_all)]
 async fn run_demux(path: &Path) -> Result<(), VerificationError> {
     let mut command = Command::new("ffmpeg");
     command
@@ -317,6 +319,7 @@ async fn scan_for_zero_runs(path: &Path) -> Result<(), VerificationError> {
 }
 
 /// Run one verification tool under [`VERIFY_TIMEOUT`].
+#[instrument(skip(command))]
 async fn run_tool(
     mut command: Command,
     binary: &'static str,

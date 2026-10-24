@@ -3,6 +3,7 @@
 
 use chrono::{DateTime, Utc};
 use sqlx::PgPool;
+use tracing::instrument;
 
 use super::DbError;
 
@@ -28,6 +29,7 @@ pub struct RuntimeSettingsRow {
 /// # Errors
 ///
 /// Returns an error if the database operation fails.
+#[instrument(skip(pool), fields(otel.kind = "client", db.system = "postgresql"))]
 pub async fn get_runtime_settings(pool: &PgPool) -> Result<RuntimeSettingsRow, DbError> {
     let row = sqlx::query!(
         r#"
@@ -91,6 +93,7 @@ pub struct RuntimeSettingsPatch {
 /// # Errors
 ///
 /// Returns an error if the database operation fails.
+#[instrument(skip(pool, patch), fields(otel.kind = "client", db.system = "postgresql"))]
 pub async fn patch_runtime_settings(
     pool: &PgPool,
     patch: &RuntimeSettingsPatch,

@@ -10,7 +10,7 @@ use openidconnect::{
     core::{CoreAuthenticationFlow, CoreClient, CoreProviderMetadata},
     reqwest as oidc_reqwest,
 };
-use tracing::{debug, info};
+use tracing::{debug, info, instrument};
 use url::Url;
 
 use super::config::OidcConfig;
@@ -41,6 +41,7 @@ impl OidcClient {
     ///
     /// Returns `OidcError::DiscoveryFailed` if the provider cannot be reached
     /// or returns invalid metadata.
+    #[instrument(skip_all, fields(otel.kind = "client", issuer = %config.issuer_url))]
     pub async fn discover(config: OidcConfig) -> Result<Self, OidcError> {
         let issuer_url = IssuerUrl::new(config.issuer_url.clone())
             .map_err(|e| OidcError::DiscoveryFailed(format!("Invalid issuer URL: {e}")))?;
@@ -129,6 +130,7 @@ impl OidcClient {
     /// # Errors
     ///
     /// Returns an error if token exchange fails or the ID token is invalid.
+    #[instrument(skip_all, fields(otel.kind = "client"))]
     pub async fn exchange_code(
         &self,
         code: &str,

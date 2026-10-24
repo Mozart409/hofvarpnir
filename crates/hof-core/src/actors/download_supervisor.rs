@@ -1074,6 +1074,7 @@ impl DownloadSupervisor {
     /// outside the spawned task) to match the call sites, which `.await`
     /// this as a natural extension of the `Message<EnqueueDownload>` handler
     /// it was extracted from.
+    #[instrument(skip_all, fields(video_id = %msg.video.id))]
     #[allow(clippy::unused_async)]
     async fn dispatch_download(
         &mut self,

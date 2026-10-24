@@ -131,7 +131,7 @@ use serde::Serialize;
 use sqlx::PgPool;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, instrument, warn};
 use utoipa::ToSchema;
 
 use crate::actors::cleanup::{CleanupActor, CleanupActorArgs};
@@ -614,11 +614,13 @@ impl Message<RestartActor> for RootSupervisor {
     /// own actor's mailbox loop without it.
     type Reply = DelegatedReply<Result<Result<(), String>, Infallible>>;
 
+    #[instrument(skip_all, fields(trace_id = tracing::field::Empty, actor = msg.which.as_str()))]
     async fn handle(
         &mut self,
         msg: RestartActor,
         ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
+        crate::telemetry::record_trace_id();
         let which = msg.which;
         let root_ref = ctx.actor_ref().clone();
 
@@ -723,6 +725,7 @@ async fn report_restart<A: Actor>(
 /// the two outcomes are correctly told apart by whether `is_alive()` ever
 /// reads `true` *after* [`KILL_SETTLE_DELAY`] has given kameo a real chance
 /// to reach one outcome or the other — not by watching for a transition.
+#[instrument(skip_all, fields(actor = which.as_str()))]
 async fn restart_and_wait<A: Actor>(
     child_ref: &ActorRef<A>,
     which: SupervisedActor,

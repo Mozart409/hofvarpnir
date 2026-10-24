@@ -494,6 +494,7 @@ impl SourceIndexerActor {
     }
 
     /// Create a new video entry after fetching full metadata.
+    #[instrument(skip_all, fields(url = %entry.url))]
     async fn create_new_video(&self, entry: &PlaylistEntry, _platform: &str) -> EntryOutcome {
         // Fetch full metadata to get published date and other info
         let metadata = match self.ytdlp.fetch_video_metadata(&entry.url).await {
@@ -560,6 +561,7 @@ impl SourceIndexerActor {
     }
 
     /// Create a video from full metadata.
+    #[instrument(skip_all, fields(platform_video_id = %metadata.platform_video_id))]
     async fn create_video_from_metadata(&self, metadata: &VideoMetadata) -> EntryOutcome {
         let create_video = CreateVideo {
             platform: &metadata.platform,
@@ -585,6 +587,7 @@ impl SourceIndexerActor {
     }
 
     /// Update channel metadata from indexing results.
+    #[instrument(skip_all)]
     async fn update_channel_metadata(
         &mut self,
         index_result: &crate::ytdlp::IndexResult,
@@ -613,6 +616,7 @@ impl SourceIndexerActor {
     }
 
     /// Generate Jellyfin metadata files if not already generated.
+    #[instrument(skip_all)]
     async fn generate_jellyfin_metadata_if_needed(&self) {
         // Check if we should generate metadata
         let output_dir = self.source.completed_dir(&self.profile.output_dir);
@@ -655,6 +659,7 @@ impl SourceIndexerActor {
     }
 
     /// Enqueue a video for download.
+    #[instrument(skip_all, fields(video_id = %video_id))]
     async fn enqueue_video(&self, video_id: Ulid) {
         // Get the video from database
         let video = match db::get_video(&self.pool, video_id).await {

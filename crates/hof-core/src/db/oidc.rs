@@ -1,6 +1,7 @@
 //! Database operations for OIDC identities.
 
 use sqlx::PgPool;
+use tracing::instrument;
 use ulid::Ulid;
 
 use crate::oidc::{OidcIdentity, OidcIdentityRow};
@@ -12,6 +13,7 @@ use crate::oidc::{OidcIdentity, OidcIdentityRow};
 /// # Errors
 ///
 /// Returns an error if the database query fails.
+#[instrument(skip(pool), fields(otel.kind = "client", db.system = "postgresql"))]
 pub async fn get_oidc_identity_by_subject(
     pool: &PgPool,
     issuer: &str,
@@ -39,6 +41,7 @@ pub async fn get_oidc_identity_by_subject(
 /// # Errors
 ///
 /// Returns an error if the insert fails (e.g., duplicate issuer/subject).
+#[instrument(skip(pool, email, name, picture), fields(otel.kind = "client", db.system = "postgresql"))]
 pub async fn create_oidc_identity(
     pool: &PgPool,
     user_id: Ulid,
@@ -75,6 +78,7 @@ pub async fn create_oidc_identity(
 /// # Errors
 ///
 /// Returns an error if the database query fails.
+#[instrument(skip(pool), fields(otel.kind = "client", db.system = "postgresql"))]
 pub async fn get_oidc_identities_for_user(
     pool: &PgPool,
     user_id: Ulid,
@@ -106,6 +110,7 @@ pub async fn get_oidc_identities_for_user(
 /// # Errors
 ///
 /// Returns an error if the database query fails.
+#[instrument(skip(pool), fields(otel.kind = "client", db.system = "postgresql"))]
 pub async fn delete_oidc_identity(
     pool: &PgPool,
     id: Ulid,
@@ -132,6 +137,7 @@ pub async fn delete_oidc_identity(
 /// # Errors
 ///
 /// Returns an error if the database query fails.
+#[instrument(skip(pool, email, name, picture), fields(otel.kind = "client", db.system = "postgresql"))]
 pub async fn update_oidc_identity_claims(
     pool: &PgPool,
     id: Ulid,
@@ -161,6 +167,7 @@ pub async fn update_oidc_identity_claims(
 /// # Errors
 ///
 /// Returns an error if the database query fails.
+#[instrument(skip(pool), fields(otel.kind = "client", db.system = "postgresql"))]
 pub async fn user_has_oidc_identity(pool: &PgPool, user_id: Ulid) -> Result<bool, sqlx::Error> {
     let count: (i64,) = sqlx::query_as(
         r"

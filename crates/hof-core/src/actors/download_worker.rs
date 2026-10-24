@@ -280,6 +280,7 @@ impl DownloadWorker {
     }
 
     /// Handle a successful download.
+    #[instrument(skip_all, fields(video_id = %self.video.id))]
     async fn handle_success(&self, result: DownloadResult) -> DownloadOutcome {
         let video_id = self.video.id;
 
@@ -357,6 +358,7 @@ impl DownloadWorker {
     /// existing output file and decides a segment is complete by probing only
     /// its first and last bytes, so leaving a file with an interior hole in
     /// place would let every retry resume onto the same damage.
+    #[instrument(skip_all, fields(video_id = %self.video.id))]
     async fn reject_if_unverified(&self, result: &DownloadResult) -> Option<DownloadOutcome> {
         let expectations = Expectations {
             expect_video: !matches!(self.config.quality, Quality::AudioOnly),
@@ -404,6 +406,7 @@ impl DownloadWorker {
         self.config.output_dir.join(COMPLETED_DIR_NAME)
     }
 
+    #[instrument(skip_all, fields(source = %source_path.display()))]
     async fn move_to_completed(
         source_path: &std::path::Path,
         incomplete_dir: &std::path::Path,

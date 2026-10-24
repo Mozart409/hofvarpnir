@@ -479,6 +479,7 @@ impl CleanupActor {
     }
 
     /// Clean a single video (delete file and update database).
+    #[instrument(skip_all, fields(video_id = %video.id))]
     async fn clean_video(&self, video: &Video) -> color_eyre::Result<i64> {
         let bytes = video.file_size_bytes.unwrap_or(0);
 
@@ -527,6 +528,7 @@ impl CleanupActor {
     }
 
     /// Calculate total storage usage for a profile.
+    #[instrument(skip_all, fields(profile_id = %profile_id))]
     async fn calculate_profile_usage(&self, profile_id: Ulid) -> color_eyre::Result<i64> {
         // Get all sources for this profile
         let sources = db::list_sources_for_profile(&self.pool, profile_id).await?;
@@ -609,6 +611,7 @@ impl CleanupActor {
     /// collected across all of the profile's sources first: a video shared
     /// between an excluded and a non-excluded source must still be protected,
     /// which a per-source skip would miss depending on iteration order.
+    #[instrument(skip_all, fields(profile_id = %profile_id))]
     async fn get_profile_videos_by_age(&self, profile_id: Ulid) -> color_eyre::Result<Vec<Video>> {
         let sources = db::list_sources_for_profile(&self.pool, profile_id).await?;
 

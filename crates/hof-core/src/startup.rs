@@ -15,7 +15,7 @@ use chrono::{DateTime, Utc};
 use color_eyre::eyre::{Result, WrapErr};
 use sqlx::PgPool;
 use tokio::sync::mpsc;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, instrument, warn};
 
 use crate::actors::cleanup::{CleanupActor, CleanupPartFiles};
 use crate::actors::download_supervisor::{
@@ -239,6 +239,7 @@ pub async fn initialize(pool: PgPool, config: &Config) -> Result<ActorSystem> {
 }
 
 /// Perform crash recovery operations.
+#[instrument(skip_all)]
 async fn recover_from_crash(pool: &PgPool, default_output_dir: &Path) -> Result<()> {
     info!("Starting crash recovery");
 
@@ -262,6 +263,7 @@ async fn recover_from_crash(pool: &PgPool, default_output_dir: &Path) -> Result<
 }
 
 /// Clean up orphaned .part files from a directory.
+#[instrument(skip_all, fields(dir = %dir.display()))]
 async fn clean_part_files(dir: &Path) -> Result<()> {
     if !dir.exists() {
         debug!(dir = %dir.display(), "Output directory does not exist");
@@ -550,6 +552,7 @@ async fn collect_output_directories(pool: &PgPool) -> Result<Vec<PathBuf>> {
 ///
 /// This function currently does not return errors, but returns `Result`
 /// for future compatibility. Actor stop errors are logged but not propagated.
+#[instrument(skip_all)]
 pub async fn shutdown(system: ActorSystem) -> Result<()> {
     info!("Shutting down actor system");
 
@@ -653,6 +656,7 @@ impl QuiescenceCounts {
 /// probe (`live_quiescence_counts`) asks two live `ActorRef`s, which needs a
 /// running actor system and a yt-dlp binary that a `start_paused` test
 /// cannot provide.
+#[instrument(skip_all)]
 async fn poll_until_quiescent<F, Fut>(mut probe: F, drain: DrainToken, deadline: DateTime<Utc>)
 where
     F: FnMut() -> Fut,

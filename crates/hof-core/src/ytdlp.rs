@@ -869,6 +869,7 @@ fn extract_og_image_url(html: &str) -> Option<String> {
     None
 }
 
+#[instrument(fields(otel.kind = "client"))]
 async fn fetch_youtube_channel_thumbnail(channel_url: &str) -> Option<String> {
     let response = reqwest::get(channel_url).await.ok()?;
     if !response.status().is_success() {
