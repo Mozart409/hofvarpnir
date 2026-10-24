@@ -2,6 +2,13 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.18.0 - 2026-10-24
+#### Features
+- (**hofvarpnir**) add sliding web session timeout via SESSION_TIMEOUT_HOURS - (a2fc1c7) - Amadeus Mader
+- (**deps**) upgrade flake - (d46ea63) - Amadeus Mader
+
+- - -
+
 ## v0.17.0 - 2026-10-21
 #### Features
 - (**tui**) add / search and paged activity tab - (a73fdd4) - Amadeus Mader
