@@ -189,19 +189,14 @@ impl FromRequestParts<AppState> for Auth {
             return Err(ApiError::ApiKeyExpired);
         }
 
-        // Spawn best-effort background task to update last_used
-        let pool = state.pool.clone();
-        let key_id = api_key.id;
+        // Best-effort: queued and written in batches, never awaited here.
         let ip = parts
             .headers
             .get("x-forwarded-for")
             .or_else(|| parts.headers.get("x-real-ip"))
             .and_then(|v| v.to_str().ok())
             .map(ToString::to_string);
-
-        tokio::spawn(async move {
-            db::touch_api_key_last_used(&pool, key_id, ip.as_deref()).await;
-        });
+        state.api_key_touches.record(api_key.id, ip);
 
         Ok(Self::ApiKey {
             user_id: api_key.user_id,

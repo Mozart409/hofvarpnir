@@ -1,7 +1,11 @@
 //! API key database operations.
 
+use std::collections::HashMap;
+use std::time::Duration;
+
 use chrono::{DateTime, Utc};
 use sqlx::postgres::PgPool;
+use tokio::sync::mpsc;
 use tracing::instrument;
 use ulid::Ulid;
 
@@ -126,26 +130,150 @@ pub async fn get_api_key(pool: &PgPool, key_id: Ulid) -> Result<Option<ApiKey>, 
     row.map(ApiKey::try_from).transpose().map_err(DbError::from)
 }
 
-/// Update the last-used timestamp and IP for an API key.
+/// Touches buffered before a batch is written.
+pub const TOUCH_BATCH_SIZE: usize = 5;
+
+/// Longest the first touch in a batch waits before the batch is written, so a
+/// partial batch is never held indefinitely.
+pub const TOUCH_BATCH_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Touches queued behind a slow write before new ones are dropped. A touch is
+/// best-effort bookkeeping and must never back-pressure a request.
+const TOUCH_QUEUE_CAPACITY: usize = 1024;
+
+/// One authenticated use of an API key.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApiKeyTouch {
+    pub key_id: Ulid,
+    pub used_at: DateTime<Utc>,
+    pub ip: Option<String>,
+}
+
+/// Handle for recording API key use.
 ///
-/// This is a best-effort operation - failures are logged but don't propagate.
-/// Intended to be spawned as a background task.
-#[instrument(skip(pool), fields(otel.kind = "client", db.system = "postgresql"))]
-pub async fn touch_api_key_last_used(pool: &PgPool, key_id: Ulid, ip: Option<&str>) {
+/// Every API-key request used to spawn its own `UPDATE api_keys`. Parallel
+/// requests with one key then queued on that row's lock, and in production
+/// those single-row updates took 1-7s each, almost all of it waiting. A
+/// background task now collects touches and writes them in one statement once
+/// [`TOUCH_BATCH_SIZE`] have arrived or [`TOUCH_BATCH_TIMEOUT`] has passed
+/// since the first, whichever comes first.
+///
+/// Cloning is cheap; all clones feed the same task. When the last clone is
+/// dropped the task writes what it holds and exits. Touches still buffered
+/// when the process is killed are lost, which is acceptable for a last-used
+/// timestamp.
+#[derive(Debug, Clone)]
+pub struct ApiKeyTouches {
+    tx: mpsc::Sender<ApiKeyTouch>,
+}
+
+impl ApiKeyTouches {
+    /// Spawn the batching task on the current tokio runtime.
+    ///
+    /// # Panics
+    ///
+    /// Panics if called outside a tokio runtime (`tokio::spawn`).
+    #[must_use]
+    pub fn spawn(pool: PgPool) -> Self {
+        let (tx, rx) = mpsc::channel(TOUCH_QUEUE_CAPACITY);
+        tokio::spawn(run_touch_batches(
+            rx,
+            TOUCH_BATCH_SIZE,
+            TOUCH_BATCH_TIMEOUT,
+            move |batch| {
+                let pool = pool.clone();
+                async move { write_api_key_touches(&pool, batch).await }
+            },
+        ));
+        Self { tx }
+    }
+
+    /// Queue a touch for `key_id`. Never waits: a full queue drops the touch.
+    pub fn record(&self, key_id: Ulid, ip: Option<String>) {
+        let touch = ApiKeyTouch {
+            key_id,
+            used_at: Utc::now(),
+            ip,
+        };
+        if let Err(e) = self.tx.try_send(touch) {
+            tracing::warn!(error = %e, key_id = %key_id, "Dropped API key last_used touch");
+        }
+    }
+}
+
+/// Collect touches from `rx` and hand each batch to `write`.
+///
+/// A batch is written as soon as it holds `batch_size` touches, or once
+/// `timeout` has passed since its first touch arrived. The deadline is fixed
+/// at the first touch, so a steady trickle cannot keep a batch open. Returns
+/// after writing the last partial batch once every sender is gone.
+async fn run_touch_batches<F, Fut>(
+    mut rx: mpsc::Receiver<ApiKeyTouch>,
+    batch_size: usize,
+    timeout: Duration,
+    mut write: F,
+) where
+    F: FnMut(Vec<ApiKeyTouch>) -> Fut,
+    Fut: Future<Output = ()>,
+{
+    while let Some(first) = rx.recv().await {
+        let deadline = tokio::time::Instant::now() + timeout;
+        let mut batch = Vec::with_capacity(batch_size);
+        batch.push(first);
+
+        while batch.len() < batch_size {
+            match tokio::time::timeout_at(deadline, rx.recv()).await {
+                Ok(Some(touch)) => batch.push(touch),
+                // Deadline passed, or all senders dropped.
+                Ok(None) | Err(_) => break,
+            }
+        }
+
+        write(batch).await;
+    }
+}
+
+/// Write a batch of touches in one statement.
+///
+/// A key touched more than once in the batch is written once, with its latest
+/// use. Best-effort: a failure is logged and the batch is dropped.
+#[instrument(skip_all, fields(otel.kind = "client", db.system = "postgresql", batch_size = batch.len()))]
+async fn write_api_key_touches(pool: &PgPool, batch: Vec<ApiKeyTouch>) {
+    let mut latest: HashMap<Ulid, ApiKeyTouch> = HashMap::with_capacity(batch.len());
+    for touch in batch {
+        match latest.get(&touch.key_id) {
+            Some(seen) if seen.used_at >= touch.used_at => {}
+            _ => {
+                latest.insert(touch.key_id, touch);
+            }
+        }
+    }
+
+    let mut ids = Vec::with_capacity(latest.len());
+    let mut used_at = Vec::with_capacity(latest.len());
+    let mut ips = Vec::with_capacity(latest.len());
+    for touch in latest.into_values() {
+        ids.push(touch.key_id.to_string());
+        used_at.push(touch.used_at);
+        ips.push(touch.ip);
+    }
+
     let result = sqlx::query(
         r"
-        UPDATE api_keys
-        SET last_used_at = now(), last_used_ip = $2
-        WHERE id = $1
+        UPDATE api_keys AS k
+        SET last_used_at = t.used_at, last_used_ip = t.ip
+        FROM UNNEST($1::text [], $2::timestamptz [], $3::text []) AS t (id, used_at, ip)
+        WHERE k.id = t.id
         ",
     )
-    .bind(key_id.to_string())
-    .bind(ip)
+    .bind(&ids)
+    .bind(&used_at)
+    .bind(&ips)
     .execute(pool)
     .await;
 
     if let Err(e) = result {
-        tracing::warn!(error = %e, key_id = %key_id, "Failed to update API key last_used");
+        tracing::warn!(error = %e, keys = ids.len(), "Failed to update API key last_used");
     }
 }
 
@@ -284,5 +412,191 @@ async fn log_api_key_event(
 
     if let Err(e) = result {
         tracing::warn!(error = %e, api_key_id = %api_key_id, "Failed to log API key event");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use super::*;
+    use crate::db::{CreateUser, create_user};
+
+    // Ways the batcher could fail, each pinned by a test below:
+    // 1. A partial batch (4 touches) is never written.
+    // 2. A full batch waits for the timeout instead of being written at once.
+    // 3. Touches past a full batch are lost instead of starting the next one.
+    // 4. The deadline restarts on every touch, so a trickle holds a batch open.
+    // 5. Shutdown drops the touches still buffered.
+    // 6. A key touched twice in one batch keeps an older use, or the write
+    //    touches keys that were not in the batch.
+
+    type Written = Arc<Mutex<Vec<(Duration, Vec<ApiKeyTouch>)>>>;
+
+    fn touch(n: u8) -> ApiKeyTouch {
+        ApiKeyTouch {
+            key_id: Ulid::from_parts(0, u128::from(n)),
+            used_at: Utc::now(),
+            ip: Some(format!("10.0.0.{n}")),
+        }
+    }
+
+    /// Start the batcher with the production size and timeout; each write is
+    /// recorded with the (paused) time it happened at.
+    fn start() -> (
+        mpsc::Sender<ApiKeyTouch>,
+        Written,
+        tokio::task::JoinHandle<()>,
+    ) {
+        let (tx, rx) = mpsc::channel(TOUCH_QUEUE_CAPACITY);
+        let written: Written = Arc::default();
+        let sink = Arc::clone(&written);
+        let started = tokio::time::Instant::now();
+        let task = tokio::spawn(run_touch_batches(
+            rx,
+            TOUCH_BATCH_SIZE,
+            TOUCH_BATCH_TIMEOUT,
+            move |batch| {
+                sink.lock().unwrap().push((started.elapsed(), batch));
+                async {}
+            },
+        ));
+        (tx, written, task)
+    }
+
+    fn sizes(written: &Written) -> Vec<(Duration, usize)> {
+        written
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(at, batch)| (*at, batch.len()))
+            .collect()
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn partial_batch_is_written_after_the_timeout() {
+        let (tx, written, _task) = start();
+        for n in 0..4 {
+            tx.send(touch(n)).await.unwrap();
+        }
+
+        tokio::time::sleep(Duration::from_millis(9_999)).await;
+        assert!(sizes(&written).is_empty(), "written before the timeout");
+
+        tokio::time::sleep(Duration::from_millis(2)).await;
+        assert_eq!(sizes(&written), vec![(TOUCH_BATCH_TIMEOUT, 4)]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn full_batch_is_written_at_once_and_the_rest_starts_a_new_one() {
+        let (tx, written, _task) = start();
+        for n in 0..7 {
+            tx.send(touch(n)).await.unwrap();
+        }
+
+        tokio::task::yield_now().await;
+        tokio::time::sleep(Duration::from_millis(1)).await;
+        assert_eq!(sizes(&written), vec![(Duration::ZERO, 5)]);
+
+        tokio::time::sleep(TOUCH_BATCH_TIMEOUT).await;
+        assert_eq!(
+            sizes(&written),
+            vec![(Duration::ZERO, 5), (TOUCH_BATCH_TIMEOUT, 2)]
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn deadline_is_fixed_at_the_first_touch() {
+        let (tx, written, _task) = start();
+        // One touch every 3s: 0, 3, 6, 9 fall inside the first batch's 10s.
+        for n in 0..4 {
+            tx.send(touch(n)).await.unwrap();
+            tokio::time::sleep(Duration::from_secs(3)).await;
+        }
+        // Now at 12s; the first batch closed at 10s with four touches.
+        assert_eq!(sizes(&written), vec![(TOUCH_BATCH_TIMEOUT, 4)]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn shutdown_writes_the_buffered_touches() {
+        let (tx, written, task) = start();
+        for n in 0..3 {
+            tx.send(touch(n)).await.unwrap();
+        }
+        drop(tx);
+
+        task.await.unwrap();
+        assert_eq!(sizes(&written), vec![(Duration::ZERO, 3)]);
+    }
+
+    #[sqlx::test]
+    async fn write_keeps_the_latest_use_per_key(pool: PgPool) {
+        let user = create_user(
+            &pool,
+            CreateUser {
+                email: "touch@example.com",
+                name: "Touch User",
+                password_hash: None,
+            },
+        )
+        .await
+        .unwrap();
+        let mut keys = Vec::new();
+        for name in ["a", "b", "untouched"] {
+            let key = create_api_key(
+                &pool,
+                CreateApiKey {
+                    user_id: user.id,
+                    name,
+                    prefix: name,
+                    key_hash: &format!("hash-{name}"),
+                    scopes: &[ApiKeyScope::Read],
+                    expires_at: None,
+                },
+            )
+            .await
+            .unwrap();
+            keys.push(key.id);
+        }
+
+        let t0 = Utc::now() - chrono::Duration::minutes(5);
+        let use_of = |key_id, minutes, ip: &str| ApiKeyTouch {
+            key_id,
+            used_at: t0 + chrono::Duration::minutes(minutes),
+            ip: Some(ip.to_string()),
+        };
+        // Key a's latest use arrives first, so arrival order must not win.
+        write_api_key_touches(
+            &pool,
+            vec![
+                use_of(keys[0], 3, "10.0.0.3"),
+                use_of(keys[1], 1, "10.0.0.9"),
+                use_of(keys[0], 2, "10.0.0.2"),
+            ],
+        )
+        .await;
+
+        let last_used = |key_id: Ulid| {
+            let pool = pool.clone();
+            async move {
+                sqlx::query_as::<_, (Option<DateTime<Utc>>, Option<String>)>(
+                    "SELECT last_used_at, last_used_ip FROM api_keys WHERE id = $1",
+                )
+                .bind(key_id.to_string())
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+            }
+        };
+
+        let (a_at, a_ip) = last_used(keys[0]).await;
+        assert_eq!(a_ip.as_deref(), Some("10.0.0.3"));
+        assert_eq!(
+            a_at.map(|t| t.timestamp_micros()),
+            Some((t0 + chrono::Duration::minutes(3)).timestamp_micros())
+        );
+        let (_, b_ip) = last_used(keys[1]).await;
+        assert_eq!(b_ip.as_deref(), Some("10.0.0.9"));
+        assert_eq!(last_used(keys[2]).await, (None, None));
     }
 }

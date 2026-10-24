@@ -21,7 +21,7 @@ use hof_core::actors::download_supervisor::DownloadSupervisor;
 use hof_core::actors::jellyfin_metadata::JellyfinMetadataActor;
 use hof_core::actors::root_supervisor::RootSupervisor;
 use hof_core::actors::scheduler::SchedulerActor;
-use hof_core::db::ActivityBroadcaster;
+use hof_core::db::{ActivityBroadcaster, ApiKeyTouches};
 use hof_core::domain::system::SystemIssue;
 use hof_core::domain::video::DownloadProgress;
 use hof_core::liveness::LivenessFlag;
@@ -126,10 +126,15 @@ pub struct AppState {
     /// `GET /api/health/live` directly, never via an actor `ask`: a probe
     /// must not be able to hang behind a mailbox.
     pub liveness: LivenessFlag,
+    /// Batches API key `last_used_at` writes (see [`ApiKeyTouches`]).
+    pub api_key_touches: ApiKeyTouches,
 }
 
 impl AppState {
     /// Create a new `AppState`.
+    ///
+    /// Spawns the API key touch batcher, so it must run inside a tokio
+    /// runtime.
     #[must_use]
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -148,6 +153,7 @@ impl AppState {
         drain: DrainToken,
         liveness: LivenessFlag,
     ) -> Self {
+        let api_key_touches = ApiKeyTouches::spawn(pool.clone());
         Self {
             pool,
             root_supervisor,
@@ -163,6 +169,7 @@ impl AppState {
             runtime_config,
             drain,
             liveness,
+            api_key_touches,
         }
     }
 }
