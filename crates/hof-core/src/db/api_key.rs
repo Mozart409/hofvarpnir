@@ -236,8 +236,18 @@ async fn run_touch_batches<F, Fut>(
 /// Write a batch of touches in one statement.
 ///
 /// A key touched more than once in the batch is written once, with its latest
-/// use. Best-effort: a failure is logged and the batch is dropped.
-#[instrument(skip_all, fields(otel.kind = "client", db.system = "postgresql", batch_size = batch.len()))]
+/// use. Best-effort: a failure is logged, marks the span as an error, and the
+/// batch is dropped.
+#[instrument(
+    skip_all,
+    fields(
+        otel.kind = "client",
+        db.system = "postgresql",
+        batch_size = batch.len(),
+        keys = tracing::field::Empty,
+        otel.status_code = tracing::field::Empty,
+    )
+)]
 async fn write_api_key_touches(pool: &PgPool, batch: Vec<ApiKeyTouch>) {
     let mut latest: HashMap<Ulid, ApiKeyTouch> = HashMap::with_capacity(batch.len());
     for touch in batch {
@@ -257,6 +267,8 @@ async fn write_api_key_touches(pool: &PgPool, batch: Vec<ApiKeyTouch>) {
         used_at.push(touch.used_at);
         ips.push(touch.ip);
     }
+    let span = tracing::Span::current();
+    span.record("keys", ids.len());
 
     let result = sqlx::query(
         r"
@@ -273,6 +285,7 @@ async fn write_api_key_touches(pool: &PgPool, batch: Vec<ApiKeyTouch>) {
     .await;
 
     if let Err(e) = result {
+        span.record("otel.status_code", "ERROR");
         tracing::warn!(error = %e, keys = ids.len(), "Failed to update API key last_used");
     }
 }
