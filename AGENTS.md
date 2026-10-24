@@ -739,6 +739,10 @@ Optional (OIDC Authentication):
 - `OIDC_LOGOUT_REDIRECT` - Enable RP-initiated logout (default: `false`)
 - `OIDC_DISCOVERY_TIMEOUT` - OIDC discovery HTTP timeout in seconds (default: `30`)
 
+Optional (web session):
+
+- `SESSION_TIMEOUT_HOURS` - Sliding lifetime of the web UI session, in hours. An active session is refreshed on every request (`always_save`, one `sessions` write per request); an idle one lapses after this many hours. Unset, `0` or a non-integer keeps the `tower-sessions` default: a browser-session cookie (logged out on browser close) whose server-side row lives two weeks past the last write.
+
 ## Commit Conventions
 
 This repo uses [Conventional Commits](https://www.conventionalcommits.org/) (enforced via

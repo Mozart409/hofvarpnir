@@ -263,6 +263,25 @@ value indicating which layer it actually resolved from. Every other
 variable above is read once at startup with no runtime override. See
 [Runtime control](#runtime-control) below.
 
+### Web session
+
+The web UI session is a `tower-sessions` cookie backed by a row in the
+`sessions` table. Its lifetime is a sliding window — the session is saved and
+its expiry recomputed on every request — sized by:
+
+| Variable                | Description                         | Default                    |
+| ----------------------- | ----------------------------------- | -------------------------- |
+| `SESSION_TIMEOUT_HOURS` | Sliding web-session lifetime, hours | - (browser session cookie) |
+
+When `SESSION_TIMEOUT_HOURS` is unset — or set to `0` or a non-integer — the
+`tower-sessions` default applies: a browser-session cookie (no `Max-Age`, so
+closing the browser logs you out) whose server-side row lives two weeks past
+its last write. A positive value makes the cookie persistent (`Max-Age` =
+`SESSION_TIMEOUT_HOURS`) and extends the server-side row to match, so an
+active session is refreshed on every request and an idle one lapses after that
+many hours. The price is one write to the `sessions` table per request from a
+logged-in browser.
+
 ### OIDC Authentication (Optional)
 
 To enable OIDC single sign-on, set these environment variables:

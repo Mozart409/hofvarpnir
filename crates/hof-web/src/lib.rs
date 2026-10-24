@@ -12,9 +12,9 @@ use color_eyre::eyre::eyre;
 use hof_api::AppState;
 use hof_core::oidc::{OidcClient, OidcConfig};
 use sqlx::PgPool;
-use tower_sessions::SessionManagerLayer;
+use tower_sessions::{Expiry, SessionManagerLayer};
 use tower_sessions_sqlx_store::PostgresStore;
-use tracing::info;
+use tracing::{info, warn};
 
 /// Build the web frontend router with Maud + htmx routes.
 ///
@@ -58,6 +58,17 @@ pub async fn init_oidc() -> Result<Option<Arc<OidcClient>>> {
 ///
 /// Uses `PostgreSQL` as the session store.
 ///
+/// The session lifetime is a sliding window sized by `SESSION_TIMEOUT_HOURS`:
+/// an active session is extended on every request and an idle one lapses after
+/// that many hours. This needs `always_save`: tower-sessions otherwise only
+/// saves (and so only re-stamps the expiry of) a session whose data changed,
+/// which here is little more than login, so the window would stay anchored
+/// there. The cost is one store write per request carrying a non-empty
+/// session. When the variable is unset, empty, unparseable or zero the
+/// `tower-sessions` default applies instead — a browser-session cookie (no
+/// `Max-Age`, so closing the browser logs you out) whose server-side record
+/// lives two weeks past its last write.
+///
 /// # Errors
 ///
 /// Returns an error if the session store cannot be configured or migrated.
@@ -71,8 +82,43 @@ pub async fn session_layer(pool: PgPool) -> Result<SessionManagerLayer<PostgresS
     // Run session store migrations (creates table if not exists)
     session_store.migrate().await?;
 
-    Ok(SessionManagerLayer::new(session_store)
+    let layer = SessionManagerLayer::new(session_store)
         .with_secure(false) // Set to true in production with HTTPS
         .with_http_only(true)
-        .with_same_site(tower_sessions::cookie::SameSite::Lax))
+        .with_same_site(tower_sessions::cookie::SameSite::Lax);
+
+    Ok(match session_timeout_hours() {
+        Some(hours) => layer
+            .with_expiry(Expiry::OnInactivity(time::Duration::hours(i64::from(
+                hours,
+            ))))
+            .with_always_save(true),
+        None => layer,
+    })
+}
+
+/// Session lifetime from `SESSION_TIMEOUT_HOURS`, in hours.
+///
+/// `None` means "keep the `tower-sessions` default": the variable is absent,
+/// blank, zero or not a `u32` hour count. A bad value is logged and ignored
+/// rather than fatal — the web tier should still start, and falling back to a
+/// browser-session cookie is a far smaller problem than a server that will not.
+///
+/// `u32` (not `u64`) is deliberate: `time::Duration::hours` panics above
+/// `i64::MAX / 3600`, and every `u32` hour count is far below that.
+fn session_timeout_hours() -> Option<u32> {
+    let raw = std::env::var("SESSION_TIMEOUT_HOURS").ok()?;
+    match raw.trim().parse::<u32>() {
+        Ok(0) => {
+            warn!(
+                "SESSION_TIMEOUT_HOURS=0 is not a session lifetime; keeping the tower-sessions default"
+            );
+            None
+        }
+        Ok(hours) => Some(hours),
+        Err(e) => {
+            warn!(value = %raw, error = %e, "invalid SESSION_TIMEOUT_HOURS; keeping the tower-sessions default");
+            None
+        }
+    }
 }
