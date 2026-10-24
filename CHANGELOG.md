@@ -2,6 +2,11 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.18.1 - 2026-10-24
+#### Performance Improvements
+- (**hofvarpnir**) batch api key last_used writes - (201c6e9) - Amadeus Mader
+
+- - -
 ## v0.18.0 - 2026-10-24
 #### Features
 - (**hofvarpnir**) add sliding web session timeout via SESSION_TIMEOUT_HOURS - (a2fc1c7) - Amadeus Mader
