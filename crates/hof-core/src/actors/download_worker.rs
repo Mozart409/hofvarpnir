@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use chrono::Datelike;
+use chrono::{DateTime, Datelike, Utc};
 use kameo::Reply;
 use kameo::prelude::*;
 use metrics::histogram;
@@ -23,6 +23,7 @@ use ulid::Ulid;
 use crate::db;
 use crate::domain::profile::{OutputPreset, Quality};
 use crate::domain::video::{DownloadProgress, Video};
+use crate::quality_gate::QualityGate;
 use crate::verify::{self, Expectations};
 use crate::ytdlp::{
     DownloadRequest, DownloadResult, FallbackStage, FormatPolicy, OutputTemplateData, YtdlpClient,
@@ -51,6 +52,9 @@ pub struct DownloadConfig {
     pub source_name: String,
     /// Verify the downloaded file before publishing it to `completed/`.
     pub verify_downloads: bool,
+    /// Hours after publication the video may wait for `quality`; 0 disables
+    /// the [`crate::quality_gate`].
+    pub quality_wait_hours: u32,
 }
 
 /// Result of a download operation, sent back to the supervisor.
@@ -72,6 +76,13 @@ pub enum DownloadOutcome {
         fallback_stage: Option<FallbackStage>,
         is_rate_limited: bool,
     },
+    /// The quality gate held the video; nothing was downloaded.
+    Deferred {
+        video_id: Ulid,
+        available_height: Option<i32>,
+        target_height: i32,
+        recheck_at: DateTime<Utc>,
+    },
 }
 
 impl DownloadOutcome {
@@ -79,7 +90,9 @@ impl DownloadOutcome {
     #[must_use]
     pub const fn video_id(&self) -> Ulid {
         match self {
-            Self::Success { video_id, .. } | Self::Failed { video_id, .. } => *video_id,
+            Self::Success { video_id, .. }
+            | Self::Failed { video_id, .. }
+            | Self::Deferred { video_id, .. } => *video_id,
         }
     }
 }
@@ -211,6 +224,7 @@ impl DownloadWorker {
         // Execute download with timeout
         let incomplete_dir = self.incomplete_dir();
         let format_policy = FormatPolicy::from(&self.config.quality, &self.config.output_preset);
+        let quality_gate = self.quality_gate().await;
         let download_future = self.ytdlp.download_video_to_dir(DownloadRequest {
             url: &url,
             output_dir: &incomplete_dir,
@@ -219,6 +233,7 @@ impl DownloadWorker {
             format_policy: &format_policy,
             video_id,
             progress_tx: Some(self.progress_tx.clone()),
+            quality_gate,
         });
 
         // Boxed because the download future carries the full request plus the
@@ -242,6 +257,42 @@ impl DownloadWorker {
                 }
             }
         }
+    }
+
+    /// Resolve the quality gate for this video, or `None` when it is off.
+    ///
+    /// A failed history lookup only loses the source-ceiling shortcut; the
+    /// deadline still bounds the wait, so it is logged rather than failing the
+    /// download.
+    async fn quality_gate(&self) -> Option<QualityGate> {
+        if self.config.quality_wait_hours == 0 {
+            return None;
+        }
+        match db::video_skips_quality_gate(&self.pool, self.video.id).await {
+            Ok(true) => {
+                info!(video_id = %self.video.id, "Quality gate skipped: Download now requested");
+                return None;
+            }
+            Ok(false) => {}
+            Err(e) => {
+                warn!(error = %e, "Failed to read the Download now flag; keeping the quality gate on");
+            }
+        }
+        let source_best_height =
+            match db::source_best_delivered_height(&self.pool, self.config.source_id).await {
+                Ok(height) => height,
+                Err(e) => {
+                    warn!(error = %e, "Failed to read source quality history for the quality gate");
+                    None
+                }
+            };
+        QualityGate::new(
+            &self.config.quality,
+            self.config.quality_wait_hours,
+            self.video.published_at,
+            self.video.created_at,
+            source_best_height,
+        )
     }
 
     /// Build the video URL from platform and video ID.
@@ -490,6 +541,19 @@ impl DownloadWorker {
     /// Handle a download error.
     fn handle_error(&self, error: &YtdlpError) -> DownloadOutcome {
         let video_id = self.video.id;
+        if let YtdlpError::QualityPending {
+            available_height,
+            target_height,
+            recheck_at,
+        } = *error
+        {
+            return DownloadOutcome::Deferred {
+                video_id,
+                available_height,
+                target_height,
+                recheck_at,
+            };
+        }
         let is_rate_limited = matches!(error, YtdlpError::RateLimited(_));
         let error_str = error.to_string();
         let error_code = error.machine_code();

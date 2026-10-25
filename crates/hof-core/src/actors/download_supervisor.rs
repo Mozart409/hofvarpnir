@@ -70,6 +70,7 @@ use crate::domain::activity::{ActivityEventType, ActivitySeverity};
 use crate::domain::profile::{OutputPreset, Profile, Quality};
 use crate::domain::source::Source;
 use crate::domain::video::{DownloadProgress, Video, VideoStatus};
+use crate::quality_gate::effective_wait_hours;
 use crate::runtime_config::{DrainToken, EffectiveSettings};
 use crate::ytdlp::FallbackStage;
 use crate::ytdlp::YtdlpClient;
@@ -225,6 +226,8 @@ pub struct DownloadSupervisor {
     download_timeout: Duration,
     /// Whether downloaded files are verified before publishing.
     verify_downloads: bool,
+    /// Global `QUALITY_WAIT_HOURS`, used when a profile sets none.
+    quality_wait_hours: u32,
     /// Maximum download attempts before marking as permanently failed.
     max_attempts: u32,
     /// Broadcaster for real-time SSE notifications.
@@ -304,6 +307,7 @@ impl Actor for DownloadSupervisor {
             progress_tx: args.progress_tx,
             download_timeout: args.config.timeout,
             verify_downloads: args.config.verify_downloads,
+            quality_wait_hours: args.config.quality_wait_hours,
             max_attempts: args.config.max_attempts,
             broadcaster: args.broadcaster,
             drain: args.drain,
@@ -685,6 +689,26 @@ impl Message<ReportOutcome> for DownloadSupervisor {
                     is_rate_limited,
                 };
                 self.handle_failure(video_id, failure).await;
+            }
+            DownloadOutcome::Deferred {
+                video_id,
+                available_height,
+                target_height,
+                recheck_at,
+            } => {
+                counter!(crate::metrics::DOWNLOADS_DEFERRED_TOTAL).increment(1);
+                let available =
+                    available_height.map_or_else(|| "no".to_string(), |h| format!("{h}p"));
+                let note = format!(
+                    "Waiting for {target_height}p: {available} available, recheck at {}",
+                    recheck_at.format("%Y-%m-%d %H:%M UTC")
+                );
+                info!(video_id = %video_id, recheck_at = %recheck_at, "{note}");
+                if let Err(e) =
+                    db::defer_video_for_quality(&self.pool, video_id, recheck_at, &note).await
+                {
+                    error!(error = %e, video_id = %video_id, "Failed to defer video for quality");
+                }
             }
         }
     }
@@ -1113,8 +1137,8 @@ impl DownloadSupervisor {
                 debug!(status = ?msg.video.status, "Video not eligible for download");
                 return Ok(());
             }
-            VideoStatus::Failed => {
-                // Check if it's time to retry
+            VideoStatus::Failed | VideoStatus::AwaitingQuality => {
+                // Check if it's time to retry (or to recheck the formats)
                 if let Some(next_retry) = msg.video.next_retry
                     && next_retry > Utc::now()
                 {
@@ -1148,6 +1172,7 @@ impl DownloadSupervisor {
         let progress_tx = self.progress_tx.clone();
         let download_timeout = self.download_timeout;
         let verify_downloads = self.verify_downloads;
+        let global_wait = self.quality_wait_hours;
         let base_delay = self.config_rx.borrow().rate_limit_delay.value;
         let rate_limit_delay = self.effective_rate_limit_delay(base_delay);
         let last_download_start = self.last_download_start;
@@ -1186,6 +1211,7 @@ impl DownloadSupervisor {
             let config = DownloadConfig {
                 timeout: download_timeout,
                 verify_downloads,
+                quality_wait_hours: effective_wait_hours(profile.quality_wait_hours, global_wait),
                 quality: profile.quality.clone(),
                 output_preset: profile.output_preset.clone(),
                 output_dir: PathBuf::from(&profile.output_dir),
@@ -1646,6 +1672,7 @@ mod tests {
             progress_tx,
             download_timeout: Duration::from_hours(1),
             verify_downloads: false,
+            quality_wait_hours: 0,
             max_attempts: 3,
             broadcaster: ActivityBroadcaster::new(),
             drain: DrainToken::new(),
@@ -1872,6 +1899,7 @@ mod tests {
             rate_limit_delay: Duration::from_millis(50),
             ytdlp_path: PathBuf::from("yt-dlp"),
             verify_downloads: false,
+            quality_wait_hours: 0,
         };
 
         DownloadSupervisor::spawn(DownloadSupervisorArgs {
@@ -1914,6 +1942,7 @@ mod tests {
                 include_shorts: false,
                 storage_quota_bytes: 100_000_000_000,
                 retention_days: None,
+                quality_wait_hours: None,
             },
         )
         .await

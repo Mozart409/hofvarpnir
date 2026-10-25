@@ -39,6 +39,8 @@ pub const HTTP_REQUEST_DURATION_SECONDS: &str = "http_request_duration_seconds";
 pub const DOWNLOADS_ACTIVE: &str = "downloads_active";
 pub const DOWNLOADS_COMPLETED_TOTAL: &str = "downloads_completed_total";
 pub const DOWNLOADS_FAILED_TOTAL: &str = "downloads_failed_total";
+/// Downloads the quality gate held for a later recheck.
+pub const DOWNLOADS_DEFERRED_TOTAL: &str = "downloads_deferred_total";
 pub const DOWNLOAD_DURATION_SECONDS: &str = "download_duration_seconds";
 
 // Source indexing

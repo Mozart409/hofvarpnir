@@ -3,6 +3,8 @@
 //! Note: These tests focus on the API layer, not actual download functionality.
 //! Download operations like retry and cancel interact with actors.
 
+use std::time::Duration;
+
 use axum::http::StatusCode;
 use hof_core::db;
 use sqlx::PgPool;
@@ -812,4 +814,208 @@ async fn search_does_not_duplicate_multi_source_videos(pool: PgPool) {
         .expect("search videos");
 
     assert_eq!(found.len(), 1, "multi-source video must appear once");
+}
+
+/// A held (`awaiting_quality`) video cannot be manually retried, but can be
+/// cancelled, which leaves it `failed` with the recheck cleared.
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn awaiting_quality_video_rejects_retry_and_accepts_cancel(pool: PgPool) {
+    use hof_core::domain::video::VideoStatus;
+
+    let app = TestApp::new(pool.clone()).await;
+    let user = UserBuilder::new().build(&pool).await;
+    let key = ApiKeyBuilder::new(user.id).read_write().build(&pool).await;
+    let profile = ProfileBuilder::new(user.id).build(&pool).await;
+    let source = SourceBuilder::new(profile.id).build(&pool).await;
+
+    let held = seed_video_with_status(&pool, source.id, "held_video", "pending").await;
+    db::mark_video_downloading(&pool, held).await.expect("mark");
+    db::defer_video_for_quality(
+        &pool,
+        held,
+        chrono::Utc::now() + chrono::Duration::hours(6),
+        "Only 480p available",
+    )
+    .await
+    .expect("defer");
+
+    // Single retry: rejected, row untouched.
+    app.server
+        .post(&format!("/api/v1/downloads/{held}/retry"))
+        .add_header("Authorization", key.bearer())
+        .await
+        .assert_status(StatusCode::BAD_REQUEST);
+    let still = db::get_video(&pool, held).await.expect("get");
+    assert_eq!(still.status, VideoStatus::AwaitingQuality);
+    assert_eq!(still.last_error.as_deref(), Some("Only 480p available"));
+
+    // Cancel is allowed and drops the recheck.
+    app.server
+        .post("/api/v1/downloads/bulk")
+        .add_header("Authorization", key.bearer())
+        .json(&serde_json::json!({"action": "cancel", "video_ids": [held.to_string()]}))
+        .await
+        .assert_status(StatusCode::ACCEPTED);
+    let cancelled = db::get_video(&pool, held).await.expect("get");
+    assert_eq!(cancelled.status, VideoStatus::Failed);
+    assert!(cancelled.next_retry.is_none());
+}
+
+/// "Download now" releases a held video to pending with the quality gate
+/// skipped; any other status is rejected and the row is left untouched.
+///
+/// Downloads are paused (written to `runtime_settings` before the app loads
+/// it), so the supervisor leaves the enqueued video pending and the row the
+/// handler wrote is exactly what we read back.
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn download_now_releases_held_video_and_rejects_others(pool: PgPool) {
+    use hof_core::domain::video::VideoStatus;
+
+    pause_downloads(&pool).await;
+    let app = TestApp::new(pool.clone()).await;
+    let user = UserBuilder::new().build(&pool).await;
+    let key = ApiKeyBuilder::new(user.id).read_write().build(&pool).await;
+    let profile = ProfileBuilder::new(user.id).build(&pool).await;
+    let source = SourceBuilder::new(profile.id).build(&pool).await;
+
+    let held = seed_awaiting_quality_video(&pool, source.id, "now_held").await;
+    let failed = seed_video_with_status(&pool, source.id, "now_failed", "failed").await;
+    let attempts_before = db::get_video(&pool, held).await.expect("get").attempts;
+
+    // A failed video is not eligible and stays as it was.
+    app.server
+        .post(&format!("/api/v1/downloads/{failed}/download-now"))
+        .add_header("Authorization", key.bearer())
+        .await
+        .assert_status(StatusCode::BAD_REQUEST);
+    let untouched = db::get_video(&pool, failed).await.expect("get");
+    assert_eq!(untouched.status, VideoStatus::Failed);
+    assert!(
+        !db::video_skips_quality_gate(&pool, failed)
+            .await
+            .expect("flag")
+    );
+
+    // The held video is released with the gate skipped.
+    let response = app
+        .server
+        .post(&format!("/api/v1/downloads/{held}/download-now"))
+        .add_header("Authorization", key.bearer())
+        .await;
+    assert!(
+        response.status_code().is_success(),
+        "download-now should succeed, got {}",
+        response.status_code()
+    );
+    let released = db::get_video(&pool, held).await.expect("get");
+    assert_eq!(released.status, VideoStatus::Pending);
+    assert!(released.next_retry.is_none());
+    assert!(released.last_error.is_none());
+    assert_eq!(released.attempts, attempts_before);
+    assert!(
+        db::video_skips_quality_gate(&pool, held)
+            .await
+            .expect("flag")
+    );
+}
+
+/// With downloads live, "Download now" hands the released video to a worker:
+/// it is claimed (`attempts` incremented) and never goes back to
+/// `awaiting_quality`, even though the profile's gate is on (24h wait for a
+/// 2160p target on a video created just now, which would otherwise hold it).
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn download_now_hands_released_video_to_a_worker(pool: PgPool) {
+    use hof_core::domain::{profile::Quality, video::VideoStatus};
+
+    let app = TestApp::new(pool.clone()).await;
+    let user = UserBuilder::new().build(&pool).await;
+    let key = ApiKeyBuilder::new(user.id).read_write().build(&pool).await;
+    let profile = ProfileBuilder::new(user.id)
+        .quality(Quality::Q2160p)
+        .build(&pool)
+        .await;
+    sqlx::query("UPDATE profiles SET quality_wait_hours = 24 WHERE id = $1")
+        .bind(profile.id.to_string())
+        .execute(&pool)
+        .await
+        .expect("enable the profile quality gate");
+    let source = SourceBuilder::new(profile.id).build(&pool).await;
+    let held = seed_awaiting_quality_video(&pool, source.id, "now_live").await;
+
+    app.server
+        .post(&format!("/api/v1/downloads/{held}/download-now"))
+        .add_header("Authorization", key.bearer())
+        .await
+        .assert_status_success();
+
+    // mark_video_downloading increments `attempts`, so this is the moment a
+    // worker has claimed the video.
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let claimed = loop {
+        let video = db::get_video(&pool, held).await.expect("get");
+        if video.attempts >= 1 {
+            break video;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no worker claimed the released video within 10s; status {:?}",
+            video.status
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    assert_ne!(claimed.status, VideoStatus::AwaitingQuality);
+
+    // Best effort: let the attempt settle (the test has no network, so it
+    // fails at the metadata fetch) and check the gate never held it again.
+    let settle_deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let mut settled = claimed;
+    while settled.status == VideoStatus::Downloading && std::time::Instant::now() < settle_deadline
+    {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        settled = db::get_video(&pool, held).await.expect("get");
+    }
+    assert_ne!(settled.status, VideoStatus::AwaitingQuality);
+    assert!(
+        !settled
+            .last_error
+            .as_deref()
+            .is_some_and(|e| e.starts_with("Waiting for")),
+        "the gate must not defer a released video, got {:?}",
+        settled.last_error
+    );
+    assert!(
+        db::video_skips_quality_gate(&pool, held)
+            .await
+            .expect("flag")
+    );
+}
+
+/// Seed a pending video, then defer it for quality so it is `awaiting_quality`.
+async fn seed_awaiting_quality_video(pool: &PgPool, source_id: Ulid, platform_id: &str) -> Ulid {
+    let id = seed_video_with_status(pool, source_id, platform_id, "pending").await;
+    db::mark_video_downloading(pool, id).await.expect("mark");
+    db::defer_video_for_quality(
+        pool,
+        id,
+        chrono::Utc::now() + chrono::Duration::hours(6),
+        "Waiting for 2160p: 480p available",
+    )
+    .await
+    .expect("defer");
+    id
+}
+
+/// Pause downloads in `runtime_settings` before the app is built, so the
+/// supervisor starts with the pause already in its settings snapshot (no
+/// LISTEN/NOTIFY propagation to wait for).
+async fn pause_downloads(pool: &PgPool) {
+    db::patch_runtime_settings(
+        pool,
+        &db::RuntimeSettingsPatch {
+            downloads_paused_until: Some(Some(hof_core::runtime_config::indefinite_pause())),
+            ..db::RuntimeSettingsPatch::default()
+        },
+    )
+    .await
+    .expect("pause downloads");
 }

@@ -491,7 +491,8 @@ pub async fn list_videos_for_source_with_context(
         .map_err(DbError::from)
 }
 
-/// Find videos that are ready to be downloaded (pending) or ready to retry.
+/// Find videos that are ready to be downloaded (pending), ready to retry, or
+/// due for another quality-gate check.
 ///
 /// # Errors
 ///
@@ -506,7 +507,8 @@ pub async fn list_videos_ready_for_download(pool: &PgPool) -> Result<Vec<Video>,
                downloaded_at, created_at, updated_at
         FROM videos
         WHERE status = 'pending'
-           OR (status = 'failed' AND next_retry IS NOT NULL AND next_retry <= NOW())
+           OR (status IN ('failed', 'awaiting_quality')
+               AND next_retry IS NOT NULL AND next_retry <= NOW())
         ORDER BY created_at ASC
         ",
     )
@@ -816,7 +818,11 @@ pub async fn update_video_status(
     let result = sqlx::query(
         r"
         UPDATE videos
-        SET status = $2
+        SET status = $2,
+            -- A held video's next_retry is its quality recheck. Leaving
+            -- awaiting_quality (e.g. a cancel to `failed`) must drop it, or the
+            -- retry sweep picks the video up again at the recheck time.
+            next_retry = CASE WHEN status = 'awaiting_quality' THEN NULL ELSE next_retry END
         WHERE id = $1
         ",
     )
@@ -898,6 +904,124 @@ pub async fn mark_video_completed(
     }
 
     Ok(())
+}
+
+/// Hold a video for the quality gate until `recheck_at`.
+///
+/// Called after the worker has claimed the video with
+/// [`mark_video_downloading`], which counted an attempt. A deferral is not a
+/// failure, so that attempt is handed back: otherwise a video rechecked a few
+/// times would reach `max_attempts` and be marked permanently failed without
+/// ever having been downloaded.
+///
+/// # Errors
+///
+/// Returns `DbError::NotFound` if the video doesn't exist.
+#[instrument(skip(pool, note), fields(otel.kind = "client", db.system = "postgresql"))]
+pub async fn defer_video_for_quality(
+    pool: &PgPool,
+    id: Ulid,
+    recheck_at: DateTime<Utc>,
+    note: &str,
+) -> Result<(), DbError> {
+    let result = sqlx::query(
+        r"
+        UPDATE videos
+        SET status = 'awaiting_quality',
+            attempts = GREATEST(attempts - 1, 0),
+            next_retry = $2,
+            last_error = $3
+        WHERE id = $1
+        ",
+    )
+    .bind(id.to_string())
+    .bind(recheck_at)
+    .bind(note)
+    .execute(pool)
+    .await?;
+
+    if result.rows_affected() == 0 {
+        return Err(DbError::NotFound);
+    }
+
+    Ok(())
+}
+
+/// Whether "Download now" was requested for this video, so the worker skips
+/// the quality gate.
+///
+/// # Errors
+///
+/// Returns `DbError::NotFound` if the video doesn't exist.
+#[instrument(skip(pool), fields(otel.kind = "client", db.system = "postgresql"))]
+pub async fn video_skips_quality_gate(pool: &PgPool, id: Ulid) -> Result<bool, DbError> {
+    let skip: Option<bool> =
+        sqlx::query_scalar("SELECT skip_quality_gate FROM videos WHERE id = $1")
+            .bind(id.to_string())
+            .fetch_optional(pool)
+            .await?;
+
+    skip.ok_or(DbError::NotFound)
+}
+
+/// Release a video from the quality gate ("Download now").
+///
+/// Moves an `awaiting_quality` video back to `pending`, clears its recheck
+/// time and note, and sets `skip_quality_gate` so the worker downloads it at
+/// whatever quality is available. Only touches rows in `awaiting_quality`.
+///
+/// # Errors
+///
+/// Returns `DbError::NotFound` if no `awaiting_quality` video has this ID
+/// (callers check the status first with [`get_video`] to tell the cases apart).
+#[instrument(skip(pool), fields(otel.kind = "client", db.system = "postgresql"))]
+pub async fn release_from_quality_gate(pool: &PgPool, id: Ulid) -> Result<Video, DbError> {
+    let row = sqlx::query_as::<_, VideoRow>(
+        r"
+        UPDATE videos
+        SET status = 'pending',
+            next_retry = NULL,
+            last_error = NULL,
+            skip_quality_gate = true
+        WHERE id = $1 AND status = 'awaiting_quality'
+        RETURNING id, platform, platform_video_id, title, description,
+                  duration_secs, published_at, thumbnail_url, status, attempts,
+                  next_retry, last_error, file_path, file_size_bytes, video_height, video_codec,
+                  downloaded_at, created_at, updated_at
+        ",
+    )
+    .bind(id.to_string())
+    .fetch_optional(pool)
+    .await?
+    .ok_or(DbError::NotFound)?;
+
+    Ok(Video::try_from(row)?)
+}
+
+/// Highest delivered height among a source's earlier downloads, or `None`
+/// when it has none on record. Feeds the quality gate's source-ceiling check.
+///
+/// # Errors
+///
+/// Returns an error if the database operation fails.
+#[instrument(skip(pool), fields(otel.kind = "client", db.system = "postgresql"))]
+pub async fn source_best_delivered_height(
+    pool: &PgPool,
+    source_id: Ulid,
+) -> Result<Option<i32>, DbError> {
+    let best: Option<i32> = sqlx::query_scalar(
+        r"
+        SELECT MAX(v.video_height)
+        FROM videos v
+        INNER JOIN source_videos sv ON v.id = sv.video_id
+        WHERE sv.source_id = $1
+        ",
+    )
+    .bind(source_id.to_string())
+    .fetch_one(pool)
+    .await?;
+
+    Ok(best)
 }
 
 /// Mark a video as failed with error and next retry time.

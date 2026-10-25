@@ -238,6 +238,7 @@ environment variables take precedence).
 | `MAX_CONCURRENT_DOWNLOADS`¹   | Max simultaneous downloads             | 3            |
 | `DOWNLOAD_TIMEOUT_HOURS`      | Per-download timeout (hours)           | 4            |
 | `MAX_DOWNLOAD_ATTEMPTS`       | Retries before permanently-failed      | 5            |
+| `QUALITY_WAIT_HOURS`          | Hours a new video may wait for higher resolutions (0 = off; per-profile override) | 24 |
 | `RATE_LIMIT_DELAY_SECS`¹      | Delay between yt-dlp invocations       | 5            |
 | `DEFAULT_OUTPUT_DIR`          | Default download output directory      | /var/lib/hofvarpnir/downloads |
 | `RETENTION_DAYS`              | Global retention policy, in days       | - (no cleanup unless set) |

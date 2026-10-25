@@ -116,6 +116,16 @@ nix develop .#default --command cargo test --all-features
 - **When writing an E2E test, don't pick the simplest possible scenario to
   prove the happy path works.** Pick a medium-to-hard scenario when verifying
   the work.
+- **NEVER loosen an assertion to make a failing test pass.** Widening an
+  expected value (`== Pending` to `Pending | Downloading`), switching to a
+  negative check (`!= X`), adding a tolerance or retry, or marking a test
+  `#[ignore]` all hide the failure instead of explaining it. When a test
+  fails, find out whether the code or the test is wrong. If the test is
+  racy, make it deterministic (pause the module under test, seed the state
+  directly, poll a bounded condition) rather than accept every outcome. If
+  loosening really is the right call, stop: explain to the user why, what
+  the weaker assertion no longer catches, and what the alternatives are,
+  and wait for their approval before changing it.
 
 ## Code Style Guidelines
 
@@ -497,6 +507,37 @@ separately on `videos.video_height` / `videos.video_codec`, sourced from
 - The web UI surfaces it via `delivered_quality_badge` in `crates/hof-web/src/pages.rs`.
 - Do not infer delivered resolution from the profile's `quality`; they diverge.
 
+### New videos wait for their quality
+
+YouTube publishes low resolutions first and adds 1080p+ hours later (long
+regular uploads too, not just streams). Before downloading, `YtdlpClient::download_video`
+measures the height the first fallback stage's format selection would deliver
+(respecting the preset codec ladder); `QualityGate::evaluate`
+(`crates/hof-core/src/quality_gate.rs`) returns Download or Wait.
+
+- Download if the target is reached; if past the deadline (`published_at`, else
+  `created_at`, plus the wait hours); or if the source's best delivered height
+  ever (`db::source_best_delivered_height`) is <= what is available now (the
+  channel's ceiling). Otherwise Wait. Off for Best/AudioOnly and wait=0.
+- Wait makes the worker return `DownloadOutcome::Deferred`; the supervisor calls
+  `db::defer_video_for_quality`: status `awaiting_quality`, `next_retry` = next
+  recheck (every `RECHECK_INTERVAL`, 6h, clamped to the deadline), `last_error`
+  holds a human note. `list_videos_ready_for_download` picks it up when due.
+- Wait hours: profile `quality_wait_hours` (nullable, NULL = env default,
+  CHECK >= 0), else `QUALITY_WAIT_HOURS`. Metric: `downloads_deferred_total`.
+- "Download now" (`POST /api/v1/downloads/{id}/download-now`, a button on the
+  awaiting row) calls `db::release_from_quality_gate`: only `awaiting_quality`
+  rows, back to `pending` with `skip_quality_gate = true`, and the worker's
+  `quality_gate()` returns None for such a video. The flag is never cleared.
+- Measure by running the format selection, not by taking the max advertised
+  height: formats the preset cannot pick must not hold a video back.
+- A deferral is not a failed attempt: the attempt counter is handed back.
+- Anything leaving `awaiting_quality` (e.g. cancel via `db::update_video_status`)
+  must clear `next_retry`.
+- The platform gives no "still processing" signal, so the deadline and the
+  source ceiling are the only bounds on the guess. Do not add a third heuristic
+  without a reason.
+
 ### Output path/extension behavior
 
 - Output template rendering is container-aware (`container_ext`) instead of hardcoded `.mkv`.
@@ -685,6 +726,9 @@ cargo test -p hof-api download_tests::test_video_response_
 # Post-download verification (needs ffmpeg/ffprobe on PATH)
 cargo test -p hof-core --lib verify::
 
+# Quality gate (wait vs download decision)
+cargo test -p hof-core --lib quality_gate::
+
 # Codec-ladder selection (resolution outranks codec)
 cargo test -p hof-core ytdlp::tests::test_browser_preset_
 cd patches/yt-dlp-patched && cargo test --test unit selection::ranked
@@ -727,6 +771,7 @@ Optional (observability):
 - `METRICS_ENABLED` - Set to `true` to enable Prometheus metrics at `/metrics`
 - `LOG_FORMAT` - Set to `json` for structured JSON log output
 - `DOWNLOAD_VERIFY` - Set to `false`/`0`/`no` to skip post-download verification (default: `true`). Requires `ffprobe` on PATH when enabled; startup fails without it.
+- `QUALITY_WAIT_HOURS` - Hours a new video may wait for a higher resolution before it is downloaded anyway (default: `24`, `0` disables the quality gate). A profile's `quality_wait_hours` overrides it. See "New videos wait for their quality".
 
 Optional (OIDC Authentication):
 

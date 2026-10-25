@@ -45,6 +45,9 @@ pub struct Profile {
     pub include_shorts: bool,
     pub storage_quota_bytes: i64,
     pub retention_days: Option<i32>,
+    /// Hours after publication a video may wait for `quality`
+    /// (see [`crate::quality_gate`]). `None` uses `QUALITY_WAIT_HOURS`.
+    pub quality_wait_hours: Option<i32>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -63,6 +66,7 @@ pub struct ProfileRow {
     pub include_shorts: bool,
     pub storage_quota_bytes: i64,
     pub retention_days: Option<i32>,
+    pub quality_wait_hours: Option<i32>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -83,6 +87,7 @@ impl TryFrom<ProfileRow> for Profile {
             include_shorts: row.include_shorts,
             storage_quota_bytes: row.storage_quota_bytes,
             retention_days: row.retention_days,
+            quality_wait_hours: row.quality_wait_hours,
             created_at: row.created_at,
             updated_at: row.updated_at,
         })

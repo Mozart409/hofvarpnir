@@ -136,6 +136,7 @@ impl ProfileBuilder {
                 include_shorts: false,
                 storage_quota_bytes: 100_000_000_000,
                 retention_days: None,
+                quality_wait_hours: None,
             },
         )
         .await
@@ -296,6 +297,7 @@ impl VideoBuilder {
         let video_id = Ulid::generate();
         let status_str = match self.status {
             VideoStatus::Pending => "pending",
+            VideoStatus::AwaitingQuality => "awaiting_quality",
             VideoStatus::Downloading => "downloading",
             VideoStatus::Completed => "completed",
             VideoStatus::Failed => "failed",
@@ -352,6 +354,7 @@ impl VideoBuilder {
             published_at: self.published_at,
             thumbnail_url: None,
             status: match status_str_returned.as_str() {
+                "awaiting_quality" => VideoStatus::AwaitingQuality,
                 "downloading" => VideoStatus::Downloading,
                 "completed" => VideoStatus::Completed,
                 "failed" => VideoStatus::Failed,

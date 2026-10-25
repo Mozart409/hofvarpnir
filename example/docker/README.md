@@ -38,6 +38,7 @@ Copy `.env.example` to `.env` and adjust as needed:
 | `MAX_CONCURRENT_DOWNLOADS` | `3` | Parallel download limit |
 | `DOWNLOAD_TIMEOUT_HOURS` | `4` | Timeout for long downloads |
 | `MAX_DOWNLOAD_ATTEMPTS` | `5` | Retry attempts |
+| `QUALITY_WAIT_HOURS` | `24` | Hours a new video may wait for higher resolutions (`0` = off) |
 | `RATE_LIMIT_DELAY_SECS` | `60` | Delay between rate-limited requests |
 | `DEFAULT_OUTPUT_DIR` | `/data/downloads` | Download directory inside container |
 | `RUST_LOG` | `info,hofvarpnir=debug,sqlx=warn` | Logging configuration |

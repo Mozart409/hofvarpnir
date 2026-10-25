@@ -321,7 +321,7 @@ fn selected_style() -> Style {
 
 fn status_style(status: VideoStatus) -> Style {
     let color = match status {
-        VideoStatus::Pending => Color::Yellow,
+        VideoStatus::Pending | VideoStatus::AwaitingQuality => Color::Yellow,
         VideoStatus::Downloading => Color::Cyan,
         VideoStatus::Completed => Color::Green,
         VideoStatus::Failed => Color::Red,

@@ -764,3 +764,294 @@ async fn runtime_settings_form_patches_only_changed_overrides(pool: sqlx::PgPool
     let row = db::get_runtime_settings(&pool).await.unwrap();
     assert_eq!(row.updated_at, saved_at);
 }
+
+/// The downloads page can filter to held videos, badges them, and shows the
+/// quality gate's note under the badge; the note is not shown for other rows.
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn downloads_page_shows_awaiting_quality_holds(pool: sqlx::PgPool) {
+    let app = helpers::TestWebApp::new(pool.clone()).await;
+
+    let user = UserBuilder::new().build(&pool).await;
+    let profile = ProfileBuilder::new(user.id).build(&pool).await;
+    let source = SourceBuilder::new(profile.id).build(&pool).await;
+
+    VideoBuilder::new(source.id)
+        .title("Held Clip")
+        .status(VideoStatus::AwaitingQuality)
+        .last_error("Only 480p available (wanted 1080p); rechecking in 6h")
+        .build(&pool)
+        .await;
+    VideoBuilder::new(source.id)
+        .title("Broken Clip")
+        .status(VideoStatus::Failed)
+        .last_error("[DOWNLOAD_FAILED] boom")
+        .build(&pool)
+        .await;
+    VideoBuilder::new(source.id)
+        .title("Fresh Clip")
+        .status(VideoStatus::Pending)
+        .build(&pool)
+        .await;
+
+    app.login_as(&user).await;
+
+    let filtered = app
+        .server
+        .get("/downloads?status=awaiting_quality")
+        .await
+        .text();
+    assert!(filtered.contains("Held Clip"));
+    assert!(!filtered.contains("Broken Clip"));
+    assert!(!filtered.contains("Fresh Clip"));
+    assert!(filtered.contains("Awaiting Quality"));
+    assert!(
+        filtered.contains("Only 480p available (wanted 1080p); rechecking in 6h"),
+        "the hold's note should render under the badge"
+    );
+    assert!(
+        !filtered.contains("/retry"),
+        "a held video offers no retry control"
+    );
+
+    // Unfiltered: the note is only attached to the held row.
+    let all = app.server.get("/downloads").await.text();
+    assert!(all.contains("Held Clip") && all.contains("Broken Clip"));
+    assert!(all.contains("Only 480p available"));
+    assert!(
+        !all.contains("DOWNLOAD_FAILED"),
+        "a failed row still does not render its error"
+    );
+}
+
+/// The profile form persists `quality_wait_hours` on create and update, treats
+/// blank as unset and 0 as "gate disabled", and rejects negatives.
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn profile_form_persists_quality_wait_hours(pool: sqlx::PgPool) {
+    let app = helpers::TestWebApp::new(pool.clone()).await;
+    let user = UserBuilder::new().build(&pool).await;
+    app.login_as(&user).await;
+
+    let form = |name: &'static str, wait: &'static str| {
+        vec![
+            ("name", name),
+            ("quality", "1080p"),
+            ("output_preset", "auto"),
+            ("naming_template", "{title}-{id}.{ext}"),
+            ("output_dir", "/data/videos"),
+            ("storage_quota_gb", "100"),
+            ("retention_days", ""),
+            ("quality_wait_hours", wait),
+        ]
+    };
+
+    let created = app
+        .server
+        .post("/profiles")
+        .form(&form("Gated", "12"))
+        .await;
+    assert_eq!(created.status_code(), StatusCode::SEE_OTHER);
+
+    let profiles = hof_core::db::list_profiles_for_user(&pool, user.id)
+        .await
+        .unwrap();
+    let profile = profiles.iter().find(|p| p.name == "Gated").unwrap();
+    assert_eq!(profile.quality_wait_hours, Some(12));
+
+    let page = app.server.get("/profiles").await.text();
+    assert!(page.contains(r#"name="quality_wait_hours""#));
+    assert!(
+        page.contains(r#"value="12""#),
+        "edit form prefills the value"
+    );
+
+    let path = format!("/profiles/{}", profile.id);
+
+    // 0 stays 0.
+    let zero = app.server.post(&path).form(&form("Gated", "0")).await;
+    assert_eq!(zero.status_code(), StatusCode::SEE_OTHER);
+    let after = hof_core::db::get_profile(&pool, profile.id).await.unwrap();
+    assert_eq!(after.quality_wait_hours, Some(0));
+
+    // Negative is rejected and leaves the stored value alone.
+    let negative = app.server.post(&path).form(&form("Gated", "-3")).await;
+    assert_eq!(negative.status_code(), StatusCode::BAD_REQUEST);
+    let after = hof_core::db::get_profile(&pool, profile.id).await.unwrap();
+    assert_eq!(after.quality_wait_hours, Some(0));
+
+    let negative_create = app.server.post("/profiles").form(&form("Bad", "-1")).await;
+    assert_eq!(negative_create.status_code(), StatusCode::BAD_REQUEST);
+    let profiles = hof_core::db::list_profiles_for_user(&pool, user.id)
+        .await
+        .unwrap();
+    assert!(profiles.iter().all(|p| p.name != "Bad"));
+
+    // Blank clears back to unset.
+    let blank = app.server.post(&path).form(&form("Gated", "")).await;
+    assert_eq!(blank.status_code(), StatusCode::SEE_OTHER);
+    let after = hof_core::db::get_profile(&pool, profile.id).await.unwrap();
+    assert_eq!(after.quality_wait_hours, None);
+}
+
+/// The downloads page offers "Download now" only on the held row, and posting
+/// it releases the video to pending with the quality gate skipped.
+///
+/// Downloads are paused (written to `runtime_settings` before the app loads
+/// it), so the supervisor leaves the enqueued video untouched and the row the
+/// handler wrote is the row we read back.
+///
+/// Artifact: the persisted `videos` row and `skip_quality_gate` flag.
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn download_now_button_releases_held_video(pool: sqlx::PgPool) {
+    pause_downloads(&pool).await;
+    let app = helpers::TestWebApp::new(pool.clone()).await;
+
+    let user = UserBuilder::new().build(&pool).await;
+    let profile = ProfileBuilder::new(user.id).build(&pool).await;
+    let source = SourceBuilder::new(profile.id).build(&pool).await;
+
+    let held = VideoBuilder::new(source.id)
+        .title("Held Clip")
+        .status(VideoStatus::AwaitingQuality)
+        .last_error("Only 480p available")
+        .build(&pool)
+        .await;
+    VideoBuilder::new(source.id)
+        .title("Broken Clip")
+        .status(VideoStatus::Failed)
+        .build(&pool)
+        .await;
+
+    app.login_as(&user).await;
+
+    let page = app.server.get("/downloads").await.text();
+    assert_eq!(
+        page.matches("Download now").count(),
+        1,
+        "only the held row offers Download now"
+    );
+    assert!(page.contains(&format!("/downloads/{}/download-now", held.id)));
+
+    let attempts_before = hof_core::db::get_video(&pool, held.id)
+        .await
+        .expect("video should exist")
+        .attempts;
+
+    let response = app
+        .server
+        .post(&format!("/downloads/{}/download-now", held.id))
+        .await;
+    assert_eq!(response.status_code(), StatusCode::SEE_OTHER);
+
+    let after = hof_core::db::get_video(&pool, held.id)
+        .await
+        .expect("video should still exist");
+    assert_eq!(after.status, VideoStatus::Pending);
+    assert!(after.next_retry.is_none());
+    assert!(after.last_error.is_none());
+    assert_eq!(after.attempts, attempts_before);
+    assert!(
+        hof_core::db::video_skips_quality_gate(&pool, held.id)
+            .await
+            .expect("read flag")
+    );
+}
+
+/// With downloads live, "Download now" hands the released video to a worker:
+/// it is claimed (`attempts` incremented) and never goes back to
+/// `awaiting_quality`, even though the profile's gate is on (24h wait for a
+/// 2160p target on a video published just now, which would otherwise hold it).
+///
+/// Artifact: the persisted `videos` row after the worker claimed it.
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn download_now_hands_released_video_to_a_worker(pool: sqlx::PgPool) {
+    use hof_core::domain::profile::Quality;
+
+    let app = helpers::TestWebApp::new(pool.clone()).await;
+
+    let user = UserBuilder::new().build(&pool).await;
+    let profile = ProfileBuilder::new(user.id)
+        .quality(Quality::Q2160p)
+        .build(&pool)
+        .await;
+    sqlx::query("UPDATE profiles SET quality_wait_hours = 24 WHERE id = $1")
+        .bind(profile.id.to_string())
+        .execute(&pool)
+        .await
+        .expect("enable the profile quality gate");
+    let source = SourceBuilder::new(profile.id).build(&pool).await;
+
+    let held = VideoBuilder::new(source.id)
+        .title("Held Clip")
+        .status(VideoStatus::AwaitingQuality)
+        .last_error("Waiting for 2160p: 480p available")
+        .published_at(chrono::Utc::now())
+        .build(&pool)
+        .await;
+
+    app.login_as(&user).await;
+    let response = app
+        .server
+        .post(&format!("/downloads/{}/download-now", held.id))
+        .await;
+    assert_eq!(response.status_code(), StatusCode::SEE_OTHER);
+
+    // mark_video_downloading increments `attempts`, so this is the moment a
+    // worker has claimed the video.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let claimed = loop {
+        let video = hof_core::db::get_video(&pool, held.id)
+            .await
+            .expect("video should still exist");
+        if video.attempts >= 1 {
+            break video;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no worker claimed the released video within 10s; status {:?}",
+            video.status
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    };
+    assert_ne!(claimed.status, VideoStatus::AwaitingQuality);
+
+    // Best effort: let the attempt settle (the test has no network, so it
+    // fails at the metadata fetch) and check the gate never held it again.
+    let settle_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let mut settled = claimed;
+    while settled.status == VideoStatus::Downloading && std::time::Instant::now() < settle_deadline
+    {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        settled = hof_core::db::get_video(&pool, held.id)
+            .await
+            .expect("video should still exist");
+    }
+    assert_ne!(settled.status, VideoStatus::AwaitingQuality);
+    assert!(
+        !settled
+            .last_error
+            .as_deref()
+            .is_some_and(|e| e.starts_with("Waiting for")),
+        "the gate must not defer a released video, got {:?}",
+        settled.last_error
+    );
+    assert!(
+        hof_core::db::video_skips_quality_gate(&pool, held.id)
+            .await
+            .expect("read flag")
+    );
+}
+
+/// Pause downloads in `runtime_settings` before the app is built, so the
+/// supervisor starts with the pause already in its settings snapshot (no
+/// LISTEN/NOTIFY propagation to wait for).
+async fn pause_downloads(pool: &sqlx::PgPool) {
+    hof_core::db::patch_runtime_settings(
+        pool,
+        &hof_core::db::RuntimeSettingsPatch {
+            downloads_paused_until: Some(Some(hof_core::runtime_config::indefinite_pause())),
+            ..hof_core::db::RuntimeSettingsPatch::default()
+        },
+    )
+    .await
+    .expect("pause downloads");
+}

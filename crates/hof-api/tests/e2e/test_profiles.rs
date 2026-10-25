@@ -322,3 +322,105 @@ async fn list_profiles_filter_by_user(pool: PgPool) {
         assert_eq!(profile["user_id"], user1.id.to_string());
     }
 }
+
+// ---------------------------------------------------------------------------
+// quality_wait_hours
+// ---------------------------------------------------------------------------
+
+/// Read `quality_wait_hours` straight from the table.
+async fn db_quality_wait_hours(pool: &PgPool, profile_id: Ulid) -> Option<i32> {
+    sqlx::query_scalar("SELECT quality_wait_hours FROM profiles WHERE id = $1")
+        .bind(profile_id.to_string())
+        .fetch_one(pool)
+        .await
+        .expect("profile row")
+}
+
+/// `quality_wait_hours` round-trips through create, set, clear and zero, and
+/// negative values are rejected without touching the stored value.
+#[sqlx::test(migrations = "../hof-core/migrations")]
+async fn profile_quality_wait_hours_lifecycle(pool: PgPool) {
+    let app = TestApp::new(pool.clone()).await;
+    let user = UserBuilder::new().build(&pool).await;
+    let key = ApiKeyBuilder::new(user.id).read_write().build(&pool).await;
+
+    let create_body = |wait: serde_json::Value| {
+        serde_json::json!({
+            "user_id": user.id.to_string(),
+            "name": "Gated Profile",
+            "quality": "Q1080p",
+            "naming_template": "{title}-{id}.{ext}",
+            "output_dir": "/downloads/gated",
+            "quality_wait_hours": wait,
+        })
+    };
+
+    // Negative on create: 400, and nothing is stored.
+    let rejected = app
+        .server
+        .post("/api/v1/profiles")
+        .add_header("Authorization", key.bearer())
+        .json(&create_body(serde_json::json!(-1)))
+        .await;
+    rejected.assert_status(StatusCode::BAD_REQUEST);
+    let err: serde_json::Value = rejected.json();
+    assert_eq!(err["error"], "quality_wait_hours must be 0 or greater");
+
+    // Create with 12.
+    let created = app
+        .server
+        .post("/api/v1/profiles")
+        .add_header("Authorization", key.bearer())
+        .json(&create_body(serde_json::json!(12)))
+        .await;
+    created.assert_status(StatusCode::CREATED);
+    let body: serde_json::Value = created.json();
+    assert_eq!(body["quality_wait_hours"], 12);
+    let profile_id = Ulid::from_string(body["id"].as_str().unwrap()).unwrap();
+    assert_eq!(db_quality_wait_hours(&pool, profile_id).await, Some(12));
+
+    let url = format!("/api/v1/profiles/{profile_id}");
+    let put = |payload: serde_json::Value| {
+        app.server
+            .put(&url)
+            .add_header("Authorization", key.bearer())
+            .json(&payload)
+    };
+
+    // An unrelated update leaves the value alone.
+    let renamed: serde_json::Value = put(serde_json::json!({"name": "Renamed"})).await.json();
+    assert_eq!(renamed["quality_wait_hours"], 12);
+
+    // 0 disables the gate and is stored as 0, not NULL.
+    let zero = put(serde_json::json!({"quality_wait_hours": 0})).await;
+    zero.assert_status_ok();
+    assert_eq!(zero.json::<serde_json::Value>()["quality_wait_hours"], 0);
+    assert_eq!(db_quality_wait_hours(&pool, profile_id).await, Some(0));
+
+    // Negative on update: 400, stored value unchanged.
+    put(serde_json::json!({"quality_wait_hours": -5}))
+        .await
+        .assert_status(StatusCode::BAD_REQUEST);
+    assert_eq!(db_quality_wait_hours(&pool, profile_id).await, Some(0));
+
+    // Set again, then null clears it back to the global default.
+    put(serde_json::json!({"quality_wait_hours": 24}))
+        .await
+        .assert_status_ok();
+    assert_eq!(db_quality_wait_hours(&pool, profile_id).await, Some(24));
+
+    let cleared = put(serde_json::json!({"quality_wait_hours": null})).await;
+    cleared.assert_status_ok();
+    assert!(cleared.json::<serde_json::Value>()["quality_wait_hours"].is_null());
+    assert_eq!(db_quality_wait_hours(&pool, profile_id).await, None);
+
+    // GET reflects the persisted state.
+    let fetched: serde_json::Value = app
+        .server
+        .get(&url)
+        .add_header("Authorization", key.bearer())
+        .await
+        .json();
+    assert!(fetched["quality_wait_hours"].is_null());
+    assert_eq!(fetched["name"], "Renamed");
+}

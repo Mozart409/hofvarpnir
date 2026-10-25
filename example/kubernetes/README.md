@@ -37,6 +37,7 @@ Edit `configmap.yaml` to adjust:
 - `MAX_CONCURRENT_DOWNLOADS` - Number of parallel downloads (default: 3)
 - `DOWNLOAD_TIMEOUT_HOURS` - Timeout for long downloads (default: 4)
 - `MAX_DOWNLOAD_ATTEMPTS` - Retry attempts for failed downloads (default: 5)
+- `QUALITY_WAIT_HOURS` - Hours a new video may wait for higher resolutions before downloading anyway; `0` disables (default: 24)
 - `RATE_LIMIT_DELAY_SECS` - Delay between rate-limited requests (default: 60)
 - `RUST_LOG` - Logging level configuration
 

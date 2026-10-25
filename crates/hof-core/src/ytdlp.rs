@@ -16,6 +16,7 @@ use tokio::sync::mpsc;
 use tracing::{Instrument, debug, info, instrument, warn};
 use ulid::Ulid;
 use yt_dlp::Downloader;
+use yt_dlp::VideoSelection;
 use yt_dlp::client::DownloadDetails;
 use yt_dlp::client::deps::Libraries;
 use yt_dlp::extractor::ExtractorConfig;
@@ -28,6 +29,7 @@ use yt_dlp::model::selector::{
 
 use crate::domain::profile::{OutputPreset, Quality};
 use crate::domain::video::DownloadProgress;
+use crate::quality_gate::{GateDecision, QualityGate, requested_height};
 
 /// Errors that can occur during yt-dlp operations.
 #[derive(Debug, thiserror::Error)]
@@ -91,6 +93,18 @@ pub enum YtdlpError {
     /// Rate limited by the platform.
     #[error("Rate limited (HTTP 429): {0}")]
     RateLimited(String),
+
+    /// Not a failure: the [`QualityGate`] held the video because the formats
+    /// on offer fall short of the profile and better ones may still come.
+    /// Nothing was downloaded.
+    #[error(
+        "Quality pending: {available_height:?}p available, {target_height}p wanted, recheck at {recheck_at}"
+    )]
+    QualityPending {
+        available_height: Option<i32>,
+        target_height: i32,
+        recheck_at: DateTime<Utc>,
+    },
 }
 
 impl YtdlpError {
@@ -112,7 +126,8 @@ impl YtdlpError {
             | Self::PlaylistError(_)
             | Self::VideoUnavailable(_)
             | Self::AgeRestricted(_)
-            | Self::RateLimited(_) => None,
+            | Self::RateLimited(_)
+            | Self::QualityPending { .. } => None,
         }
     }
 
@@ -127,7 +142,8 @@ impl YtdlpError {
             | Self::FormatInvalidPreset { .. }
             | Self::VideoUnavailable(_)
             | Self::AgeRestricted(_)
-            | Self::RateLimited(_) => None,
+            | Self::RateLimited(_)
+            | Self::QualityPending { .. } => None,
         }
     }
 }
@@ -347,6 +363,8 @@ pub struct DownloadRequest<'a> {
     pub format_policy: &'a FormatPolicy,
     pub video_id: Ulid,
     pub progress_tx: Option<mpsc::Sender<DownloadProgress>>,
+    /// Hold the video instead of downloading when its formats fall short.
+    pub quality_gate: Option<QualityGate>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -578,6 +596,36 @@ impl YtdlpClient {
 
         let platform_video_id = video.id.clone();
 
+        let attempts = fallback_attempts(request.format_policy);
+
+        if let Some(gate) = &request.quality_gate {
+            // Measure what the first fallback stage would actually select, not
+            // the tallest stream on offer: the mp4 presets skip VP9, and
+            // YouTube publishes 4K in VP9 before AV1, so "2160p exists" and
+            // "2160p would be delivered" differ for hours.
+            let available_height = attempts.first().and_then(|first| {
+                video
+                    .select_video_format(first.video_quality, first.video_codec.clone())
+                    .and_then(|f| f.video_resolution.height)
+                    .and_then(|h| i32::try_from(h).ok())
+            });
+            if let GateDecision::Wait { recheck_at } = gate.evaluate(available_height, Utc::now()) {
+                info!(
+                    video_id = %request.video_id,
+                    available_height = ?available_height,
+                    target_height = gate.target_height,
+                    recheck_at = %recheck_at,
+                    deadline = %gate.deadline,
+                    "Quality gate: holding video until better formats are processed"
+                );
+                return Err(YtdlpError::QualityPending {
+                    available_height,
+                    target_height: gate.target_height,
+                    recheck_at,
+                });
+            }
+        }
+
         // Build output filename from template.
         // We resolve placeholders ourselves because this library path API expects
         // a concrete output path, not yt-dlp style template placeholders.
@@ -607,7 +655,6 @@ impl YtdlpClient {
             })?;
         }
 
-        let attempts = fallback_attempts(request.format_policy);
         let (download_details, selected_stage) =
             execute_fallback_attempts(&attempts, request.format_policy, |attempt| {
                 let video_quality = attempt.video_quality;
@@ -1018,22 +1065,6 @@ where
         last_stage,
         detail,
     })
-}
-
-/// The pixel height a [`Quality`] asks for, if it names one.
-///
-/// `Best` and `AudioOnly` have no fixed target, so a shortfall is not
-/// meaningful for them.
-const fn requested_height(quality: &Quality) -> Option<i32> {
-    match quality {
-        Quality::Q4320p => Some(4320),
-        Quality::Q2160p => Some(2160),
-        Quality::Q1440p => Some(1440),
-        Quality::Q1080p => Some(1080),
-        Quality::Q720p => Some(720),
-        Quality::Q480p => Some(480),
-        Quality::Best | Quality::AudioOnly => None,
-    }
 }
 
 fn quality_fallback_chain(quality: &Quality) -> Vec<VideoQuality> {

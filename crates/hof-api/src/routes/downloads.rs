@@ -49,6 +49,7 @@ pub fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(get_download, delete_download))
         .routes(routes!(cancel_download))
         .routes(routes!(retry_download))
+        .routes(routes!(download_now))
 }
 
 // ============================================================================
@@ -276,6 +277,13 @@ pub struct RetryResponse {
     pub video_id: String,
 }
 
+/// Response for the download-now endpoint.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct DownloadNowResponse {
+    pub message: String,
+    pub video_id: String,
+}
+
 /// Response for bulk retry endpoint.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct BulkRetryResponse {
@@ -301,7 +309,10 @@ impl BulkActionKind {
                 status,
                 VideoStatus::Failed | VideoStatus::PermanentlyFailed | VideoStatus::Cleaned
             ),
-            Self::Cancel => matches!(status, VideoStatus::Pending | VideoStatus::Downloading),
+            Self::Cancel => matches!(
+                status,
+                VideoStatus::Pending | VideoStatus::AwaitingQuality | VideoStatus::Downloading
+            ),
             Self::Delete => matches!(status, VideoStatus::Completed),
         }
     }
@@ -665,11 +676,11 @@ pub async fn retry_download(
         VideoStatus::Failed | VideoStatus::PermanentlyFailed | VideoStatus::Cleaned => {
             // Eligible for retry
         }
-        VideoStatus::Pending | VideoStatus::Downloading => {
+        VideoStatus::Pending | VideoStatus::AwaitingQuality | VideoStatus::Downloading => {
             return (
                 StatusCode::BAD_REQUEST,
                 Json(ErrorResponse {
-                    error: "Video is already pending or downloading".to_string(),
+                    error: "Video is already pending, awaiting quality, or downloading".to_string(),
                 }),
             )
                 .into_response();
@@ -803,6 +814,184 @@ pub async fn retry_download(
                 }),
             )
                 .into_response()
+        }
+    }
+}
+
+/// Download a video held by the quality gate right away.
+///
+/// Only videos awaiting quality are eligible. The video is released to
+/// pending with the quality gate skipped and enqueued for download at
+/// whatever quality is available now.
+#[utoipa::path(
+    post,
+    path = "/{id}/download-now",
+    tag = "downloads",
+    params(
+        ("id" = String, Path, description = "Video ID (ULID)")
+    ),
+    responses(
+        (status = 202, description = "Download enqueued", body = DownloadNowResponse),
+        (status = 400, description = "Invalid ID format or video not awaiting quality", body = ErrorResponse),
+        (status = 401, description = "Unauthorized", body = ApiErrorResponse),
+        (status = 403, description = "Forbidden - insufficient scope", body = ApiErrorResponse),
+        (status = 404, description = "Video not found", body = ErrorResponse),
+        (status = 500, description = "Internal server error", body = ErrorResponse)
+    )
+)]
+#[allow(clippy::too_many_lines)]
+pub async fn download_now(
+    State(state): State<AppState>,
+    auth: Auth,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    if let Err(e) = auth.require_scope(ApiKeyScope::Write) {
+        return e.into_response();
+    }
+
+    let Ok(video_id) = Ulid::from_string(&id) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Invalid video ID format".to_string(),
+            }),
+        )
+            .into_response();
+    };
+
+    let video = match db::get_video(&state.pool, video_id).await {
+        Ok(v) => v,
+        Err(db::DbError::NotFound) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse {
+                    error: "Video not found".to_string(),
+                }),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "Failed to get video");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "Failed to get video".to_string(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    if video.status != VideoStatus::AwaitingQuality {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Only videos awaiting quality can be downloaded now".to_string(),
+            }),
+        )
+            .into_response();
+    }
+
+    let released = match db::release_from_quality_gate(&state.pool, video_id).await {
+        Ok(v) => v,
+        // Left awaiting_quality between the check and the update.
+        Err(db::DbError::NotFound) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "Only videos awaiting quality can be downloaded now".to_string(),
+                }),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "Failed to release video from the quality gate");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "Failed to release video from the quality gate".to_string(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    let Some(source) = load_source_for_video(&state, video_id).await else {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "Failed to load the video's source".to_string(),
+            }),
+        )
+            .into_response();
+    };
+
+    let profile = match db::get_profile(&state.pool, source.profile_id).await {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::error!(error = %e, "Failed to get profile");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "Failed to get profile".to_string(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    match state
+        .supervisor
+        .tell(EnqueueDownload {
+            video: released,
+            profile,
+            source,
+        })
+        .await
+    {
+        Ok(()) => (
+            StatusCode::ACCEPTED,
+            Json(DownloadNowResponse {
+                message: "Download enqueued".to_string(),
+                video_id: video_id.to_string(),
+            }),
+        )
+            .into_response(),
+        Err(e) => {
+            tracing::error!(error = %e, "Failed to enqueue download");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "Failed to enqueue download".to_string(),
+                }),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// First linked source of a video, or `None` (logged) when it has none or the
+/// lookup fails.
+async fn load_source_for_video(
+    state: &AppState,
+    video_id: Ulid,
+) -> Option<hof_core::domain::source::Source> {
+    let source_ids = match db::get_sources_for_video(&state.pool, video_id).await {
+        Ok(ids) => ids,
+        Err(e) => {
+            tracing::error!(error = %e, "Failed to get sources for video");
+            return None;
+        }
+    };
+    let Some(&source_id) = source_ids.first() else {
+        tracing::warn!(%video_id, "Video has no linked source");
+        return None;
+    };
+    match db::get_source(&state.pool, source_id).await {
+        Ok(s) => Some(s),
+        Err(e) => {
+            tracing::error!(error = %e, "Failed to get source");
+            None
         }
     }
 }

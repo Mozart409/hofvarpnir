@@ -195,6 +195,7 @@ pub struct ProfileForm {
     include_shorts: Option<String>,
     storage_quota_gb: i64,
     retention_days: Option<String>,
+    quality_wait_hours: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -311,6 +312,7 @@ pub fn router(state: AppState, oidc_enabled: bool) -> Router {
         .route("/web/sources/{id}/events", get(source_detail_events_sse))
         .route("/downloads", get(downloads_page))
         .route("/downloads/{id}/retry", post(retry_download))
+        .route("/downloads/{id}/download-now", post(download_now))
         .route("/downloads/{id}/cancel", post(cancel_download))
         .route("/downloads/{id}/delete", post(delete_download))
         .route("/downloads/bulk", post(bulk_download_action))
@@ -1188,6 +1190,7 @@ async fn profiles_page(
                     (input_text("Output Directory", "output_dir", "/data/videos", true, ""))
                     (input_number("Storage Quota (GB)", "storage_quota_gb", "100", true, "100"))
                     (input_number("Retention Days", "retention_days", "Optional", false, ""))
+                    (input_number(QUALITY_WAIT_LABEL, "quality_wait_hours", QUALITY_WAIT_PLACEHOLDER, false, ""))
                     div class="flex items-center gap-4" {
                         label class="inline-flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300" {
                             input type="checkbox" name="include_livestreams";
@@ -1236,6 +1239,13 @@ async fn create_profile(
         }
     };
 
+    let quality_wait_hours = match parse_quality_wait_hours(form.quality_wait_hours.as_deref()) {
+        Ok(value) => value,
+        Err(message) => {
+            return (StatusCode::BAD_REQUEST, error_page(&message)).into_response();
+        }
+    };
+
     let naming_template = form.naming_template.trim();
     if let Err(message) = validate_output_template(naming_template) {
         return (StatusCode::BAD_REQUEST, error_page(&message)).into_response();
@@ -1252,6 +1262,7 @@ async fn create_profile(
         include_shorts: form.include_shorts.is_some(),
         storage_quota_bytes: form.storage_quota_gb * 1_000_000_000, // Convert GB to bytes
         retention_days,
+        quality_wait_hours,
     };
 
     match db::create_profile(&state.pool, create).await {
@@ -1310,6 +1321,13 @@ async fn update_profile(
         }
     };
 
+    let quality_wait_hours = match parse_quality_wait_hours(form.quality_wait_hours.as_deref()) {
+        Ok(value) => value,
+        Err(message) => {
+            return (StatusCode::BAD_REQUEST, error_page(&message)).into_response();
+        }
+    };
+
     let naming_template = form.naming_template.trim();
     if let Err(message) = validate_output_template(naming_template) {
         return (StatusCode::BAD_REQUEST, error_page(&message)).into_response();
@@ -1325,6 +1343,7 @@ async fn update_profile(
         include_shorts: Some(form.include_shorts.is_some()),
         storage_quota_bytes: Some(form.storage_quota_gb * 1_000_000_000), // Convert GB to bytes
         retention_days: Some(retention_days),
+        quality_wait_hours: Some(quality_wait_hours),
     };
 
     match db::update_profile(&state.pool, profile_id, update).await {
@@ -2809,6 +2828,7 @@ async fn downloads_page(
                     nav class="flex flex-wrap gap-1" {
                         (download_status_filter_link("all", "All", current_status, search_query, per_page))
                         (download_status_filter_link("pending", "Pending", current_status, search_query, per_page))
+                        (download_status_filter_link("awaiting_quality", "Awaiting Quality", current_status, search_query, per_page))
                         (download_status_filter_link("downloading", "Downloading", current_status, search_query, per_page))
                         (download_status_filter_link("completed", "Completed", current_status, search_query, per_page))
                         (download_status_filter_link("failed", "Failed", current_status, search_query, per_page))
@@ -2977,7 +2997,10 @@ impl BulkAction {
                 status,
                 VideoStatus::Failed | VideoStatus::PermanentlyFailed | VideoStatus::Cleaned
             ),
-            Self::Cancel => matches!(status, VideoStatus::Pending | VideoStatus::Downloading),
+            Self::Cancel => matches!(
+                status,
+                VideoStatus::Pending | VideoStatus::AwaitingQuality | VideoStatus::Downloading
+            ),
             Self::Delete => matches!(status, VideoStatus::Completed),
         }
     }
@@ -3308,6 +3331,134 @@ async fn retry_download(
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 error_page("Failed to enqueue retry"),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// "Download now": release a video held by the quality gate and enqueue it.
+#[allow(clippy::too_many_lines)]
+async fn download_now(
+    _auth: AuthUser,
+    State(state): State<AppState>,
+    session: Session,
+    Path(id): Path<String>,
+    axum::extract::Query(query): axum::extract::Query<DownloadsQuery>,
+) -> impl IntoResponse {
+    let Ok(video_id) = Ulid::from_string(id.trim()) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            error_page("Invalid video ID provided"),
+        )
+            .into_response();
+    };
+
+    let video = match db::get_video(&state.pool, video_id).await {
+        Ok(value) => value,
+        Err(db::DbError::NotFound) => {
+            return (StatusCode::NOT_FOUND, error_page("Video not found")).into_response();
+        }
+        Err(error) => {
+            tracing::error!(%error, "failed to load video before download now");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                error_page("Failed to load video"),
+            )
+                .into_response();
+        }
+    };
+
+    if video.status != VideoStatus::AwaitingQuality {
+        return (
+            StatusCode::BAD_REQUEST,
+            error_page("Only videos awaiting quality can be downloaded now"),
+        )
+            .into_response();
+    }
+
+    let released = match db::release_from_quality_gate(&state.pool, video_id).await {
+        Ok(value) => value,
+        Err(db::DbError::NotFound) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                error_page("Only videos awaiting quality can be downloaded now"),
+            )
+                .into_response();
+        }
+        Err(error) => {
+            tracing::error!(%error, "failed to release video from the quality gate");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                error_page("Failed to release video from the quality gate"),
+            )
+                .into_response();
+        }
+    };
+
+    let source_ids = match db::get_sources_for_video(&state.pool, video_id).await {
+        Ok(value) => value,
+        Err(error) => {
+            tracing::error!(%error, "failed to load source ids for download now");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                error_page("Failed to load source mapping for video"),
+            )
+                .into_response();
+        }
+    };
+
+    let Some(source_id) = source_ids.first() else {
+        return (
+            StatusCode::BAD_REQUEST,
+            error_page("Video has no linked sources, cannot download"),
+        )
+            .into_response();
+    };
+
+    let source = match db::get_source(&state.pool, *source_id).await {
+        Ok(value) => value,
+        Err(error) => {
+            tracing::error!(%error, "failed to load source for download now");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                error_page("Failed to load source for video"),
+            )
+                .into_response();
+        }
+    };
+
+    let profile = match db::get_profile(&state.pool, source.profile_id).await {
+        Ok(value) => value,
+        Err(error) => {
+            tracing::error!(%error, "failed to load profile for download now");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                error_page("Failed to load profile for video"),
+            )
+                .into_response();
+        }
+    };
+
+    match state
+        .supervisor
+        .tell(EnqueueDownload {
+            video: released,
+            profile,
+            source,
+        })
+        .await
+    {
+        Ok(()) => {
+            state.broadcaster.invalidate();
+            set_flash(&session, "info", "Download started").await;
+            Redirect::to(&downloads_return_url(&query)).into_response()
+        }
+        Err(error) => {
+            tracing::error!(%error, "failed to enqueue download now");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                error_page("Failed to enqueue download"),
             )
                 .into_response()
         }
@@ -3900,6 +4051,7 @@ const fn parse_activity_page_size(value: Option<i64>) -> i64 {
 const fn download_status_slug(status: &VideoStatus) -> &'static str {
     match status {
         VideoStatus::Pending => "pending",
+        VideoStatus::AwaitingQuality => "awaiting_quality",
         VideoStatus::Downloading => "downloading",
         VideoStatus::Completed => "completed",
         VideoStatus::Failed => "failed",
@@ -3912,6 +4064,7 @@ const fn download_status_slug(status: &VideoStatus) -> &'static str {
 fn parse_download_status(status: Option<&str>) -> Option<VideoStatus> {
     status.and_then(|s| match s {
         "pending" => Some(VideoStatus::Pending),
+        "awaiting_quality" => Some(VideoStatus::AwaitingQuality),
         "downloading" => Some(VideoStatus::Downloading),
         "completed" => Some(VideoStatus::Completed),
         "failed" => Some(VideoStatus::Failed),
@@ -3925,8 +4078,8 @@ fn parse_download_status(status: Option<&str>) -> Option<VideoStatus> {
 fn normalized_download_status(status: Option<&str>) -> &str {
     match status {
         Some(
-            value @ ("pending" | "downloading" | "completed" | "failed" | "skipped" | "cleaned"
-            | "permanently_failed"),
+            value @ ("pending" | "awaiting_quality" | "downloading" | "completed" | "failed"
+            | "skipped" | "cleaned" | "permanently_failed"),
         ) => value,
         _ => "all",
     }
@@ -4188,7 +4341,15 @@ fn downloads_row(
                 }
             }
             td class="px-3 py-2 text-slate-600 dark:text-slate-400" { (video.platform) }
-            td class="px-3 py-2" { (status_badge(&video.status)) }
+            td class="px-3 py-2" {
+                (status_badge(&video.status))
+                // The quality gate's note: what is available and when it rechecks.
+                @if video.status == VideoStatus::AwaitingQuality {
+                    @if let Some(note) = &video.last_error {
+                        p class="mt-1 text-xs text-slate-500 dark:text-slate-400" { (note) }
+                    }
+                }
+            }
             td class="px-3 py-2 text-slate-600 dark:text-slate-400" { (video.attempts) }
             td class="px-3 py-2" {
                 div class="flex gap-2" {
@@ -4196,6 +4357,13 @@ fn downloads_row(
                         form method="post" action=(action_url("retry")) {
                             button class="rounded-lg border border-sky-200 dark:border-sky-800 bg-sky-50 dark:bg-sky-900/50 px-3 py-1.5 text-xs font-medium text-sky-700 dark:text-sky-300 hover:bg-sky-100 dark:hover:bg-sky-900" type="submit" {
                                 "Retry"
+                            }
+                        }
+                    }
+                    @if video.status == VideoStatus::AwaitingQuality {
+                        form method="post" action=(action_url("download-now")) {
+                            button class="rounded-lg border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-900/50 px-3 py-1.5 text-xs font-medium text-emerald-700 dark:text-emerald-300 hover:bg-emerald-100 dark:hover:bg-emerald-900" type="submit" {
+                                "Download now"
                             }
                         }
                     }
@@ -5315,6 +5483,7 @@ fn profile_editor(profile: &Profile) -> Markup {
                 (input_text("Output Directory", "output_dir", "", true, &profile.output_dir))
                 (input_number("Storage Quota (GB)", "storage_quota_gb", "", true, &(profile.storage_quota_bytes / 1_000_000_000).to_string()))
                 (input_number("Retention Days", "retention_days", "Optional", false, &profile.retention_days.map_or_else(String::new, |days| days.to_string())))
+                (input_number(QUALITY_WAIT_LABEL, "quality_wait_hours", QUALITY_WAIT_PLACEHOLDER, false, &profile.quality_wait_hours.map_or_else(String::new, |hours| hours.to_string())))
                 div class="flex items-center gap-4" {
                     label class="inline-flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300" {
                         input type="checkbox" name="include_livestreams" checked[profile.include_livestreams];
@@ -5860,6 +6029,10 @@ fn status_badge(status: &VideoStatus) -> Markup {
             "Pending",
             "bg-amber-100 dark:bg-amber-900/50 text-amber-900 dark:text-amber-100",
         ),
+        VideoStatus::AwaitingQuality => (
+            "Awaiting Quality",
+            "bg-yellow-100 dark:bg-yellow-900/50 text-yellow-900 dark:text-yellow-100",
+        ),
         VideoStatus::Downloading => (
             "Downloading",
             "bg-sky-100 dark:bg-sky-900/50 text-sky-900 dark:text-sky-100",
@@ -6078,6 +6251,19 @@ mod input_cutoff_date_tests {
             markup.contains("getTimezoneOffset"),
             "Today must resolve to the viewer's local date, not the UTC date: {markup}"
         );
+    }
+}
+
+const QUALITY_WAIT_LABEL: &str = "Quality Wait (hours)";
+const QUALITY_WAIT_PLACEHOLDER: &str = "Default (QUALITY_WAIT_HOURS, 24h); 0 = off";
+
+/// Parse the profile form's quality wait: blank means "use the server
+/// default", and the column's `CHECK` rejects negatives, so catch them here
+/// with a readable message instead of a database error.
+fn parse_quality_wait_hours(raw: Option<&str>) -> Result<Option<i32>, String> {
+    match parse_optional_i32(raw, "Quality wait")? {
+        Some(hours) if hours < 0 => Err("Quality wait must be 0 or greater".to_string()),
+        value => Ok(value),
     }
 }
 
@@ -6304,7 +6490,7 @@ pub(crate) fn layout_with_flash(
                     // their statuses) may no longer be the ones that were picked.
                     var BULK_ELIGIBLE = {
                       retry: ['failed', 'permanently_failed', 'cleaned'],
-                      cancel: ['pending', 'downloading'],
+                      cancel: ['pending', 'awaiting_quality', 'downloading'],
                       delete: ['completed']
                     };
 
@@ -6686,6 +6872,7 @@ mod tests {
     fn download_status_slug_round_trips_through_parse() {
         for status in [
             VideoStatus::Pending,
+            VideoStatus::AwaitingQuality,
             VideoStatus::Downloading,
             VideoStatus::Completed,
             VideoStatus::Failed,

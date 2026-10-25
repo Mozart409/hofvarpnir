@@ -113,6 +113,7 @@ impl TestApp {
             rate_limit_delay: Duration::from_millis(100),
             ytdlp_path: std::path::PathBuf::from("yt-dlp"),
             verify_downloads,
+            quality_wait_hours: 0,
         };
 
         let broadcaster = ActivityBroadcaster::new();

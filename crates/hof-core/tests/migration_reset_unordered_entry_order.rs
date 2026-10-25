@@ -29,8 +29,7 @@
 #![allow(clippy::panic)]
 
 use chrono::NaiveDate;
-use hof_core::db::{self, CreateProfile, CreateSource, CreateUser};
-use hof_core::domain::profile::{OutputPreset, Quality};
+use hof_core::db::{self, CreateSource, CreateUser};
 use hof_core::domain::source::{EntryOrder, SourceType};
 use sqlx::PgPool;
 use sqlx::migrate::{Migrate, Migrator};
@@ -92,28 +91,30 @@ async fn seed_source(pool: &PgPool, name: &str) -> Ulid {
     .await
     .expect("create user");
 
-    let profile = db::create_profile(
-        pool,
-        CreateProfile {
-            user_id: user.id,
-            name,
-            quality: Quality::Best,
-            output_preset: OutputPreset::Auto,
-            naming_template: "%(title)s",
-            output_dir: "/tmp/hofvarpnir-migration-test",
-            include_livestreams: false,
-            include_shorts: false,
-            storage_quota_bytes: 1_000_000_000,
-            retention_days: None,
-        },
+    // Raw SQL, not `db::create_profile`: the schema here stops before
+    // `TARGET_VERSION`, and the db layer writes whatever columns `profiles`
+    // has *today* (e.g. `quality_wait_hours`, added later), so it fails here
+    // every time the table grows. Name only columns that exist at that point.
+    let profile_id = Ulid::generate();
+    sqlx::query(
+        r"
+        INSERT INTO profiles (id, user_id, name, quality, naming_template, output_dir,
+                              output_preset, storage_quota_bytes)
+        VALUES ($1, $2, $3, 'best', '%(title)s', '/tmp/hofvarpnir-migration-test',
+                'auto', 1000000000)
+        ",
     )
+    .bind(profile_id.to_string())
+    .bind(user.id.to_string())
+    .bind(name)
+    .execute(pool)
     .await
     .expect("create profile");
 
     let source = db::create_source(
         pool,
         CreateSource {
-            profile_id: profile.id,
+            profile_id,
             url: &format!("https://youtube.com/@{name}"),
             source_type: SourceType::Channel,
             custom_name: Some(name),

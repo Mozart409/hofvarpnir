@@ -301,6 +301,7 @@ mod video_filter_tests {
             include_shorts,
             storage_quota_bytes: 100_000_000_000,
             retention_days: None,
+            quality_wait_hours: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         }

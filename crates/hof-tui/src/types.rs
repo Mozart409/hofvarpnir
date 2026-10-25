@@ -64,6 +64,7 @@ impl OutputPreset {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 pub enum VideoStatus {
     Pending,
+    AwaitingQuality,
     Downloading,
     Completed,
     Failed,
@@ -77,6 +78,7 @@ impl VideoStatus {
     pub const fn label(self) -> &'static str {
         match self {
             Self::Pending => "pending",
+            Self::AwaitingQuality => "awaiting-q",
             Self::Downloading => "downloading",
             Self::Completed => "completed",
             Self::Failed => "failed",
@@ -93,6 +95,7 @@ impl VideoStatus {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Pending => "Pending",
+            Self::AwaitingQuality => "AwaitingQuality",
             Self::Downloading => "Downloading",
             Self::Completed => "Completed",
             Self::Failed => "Failed",

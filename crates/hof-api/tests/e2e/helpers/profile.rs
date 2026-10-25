@@ -118,6 +118,7 @@ impl ProfileBuilder {
                 include_shorts: self.include_shorts,
                 storage_quota_bytes: self.storage_quota_bytes,
                 retention_days: self.retention_days,
+                quality_wait_hours: None,
             },
         )
         .await

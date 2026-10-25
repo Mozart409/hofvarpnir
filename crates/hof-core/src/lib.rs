@@ -23,6 +23,7 @@ pub mod jellyfin;
 pub mod liveness;
 pub mod metrics;
 pub mod oidc;
+pub mod quality_gate;
 pub mod runtime_config;
 pub mod startup;
 pub mod telemetry;

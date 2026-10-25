@@ -20,6 +20,7 @@ pub struct CreateProfile<'a> {
     pub include_shorts: bool,
     pub storage_quota_bytes: i64,
     pub retention_days: Option<i32>,
+    pub quality_wait_hours: Option<i32>,
 }
 
 /// Data for updating an existing profile.
@@ -34,6 +35,7 @@ pub struct UpdateProfile<'a> {
     pub include_shorts: Option<bool>,
     pub storage_quota_bytes: Option<i64>,
     pub retention_days: Option<Option<i32>>,
+    pub quality_wait_hours: Option<Option<i32>>,
 }
 
 /// Create a new profile.
@@ -47,10 +49,12 @@ pub async fn create_profile(pool: &PgPool, data: CreateProfile<'_>) -> Result<Pr
     let row = sqlx::query_as::<_, ProfileRow>(
         r"
         INSERT INTO profiles (id, user_id, name, quality, naming_template, output_dir,
-                              output_preset, include_livestreams, include_shorts, storage_quota_bytes, retention_days)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                              output_preset, include_livestreams, include_shorts, storage_quota_bytes, retention_days,
+                              quality_wait_hours)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
         RETURNING id, user_id, name, quality, output_preset, naming_template, output_dir,
                   include_livestreams, include_shorts, storage_quota_bytes, retention_days,
+               quality_wait_hours,
                   created_at, updated_at
         ",
     )
@@ -65,6 +69,7 @@ pub async fn create_profile(pool: &PgPool, data: CreateProfile<'_>) -> Result<Pr
     .bind(data.include_shorts)
     .bind(data.storage_quota_bytes)
     .bind(data.retention_days)
+    .bind(data.quality_wait_hours)
     .fetch_one(pool)
     .await?;
 
@@ -83,6 +88,7 @@ pub async fn get_profile(pool: &PgPool, id: Ulid) -> Result<Profile, DbError> {
         SELECT id, user_id, name, quality, naming_template, output_dir,
                output_preset,
                include_livestreams, include_shorts, storage_quota_bytes, retention_days,
+               quality_wait_hours,
                created_at, updated_at
         FROM profiles
         WHERE id = $1
@@ -108,6 +114,7 @@ pub async fn list_profiles_for_user(pool: &PgPool, user_id: Ulid) -> Result<Vec<
         SELECT id, user_id, name, quality, naming_template, output_dir,
                output_preset,
                include_livestreams, include_shorts, storage_quota_bytes, retention_days,
+               quality_wait_hours,
                created_at, updated_at
         FROM profiles
         WHERE user_id = $1
@@ -136,6 +143,7 @@ pub async fn list_profiles(pool: &PgPool) -> Result<Vec<Profile>, DbError> {
         SELECT id, user_id, name, quality, naming_template, output_dir,
                output_preset,
                include_livestreams, include_shorts, storage_quota_bytes, retention_days,
+               quality_wait_hours,
                created_at, updated_at
         FROM profiles
         ORDER BY created_at DESC
@@ -172,10 +180,12 @@ pub async fn update_profile(
             include_livestreams = COALESCE($7, include_livestreams),
             include_shorts = COALESCE($8, include_shorts),
             storage_quota_bytes = COALESCE($9, storage_quota_bytes),
-            retention_days = CASE WHEN $10 THEN $11 ELSE retention_days END
+            retention_days = CASE WHEN $10 THEN $11 ELSE retention_days END,
+            quality_wait_hours = CASE WHEN $12 THEN $13 ELSE quality_wait_hours END
         WHERE id = $1
         RETURNING id, user_id, name, quality, output_preset, naming_template, output_dir,
                   include_livestreams, include_shorts, storage_quota_bytes, retention_days,
+               quality_wait_hours,
                   created_at, updated_at
         ",
     )
@@ -190,6 +200,8 @@ pub async fn update_profile(
     .bind(data.storage_quota_bytes)
     .bind(data.retention_days.is_some())
     .bind(data.retention_days.flatten())
+    .bind(data.quality_wait_hours.is_some())
+    .bind(data.quality_wait_hours.flatten())
     .fetch_optional(pool)
     .await?
     .ok_or(DbError::NotFound)?;

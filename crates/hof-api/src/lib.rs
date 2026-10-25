@@ -205,6 +205,7 @@ impl AppState {
         downloads::VideoResponse,
         downloads::PendingDeletionResponse,
         downloads::RetryResponse,
+        downloads::DownloadNowResponse,
         downloads::BulkRetryResponse,
         downloads::CancelResponse,
         downloads::DeleteResponse,

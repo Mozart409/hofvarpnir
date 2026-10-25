@@ -10,6 +10,8 @@ use crate::domain::source::SourceType;
 #[sqlx(type_name = "video_status", rename_all = "snake_case")]
 pub enum VideoStatus {
     Pending,
+    /// Held by the quality gate until `next_retry`; see [`crate::quality_gate`].
+    AwaitingQuality,
     Downloading,
     Completed,
     Failed,

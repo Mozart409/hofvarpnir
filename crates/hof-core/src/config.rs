@@ -60,6 +60,10 @@ pub struct DownloadConfig {
     /// reporting benign conditions at `-v error` level, this turns the gate off
     /// without a code change rather than failing every download.
     pub verify_downloads: bool,
+    /// Default hours a fresh video may wait for its profile's quality
+    /// (`QUALITY_WAIT_HOURS`); a profile's `quality_wait_hours` overrides it.
+    /// 0 disables the [`crate::quality_gate`].
+    pub quality_wait_hours: u32,
 }
 
 /// Storage configuration.
@@ -150,6 +154,10 @@ impl DownloadConfig {
             !matches!(s.trim().to_ascii_lowercase().as_str(), "0" | "false" | "no")
         });
 
+        let quality_wait_hours = optional_env("QUALITY_WAIT_HOURS")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(crate::quality_gate::DEFAULT_QUALITY_WAIT_HOURS);
+
         Self {
             max_concurrent,
             timeout: Duration::from_secs(timeout_hours * 3600),
@@ -157,6 +165,7 @@ impl DownloadConfig {
             rate_limit_delay: Duration::from_secs(rate_limit_secs),
             ytdlp_path,
             verify_downloads,
+            quality_wait_hours,
         }
     }
 }

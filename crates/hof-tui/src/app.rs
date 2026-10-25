@@ -393,10 +393,11 @@ pub enum Paging {
 pub const ACTIVITY_PAGE: i64 = 50;
 
 /// Downloads-tab status filter, cycled with `f`.
-pub const STATUS_FILTER_CYCLE: [Option<VideoStatus>; 6] = [
+pub const STATUS_FILTER_CYCLE: [Option<VideoStatus>; 7] = [
     None,
     Some(VideoStatus::Downloading),
     Some(VideoStatus::Pending),
+    Some(VideoStatus::AwaitingQuality),
     Some(VideoStatus::Failed),
     Some(VideoStatus::PermanentlyFailed),
     Some(VideoStatus::Completed),

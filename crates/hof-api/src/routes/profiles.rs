@@ -60,6 +60,9 @@ pub struct ProfileResponse {
     pub include_shorts: bool,
     pub storage_quota_bytes: i64,
     pub retention_days: Option<i32>,
+    /// Hours after publication a video may wait for `quality`; `null` uses
+    /// the server's `QUALITY_WAIT_HOURS`, 0 disables the quality gate.
+    pub quality_wait_hours: Option<i32>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -78,6 +81,7 @@ impl From<Profile> for ProfileResponse {
             include_shorts: p.include_shorts,
             storage_quota_bytes: p.storage_quota_bytes,
             retention_days: p.retention_days,
+            quality_wait_hours: p.quality_wait_hours,
             created_at: p.created_at,
             updated_at: p.updated_at,
         }
@@ -110,6 +114,19 @@ pub struct CreateProfileRequest {
     pub storage_quota_bytes: i64,
     /// Auto-cleanup after N days (profile-wide).
     pub retention_days: Option<i32>,
+    /// Hours after publication a video may wait for `quality`. Omit or
+    /// `null` to use the server's `QUALITY_WAIT_HOURS`; 0 disables the gate.
+    pub quality_wait_hours: Option<i32>,
+}
+
+fn quality_wait_hours_error() -> axum::response::Response {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(ErrorResponse {
+            error: "quality_wait_hours must be 0 or greater".to_string(),
+        }),
+    )
+        .into_response()
 }
 
 const fn default_storage_quota() -> i64 {
@@ -139,6 +156,10 @@ pub struct UpdateProfileRequest {
     /// Auto-cleanup after N days. Use `null` to clear.
     #[serde(default, deserialize_with = "deserialize_optional_optional")]
     pub retention_days: Option<Option<i32>>,
+    /// Hours a video may wait for `quality`. Use `null` to fall back to
+    /// `QUALITY_WAIT_HOURS`; 0 disables the gate.
+    #[serde(default, deserialize_with = "deserialize_optional_optional")]
+    pub quality_wait_hours: Option<Option<i32>>,
 }
 
 /// Custom deserializer for `Option<Option<T>>` to distinguish between
@@ -262,6 +283,10 @@ pub async fn create_profile(
             .into_response();
     }
 
+    if req.quality_wait_hours.is_some_and(i32::is_negative) {
+        return quality_wait_hours_error();
+    }
+
     let data = CreateProfile {
         user_id,
         name: &req.name,
@@ -273,6 +298,7 @@ pub async fn create_profile(
         include_shorts: req.include_shorts,
         storage_quota_bytes: req.storage_quota_bytes,
         retention_days: req.retention_days,
+        quality_wait_hours: req.quality_wait_hours,
     };
 
     match db::create_profile(&state.pool, data).await {
@@ -407,6 +433,14 @@ pub async fn update_profile(
         None => None,
     };
 
+    if req
+        .quality_wait_hours
+        .flatten()
+        .is_some_and(i32::is_negative)
+    {
+        return quality_wait_hours_error();
+    }
+
     let data = UpdateProfile {
         name: req.name.as_deref(),
         quality: req.quality,
@@ -417,6 +451,7 @@ pub async fn update_profile(
         include_shorts: req.include_shorts,
         storage_quota_bytes: req.storage_quota_bytes,
         retention_days: req.retention_days,
+        quality_wait_hours: req.quality_wait_hours,
     };
 
     match db::update_profile(&state.pool, profile_id, data).await {
