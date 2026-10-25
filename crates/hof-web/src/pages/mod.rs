@@ -45,6 +45,31 @@ use ulid::Ulid;
 
 use crate::auth::AuthUser;
 
+// Module split in progress: sibling modules reach shared items through these globs.
+mod forms;
+mod login;
+mod dashboard;
+mod api_keys;
+mod profiles;
+mod sources;
+mod downloads;
+mod urls;
+mod activity;
+mod schedule;
+mod components;
+
+use self::forms::*;
+use self::login::*;
+use self::dashboard::*;
+use self::api_keys::*;
+use self::profiles::*;
+use self::sources::*;
+use self::downloads::*;
+use self::urls::*;
+use self::activity::*;
+use self::schedule::*;
+use self::components::*;
+
 /// Static assets embedded at compile time.
 #[derive(Embed)]
 #[folder = "assets/"]
