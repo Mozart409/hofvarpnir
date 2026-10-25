@@ -2,6 +2,16 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.19.0 - 2026-10-25
+#### Features
+- (**hofvarpnir**) hold new videos until their profile quality is available - (6120a39) - Amadeus Mader
+#### Continuous Integration
+- (**hofvarpnir**) drop -oci image tags and keep the 5 newest releases on ghcr - (0f1dca6) - Amadeus Mader
+#### Miscellaneous Chores
+- (**web**) split pages.rs into feature modules - (d9bd4b5) - Amadeus Mader
+- (**web**) scaffold pages module split - (f654124) - Amadeus Mader
+
+- - -
 ## v0.18.3 - 2026-10-25
 #### Performance Improvements
 - (**hofvarpnir**) probe yt-dlp once at startup instead of per health check - (d85c497) - Amadeus Mader
