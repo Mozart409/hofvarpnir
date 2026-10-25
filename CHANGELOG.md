@@ -2,6 +2,15 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.18.3 - 2026-10-25
+#### Performance Improvements
+- (**hofvarpnir**) probe yt-dlp once at startup instead of per health check - (d85c497) - Amadeus Mader
+#### Continuous Integration
+- (**hofvarpnir**) drop dependabot version updates on the github mirror - (ac62aab) - Amadeus Mader
+#### Miscellaneous Chores
+- (**hofvarpnir**) bump artifact and codeql actions - (e0bcc69) - Amadeus Mader
+
+- - -
 ## v0.18.2 - 2026-10-25
 #### Features
 - (**hofvarpnir**) instrument oidc, settings, verify, cleanup, indexer and startup paths - (e879635) - Amadeus Mader
