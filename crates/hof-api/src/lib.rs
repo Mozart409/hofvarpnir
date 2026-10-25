@@ -128,13 +128,15 @@ pub struct AppState {
     pub liveness: LivenessFlag,
     /// Batches API key `last_used_at` writes (see [`ApiKeyTouches`]).
     pub api_key_touches: ApiKeyTouches,
+    /// yt-dlp availability, probed once at startup (see [`health::YtdlpHealth`]).
+    pub ytdlp_health: health::YtdlpHealth,
 }
 
 impl AppState {
     /// Create a new `AppState`.
     ///
-    /// Spawns the API key touch batcher, so it must run inside a tokio
-    /// runtime.
+    /// Spawns the API key touch batcher and the yt-dlp probe, so it must run
+    /// inside a tokio runtime.
     #[must_use]
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -170,6 +172,7 @@ impl AppState {
             drain,
             liveness,
             api_key_touches,
+            ytdlp_health: health::YtdlpHealth::spawn(),
         }
     }
 }

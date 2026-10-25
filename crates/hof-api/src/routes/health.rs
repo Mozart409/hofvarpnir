@@ -1,5 +1,7 @@
 //! Health check endpoints for container orchestration.
 
+use std::sync::Arc;
+
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -8,6 +10,7 @@ use chrono::{DateTime, Utc};
 use hof_core::actors::root_supervisor::GetActorHealth;
 use hof_core::domain::system::{IssueSeverity, SystemIssue};
 use serde::Serialize;
+use tokio::sync::OnceCell;
 use utoipa::ToSchema;
 use utoipa_axum::{router::OpenApiRouter, routes};
 
@@ -87,13 +90,40 @@ pub enum HealthStatus {
 }
 
 /// Individual component health status.
-#[derive(Debug, Serialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct ComponentHealth {
     /// Whether the component is healthy.
     pub healthy: bool,
     /// Optional message with details.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
+}
+
+/// The yt-dlp check, run once per process.
+///
+/// `yt-dlp --version` starts a Python interpreter, about 430 ms per call
+/// (measured in Tempo), and `/api/health` is polled every ~20 s. yt-dlp ships
+/// in the image and startup refuses to run without it, so the answer cannot
+/// change while the process lives: probe once at startup and serve the result.
+#[derive(Clone, Default)]
+pub struct YtdlpHealth(Arc<OnceCell<ComponentHealth>>);
+
+impl YtdlpHealth {
+    /// Start the probe in the background. Must run inside a tokio runtime.
+    #[must_use]
+    pub fn spawn() -> Self {
+        let this = Self::default();
+        let cell = Arc::clone(&this.0);
+        tokio::spawn(async move {
+            cell.get_or_init(check_ytdlp).await;
+        });
+        this
+    }
+
+    /// The probe result, waiting for the startup probe if it is still running.
+    pub async fn get(&self) -> ComponentHealth {
+        self.0.get_or_init(check_ytdlp).await.clone()
+    }
 }
 
 /// Build the health router.
@@ -107,6 +137,7 @@ pub fn router() -> OpenApiRouter<AppState> {
 /// Comprehensive health check.
 ///
 /// Returns overall system health including database and yt-dlp status.
+/// The yt-dlp status is the startup probe's (see [`YtdlpHealth`]).
 /// Use this for monitoring dashboards.
 #[utoipa::path(
     get,
@@ -119,7 +150,7 @@ pub fn router() -> OpenApiRouter<AppState> {
 )]
 pub async fn health_check(State(state): State<AppState>) -> impl IntoResponse {
     let db_health = check_database(&state).await;
-    let ytdlp_health = check_ytdlp().await;
+    let ytdlp_health = state.ytdlp_health.get().await;
     let actors_health = check_actors_detailed(&state).await;
     let issues: Vec<SystemIssue> = state.startup_issues.to_vec();
 
