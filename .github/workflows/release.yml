@@ -40,21 +40,21 @@ jobs:
           tar -czf hofvarpnir-tui-${{ matrix.target }}-${{ github.ref_name }}.tar.gz -C dist/tui .
           for f in *.tar.gz; do sha256sum "$f" | cut -d' ' -f1 > "$f.sha256"; done
       - name: Upload server tarball
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: hofvarpnir-${{ matrix.target }}
           path: |
             hofvarpnir-${{ matrix.target }}-${{ github.ref_name }}.tar.gz
             hofvarpnir-${{ matrix.target }}-${{ github.ref_name }}.tar.gz.sha256
       - name: Upload TUI tarball
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: hofvarpnir-tui-${{ matrix.target }}
           path: |
             hofvarpnir-tui-${{ matrix.target }}-${{ github.ref_name }}.tar.gz
             hofvarpnir-tui-${{ matrix.target }}-${{ github.ref_name }}.tar.gz.sha256
       - name: Upload binary for container
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: binary-${{ matrix.target }}
           path: target/release/hofvarpnir
@@ -115,7 +115,7 @@ jobs:
               > "hofvarpnir-tui-${{ matrix.target }}-${{ github.ref_name }}.tar.gz.sha256"
           fi
       - name: Upload TUI tarball
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: hofvarpnir-tui-${{ matrix.target }}
           path: |
@@ -141,7 +141,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Download binary
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: binary-${{ matrix.target }}
           path: ./bin
@@ -166,7 +166,7 @@ jobs:
           # substitute fails (e.g. a corrupted NAR on cache.nixos.org).
           nix build --impure --fallback .#containerFromBinary
       - name: Upload container image
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: container-${{ matrix.arch }}
           path: result
@@ -181,7 +181,7 @@ jobs:
       actions: read
     steps:
       - name: Download container images
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           pattern: container-*
       - name: Login to GHCR
@@ -252,7 +252,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Download artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           path: artifacts
       - name: Derive image tag
