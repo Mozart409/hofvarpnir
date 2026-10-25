@@ -1,4 +1,4 @@
-name: Cleanup untagged GHCR images
+name: Cleanup GHCR images
 
 on:
   schedule:
@@ -23,16 +23,33 @@ jobs:
       # deletes those children, leaving the tagged list pointing at nothing.
       # Pulls then fail with "manifest unknown" for the platform digest, while
       # `docker manifest inspect` (list-only) and already-running hosts look
-      # fine. dataaxiom/ghcr-cleanup-action walks the manifest tree and keeps
-      # children referenced by a tagged image.
-      - name: Delete untagged images
+      # fine. dataaxiom/ghcr-cleanup-action walks the manifest tree: it keeps
+      # children referenced by a kept image and deletes them with a deleted one,
+      # so the sha256-only package versions need no rule of their own.
+      #
+      # Releases stopped publishing `<version>-oci` / `dev-oci` (one format is
+      # enough). Drop the old ones first, so they don't take up slots in the
+      # keep-n-tagged count below. Matches nothing once they are gone.
+      - name: Delete retired -oci tags
         uses: dataaxiom/ghcr-cleanup-action@d52806a0dc70b430571a37da1fde39733ffd640f # v1.2.2
         with:
           packages: hofvarpnir
+          delete-tags: "*-oci"
+          dry-run: ${{ inputs.dry-run || false }}
+      # Keep the 5 newest releases. One release is one tagged image: its
+      # MAJOR.MINOR tag (and `latest` on the newest) sit on the same index.
+      # `dev` is rebuilt on every push to main; its previous images become
+      # untagged and go with delete-untagged.
+      - name: Keep the newest releases and delete untagged images
+        uses: dataaxiom/ghcr-cleanup-action@d52806a0dc70b430571a37da1fde39733ffd640f # v1.2.2
+        with:
+          packages: hofvarpnir
+          exclude-tags: latest,dev
+          keep-n-tagged: 5
           delete-untagged: true
           # Sweep up multi-arch lists whose children were already destroyed by
-          # the old cleanup action (e.g. the current 0.2.x / latest tags), so we
-          # don't leave permanently-broken tags behind.
+          # the old cleanup action, so we don't leave permanently-broken tags
+          # behind.
           delete-ghost-images: true
           # After cleanup, warn if any surviving multi-arch image is missing a
           # platform child.
