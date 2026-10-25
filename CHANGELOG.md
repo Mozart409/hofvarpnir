@@ -2,6 +2,14 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.18.2 - 2026-10-25
+#### Features
+- (**hofvarpnir**) instrument oidc, settings, verify, cleanup, indexer and startup paths - (e879635) - Amadeus Mader
+- (**hofvarpnir**) record key count and error status on api key touch spans - (1ce0d74) - Amadeus Mader
+#### Miscellaneous Chores
+- (**hofvarpnir**) update cargo dependencies - (90b4b4f) - Amadeus Mader
+
+- - -
 ## v0.18.1 - 2026-10-24
 #### Performance Improvements
 - (**hofvarpnir**) batch api key last_used writes - (201c6e9) - Amadeus Mader
