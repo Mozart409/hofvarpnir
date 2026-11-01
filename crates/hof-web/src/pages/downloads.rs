@@ -1027,9 +1027,11 @@ pub(super) fn downloads_row(
         )
     };
 
+    let source_name = source_names.get(&video.id);
+
     html! {
         tr id=(format!("video-{}", video.id)) {
-            td class="px-3 py-2" {
+            td class="px-2 py-2" {
                 input
                     type="checkbox"
                     data-bulk-select=(video.id.to_string())
@@ -1037,16 +1039,16 @@ pub(super) fn downloads_row(
                     aria-label=(format!("Select {}", video.title))
                     class="h-4 w-4 rounded border-slate-300 dark:border-slate-600";
             }
-            td class="max-w-lg px-3 py-2 text-slate-900 dark:text-slate-100" {
-                p class="truncate font-medium" { (video.title) }
+            td class="px-3 py-2 text-slate-900 dark:text-slate-100" {
+                p class="truncate font-medium" title=(video.title) { (video.title) }
                 div class="flex items-center gap-2" {
-                    p class="truncate text-xs text-slate-500 dark:text-slate-400" { (video.id.to_string()) }
+                    p class="min-w-0 truncate text-xs text-slate-500 dark:text-slate-400" { (video.id.to_string()) }
                     (delivered_quality_badge(video))
                 }
             }
-            td class="max-w-xs px-3 py-2 text-slate-600 dark:text-slate-400" {
-                p class="truncate" {
-                    @if let Some(name) = source_names.get(&video.id) {
+            td class="px-3 py-2 text-slate-600 dark:text-slate-400" {
+                p class="truncate" title=(source_name.map_or("", |name| name.as_str())) {
+                    @if let Some(name) = source_name {
                         (name)
                     } @else {
                         span class="text-slate-400 dark:text-slate-500 italic" { "—" }
@@ -1055,17 +1057,26 @@ pub(super) fn downloads_row(
             }
             td class="px-3 py-2 text-slate-600 dark:text-slate-400" { (video.platform) }
             td class="px-3 py-2" {
-                (status_badge(&video.status))
-                // The quality gate's note: what is available and when it rechecks.
-                @if video.status == VideoStatus::AwaitingQuality {
-                    @if let Some(note) = &video.last_error {
-                        p class="mt-1 text-xs text-slate-500 dark:text-slate-400" { (note) }
+                div class="flex flex-col items-start gap-1" {
+                    (status_badge(&video.status))
+                    // The quality gate's note: what is available and when it
+                    // rechecks. Clamped so a long note cannot grow the row; the
+                    // full text stays available as a tooltip.
+                    @if video.status == VideoStatus::AwaitingQuality {
+                        @if let Some(note) = &video.last_error {
+                            p
+                                class="line-clamp-5 text-xs text-slate-500 dark:text-slate-400"
+                                title=(note)
+                            {
+                                (note)
+                            }
+                        }
                     }
                 }
             }
             td class="px-3 py-2 text-slate-600 dark:text-slate-400" { (video.attempts) }
             td class="px-3 py-2" {
-                div class="flex gap-2" {
+                div class="flex flex-wrap gap-2" {
                     @if BulkAction::Retry.allows(&video.status) {
                         form method="post" action=(action_url("retry")) {
                             button class="rounded-lg border border-sky-200 dark:border-sky-800 bg-sky-50 dark:bg-sky-900/50 px-3 py-1.5 text-xs font-medium text-sky-700 dark:text-sky-300 hover:bg-sky-100 dark:hover:bg-sky-900" type="submit" {
@@ -1138,23 +1149,29 @@ pub(super) fn downloads_list_markup(
                 p class="mt-3 text-sm text-slate-500 dark:text-slate-400" { "No downloads match your filters." }
             } @else {
                 (bulk_action_bar(status_param, search, page_num, per_page))
+                // Fixed layout with percentage columns: a long title or the
+                // quality gate's note can only wrap inside its column, never
+                // widen the table past the card.
                 div class="mt-4 overflow-x-auto" {
-                    table class="min-w-full divide-y divide-slate-200 text-sm" data-bulk-table="1" {
+                    table
+                        class="w-full min-w-[56rem] table-fixed divide-y divide-slate-200 text-sm"
+                        data-bulk-table="1"
+                    {
                         thead class="bg-slate-50 dark:bg-slate-800" {
                             tr {
-                                th class="w-8 px-3 py-2 text-left" {
+                                th class="w-[5%] px-2 py-2 text-left" {
                                     input
                                         type="checkbox"
                                         data-bulk-select-all="1"
                                         aria-label="Select all downloads on this page"
                                         class="h-4 w-4 rounded border-slate-300 dark:border-slate-600";
                                 }
-                                th class="px-3 py-2 text-left font-semibold text-slate-700 dark:text-slate-300" { "Title" }
-                                th class="px-3 py-2 text-left font-semibold text-slate-700 dark:text-slate-300" { "Source" }
-                                th class="px-3 py-2 text-left font-semibold text-slate-700 dark:text-slate-300" { "Platform" }
-                                th class="px-3 py-2 text-left font-semibold text-slate-700 dark:text-slate-300" { "Status" }
-                                th class="px-3 py-2 text-left font-semibold text-slate-700 dark:text-slate-300" { "Attempts" }
-                                th class="px-3 py-2 text-left font-semibold text-slate-700 dark:text-slate-300" { "Actions" }
+                                th class="w-[28%] px-3 py-2 text-left font-semibold text-slate-700 dark:text-slate-300" { "Title" }
+                                th class="w-[12%] px-3 py-2 text-left font-semibold text-slate-700 dark:text-slate-300" { "Source" }
+                                th class="w-[10%] px-3 py-2 text-left font-semibold text-slate-700 dark:text-slate-300" { "Platform" }
+                                th class="w-[15%] px-3 py-2 text-left font-semibold text-slate-700 dark:text-slate-300" { "Status" }
+                                th class="w-[10%] px-3 py-2 text-left font-semibold text-slate-700 dark:text-slate-300" { "Attempts" }
+                                th class="w-[20%] px-3 py-2 text-left font-semibold text-slate-700 dark:text-slate-300" { "Actions" }
                             }
                         }
                         tbody class="divide-y divide-slate-100 dark:divide-slate-700 bg-white dark:bg-slate-900" {
