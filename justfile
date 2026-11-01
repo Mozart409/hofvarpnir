@@ -84,14 +84,19 @@ db-down:
 with-db +recipes:
     #!/usr/bin/env bash
     set -euo pipefail
+    # One run at a time: a second run would share this Postgres, and the run
+    # that started it would remove it under the other. Children get the lock fd
+    # closed (9>&-), so a container started here never holds the lock.
+    exec 9>"${XDG_RUNTIME_DIR:-/tmp}/hofvarpnir-test-db.lock"
+    flock -n 9 || { echo "hofvarpnir-with-db: another run is using the test database, waiting" >&2; flock 9; }
     if pg_isready -d "{{ test_database_url }}" -t 2 -q; then
-        just prune-test-dbs
-        exec just {{ recipes }}
+        just prune-test-dbs 9>&-
+        exec just {{ recipes }} 9>&-
     fi
     # Before the start, so a Postgres that never turns healthy is removed too.
-    trap 'just db-down' EXIT
-    just db-up
-    just {{ recipes }}
+    trap 'just db-down 9>&-' EXIT
+    just db-up 9>&-
+    just {{ recipes }} 9>&-
 
 # Drop `#[sqlx::test]` databases left behind by interrupted runs.
 #
