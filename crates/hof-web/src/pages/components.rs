@@ -587,7 +587,9 @@ pub(crate) fn layout_with_flash(
                     }
                 }
 
-                div class="mx-auto flex min-h-screen w-full max-w-7xl flex-col px-4 py-8 sm:px-6 lg:px-8" {
+                // 160rem = 2560px: the content keeps growing with the viewport
+                // up to 2K, then centres.
+                div class="mx-auto flex min-h-screen w-full max-w-[160rem] flex-col px-4 py-8 sm:px-6 lg:px-8" {
                     // System issues banner (loaded via htmx on page load)
                     div
                         hx-get="/web/system-banner"
