@@ -1060,10 +1060,11 @@ pub async fn get_download(
     }
 }
 
-/// Cancel an active download.
+/// Cancel a queued, quality-held, or active download.
 ///
-/// Stops an in-progress download and marks the video as failed.
-/// The video can be retried later using the retry endpoint.
+/// Stops an in-progress download and marks the video as failed. A video held
+/// by the quality gate (`awaiting_quality`) has its recheck cleared. The video
+/// can be retried later using the retry endpoint.
 #[utoipa::path(
     post,
     path = "/{id}/cancel",
@@ -1073,7 +1074,7 @@ pub async fn get_download(
     ),
     responses(
         (status = 200, description = "Download cancelled", body = CancelResponse),
-        (status = 400, description = "Invalid ID format", body = ErrorResponse),
+        (status = 400, description = "Invalid ID format or video not eligible for cancel", body = ErrorResponse),
         (status = 401, description = "Unauthorized", body = ApiErrorResponse),
         (status = 403, description = "Forbidden - insufficient scope", body = ApiErrorResponse),
         (status = 404, description = "Video not found", body = ErrorResponse),
@@ -1102,12 +1103,18 @@ pub async fn cancel_download(
     // Verify video exists
     match db::get_video(&state.pool, video_id).await {
         Ok(video) => {
-            // Check if video is actually downloading
-            if video.status != VideoStatus::Downloading {
+            // Same eligibility as bulk cancel: a queued, quality-held, or
+            // actively downloading video can be cancelled.
+            if !matches!(
+                video.status,
+                VideoStatus::Pending | VideoStatus::AwaitingQuality | VideoStatus::Downloading
+            ) {
                 return (
                     StatusCode::BAD_REQUEST,
                     Json(ErrorResponse {
-                        error: "Video is not currently downloading".to_string(),
+                        error:
+                            "Only pending, awaiting_quality, or downloading videos can be cancelled"
+                                .to_string(),
                     }),
                 )
                     .into_response();

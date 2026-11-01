@@ -443,7 +443,11 @@ mod tests {
 
     #[test]
     fn bulk_cancel_matches_single_cancel_eligibility() {
-        for status in [VideoStatus::Pending, VideoStatus::Downloading] {
+        for status in [
+            VideoStatus::Pending,
+            VideoStatus::AwaitingQuality,
+            VideoStatus::Downloading,
+        ] {
             assert!(BulkAction::Cancel.allows(&status));
         }
         for status in [

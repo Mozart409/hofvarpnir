@@ -749,11 +749,11 @@ pub(super) async fn cancel_download(
 
     if !matches!(
         video.status,
-        VideoStatus::Pending | VideoStatus::Downloading
+        VideoStatus::Pending | VideoStatus::AwaitingQuality | VideoStatus::Downloading
     ) {
         return (
             StatusCode::BAD_REQUEST,
-            error_page("Only pending or downloading videos can be cancelled"),
+            error_page("Only pending, awaiting_quality, or downloading videos can be cancelled"),
         )
             .into_response();
     }

@@ -817,7 +817,8 @@ async fn search_does_not_duplicate_multi_source_videos(pool: PgPool) {
 }
 
 /// A held (`awaiting_quality`) video cannot be manually retried, but can be
-/// cancelled, which leaves it `failed` with the recheck cleared.
+/// cancelled — via the bulk endpoint or the single cancel endpoint — which
+/// leaves it `failed` with the recheck cleared.
 #[sqlx::test(migrations = "../hof-core/migrations")]
 async fn awaiting_quality_video_rejects_retry_and_accepts_cancel(pool: PgPool) {
     use hof_core::domain::video::VideoStatus;
@@ -859,6 +860,30 @@ async fn awaiting_quality_video_rejects_retry_and_accepts_cancel(pool: PgPool) {
     let cancelled = db::get_video(&pool, held).await.expect("get");
     assert_eq!(cancelled.status, VideoStatus::Failed);
     assert!(cancelled.next_retry.is_none());
+
+    // The single cancel endpoint accepts a held video the same way.
+    let held_single =
+        seed_video_with_status(&pool, source.id, "held_video_single", "pending").await;
+    db::mark_video_downloading(&pool, held_single)
+        .await
+        .expect("mark");
+    db::defer_video_for_quality(
+        &pool,
+        held_single,
+        chrono::Utc::now() + chrono::Duration::hours(6),
+        "Only 480p available",
+    )
+    .await
+    .expect("defer");
+
+    app.server
+        .post(&format!("/api/v1/downloads/{held_single}/cancel"))
+        .add_header("Authorization", key.bearer())
+        .await
+        .assert_status(StatusCode::OK);
+    let cancelled_single = db::get_video(&pool, held_single).await.expect("get");
+    assert_eq!(cancelled_single.status, VideoStatus::Failed);
+    assert!(cancelled_single.next_retry.is_none());
 }
 
 /// "Download now" releases a held video to pending with the quality gate
