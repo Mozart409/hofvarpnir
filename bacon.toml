@@ -57,7 +57,7 @@ need_stdout = false
 [jobs.test]
 command = ["cargo", "test", "--workspace", "--", "--test-threads=4"]
 need_stdout = true
-env.DATABASE_URL = "postgresql://postgres:postgres@localhost:5433/postgres"
+env.DATABASE_URL = "postgresql://postgres:postgres@localhost:5435/postgres"
 
 [jobs.nextest]
 command = [
@@ -67,7 +67,7 @@ command = [
 ]
 need_stdout = true
 analyzer = "nextest"
-env.DATABASE_URL = "postgresql://postgres:postgres@localhost:5433/postgres"
+env.DATABASE_URL = "postgresql://postgres:postgres@localhost:5435/postgres"
 
 [jobs.doc]
 command = ["cargo", "doc", "--workspace", "--no-deps"]

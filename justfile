@@ -17,10 +17,10 @@ secrets := "sops exec-env .sops.env"
 # DATABASE_URL to point elsewhere.
 database_url := env_var_or_default("DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/hofvarpnir_dev")
 
-# Lean, ephemeral Postgres used exclusively by `just test` (postgres-test service
+# Lean, ephemeral Postgres used exclusively by the test recipes (via `with-db`) (postgres-test service
 # in containers/compose.dev.yml). Override with TEST_DATABASE_URL to point the
 # suite elsewhere.
-test_database_url := env_var_or_default("TEST_DATABASE_URL", "postgresql://postgres:postgres@localhost:5433/postgres")
+test_database_url := env_var_or_default("TEST_DATABASE_URL", "postgresql://postgres:postgres@localhost:5435/postgres")
 
 default:
     @just --list
@@ -52,6 +52,46 @@ up: clear
     done
     echo "databases did not become ready within 30s" >&2
     exit 1
+
+# Start only the lean test Postgres (postgres-test, localhost:5435) and wait until
+# it accepts connections. Unlike `up`, this leaves the dev database alone.
+db-up:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    podman-compose -f containers/compose.dev.yml up -d postgres-test
+    echo "waiting for postgres-test to accept connections..."
+    # Probe the published port, not podman's health status, which can lag.
+    for _ in $(seq 1 60); do
+        if pg_isready -d "{{ test_database_url }}" -t 1 -q; then
+            echo "ready on {{ test_database_url }}"
+            just prune-test-dbs
+            exit 0
+        fi
+        sleep 1
+    done
+    echo "timed out waiting for postgres-test" >&2
+    podman logs --tail 30 postgres-test >&2 || true
+    exit 1
+
+# Remove the test Postgres. Its data dies with the container; the dev database
+# and its volume are untouched.
+db-down:
+    podman rm -f postgres-test
+
+# Run recipes against a test Postgres that lives only for them, e.g.
+# `just with-db test-run`: started and waited healthy, then removed again (also
+# on failure or Ctrl-C). One that was already up is used and left running.
+with-db +recipes:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if pg_isready -d "{{ test_database_url }}" -t 2 -q; then
+        just prune-test-dbs
+        exec just {{ recipes }}
+    fi
+    # Before the start, so a Postgres that never turns healthy is removed too.
+    trap 'just db-down' EXIT
+    just db-up
+    just {{ recipes }}
 
 # Drop `#[sqlx::test]` databases left behind by interrupted runs.
 #
@@ -195,7 +235,12 @@ css-build:
 # compile with `relation "sources" does not exist`. Compilation uses the
 # committed .sqlx cache; the tests still talk to postgres-test at runtime.
 # Run `just prepare` after any schema change to keep that cache current.
-test: clear up
+test: clear
+    just with-db test-run
+
+# The test body; `test` runs it inside `with-db`
+[private]
+test-run:
     SQLX_OFFLINE=true DATABASE_URL={{ test_database_url }} cargo test --all-features -- --include-ignored
     just test-patches
 
@@ -207,22 +252,29 @@ test-patches:
     cargo test --manifest-path patches/yt-dlp-patched/Cargo.toml --doc
 
 # E2E API tests against the lean postgres-test instance.
-# (#[sqlx::test] migrates each test database itself, so this only needs `up`)
-e2e: clear up
-    SQLX_OFFLINE=true DATABASE_URL={{ test_database_url }} cargo test --package hof-api --test e2e --all-features
+# (#[sqlx::test] migrates each test database itself; `with-db` starts the
+# database and removes it again)
+e2e: clear
+    just with-db e2e-only
 
-# Same as `e2e`, but skips `up` — works when an unrelated container in the
-# compose stack (e.g. grafana) is failing to start. Requires postgres-test
-# to already be running.
+# The e2e body, against whatever Postgres is at TEST_DATABASE_URL (`e2e` wraps it
+# in `with-db`). Run it directly when postgres-test is already up.
 e2e-only: clear
     SQLX_OFFLINE=true DATABASE_URL={{ test_database_url }} cargo test --package hof-api --test e2e --all-features
 
-# CI simulation (requires database; tests run against the lean postgres-test instance)
-ci: clear up
+# CI simulation: release build, then ci-gate against a test Postgres that lives
+# only for the run (with-db)
+ci: clear
     SQLX_OFFLINE=true cargo build --release
+    just with-db ci-gate
+
+# fmt check, clippy and the full test suite (what the monorepo's pre-push gate
+# runs, in the dev shell); `ci` wraps it in `with-db`
+ci-gate:
+    cargo fmt --all -- --check
+    SQLX_OFFLINE=true cargo clippy --workspace --all-targets --all-features -- -D warnings
     SQLX_OFFLINE=true DATABASE_URL={{ test_database_url }} cargo test --all-features -- --include-ignored
     just test-patches
-    SQLX_OFFLINE=true cargo clippy --workspace --all-targets --all-features -- -D warnings
 
 # Check Nix cache availability
 cache-check-x86: clear

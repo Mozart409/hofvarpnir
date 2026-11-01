@@ -80,7 +80,8 @@ just --list              # List all available tasks
 just fmt                 # Format code
 just lint                # Run clippy
 just fix                 # Fix clippy issues
-just test                # Run tests with DB setup (includes test-patches)
+just test                # Run tests; starts postgres-test and removes it again (with-db), includes test-patches
+just with-db <recipe>    # Run any recipe against a test Postgres that lives only for it (db-up / db-down by hand)
 just test-patches        # Offline tests of patches/yt-dlp-patched (own workspace)
 just dev                 # Run web server (config decrypted from .sops.env)
 just db-reset            # Reset database
@@ -404,17 +405,17 @@ In development you can use this connection string to connect to the database. DA
 
 The `just` DB recipes (`up`, `mig-*`, `db-*`, `prepare`) use exactly that URL via the `database_url` variable — it is compose's own dev credential, not a secret. The server's real configuration (including `DATABASE_URL` for any other environment) lives encrypted in `.sops.env` and is injected only into `just dev` / `bacon serve` via `sops exec-env`; edit with `sops .sops.env`, never `cat`/`sops -d` it. There is no plaintext `.env` and `set dotenv-load` is gone on purpose.
 
-The test entry points (`just test`, `e2e`, `e2e-only`, `ci`, and the bacon `test`/`nextest` jobs) do not use the dev database: they override `DATABASE_URL` to a dedicated, ephemeral Postgres (`postgres-test` service in `containers/compose.dev.yml`, localhost:5433, no monitoring extensions, durability disabled). Override with `TEST_DATABASE_URL` (just) if needed. The bacon `run`/`serve`/`tui` jobs still use the dev database, as does `just dev`.
+The test entry points (`just test`, `e2e`, `e2e-only`, `ci`, and the bacon `test`/`nextest` jobs) do not use the dev database: they override `DATABASE_URL` to a dedicated, ephemeral Postgres (`postgres-test` service in `containers/compose.dev.yml`, localhost:5435, no monitoring extensions, durability disabled). Override with `TEST_DATABASE_URL` (just) if needed. The bacon `run`/`serve`/`tui` jobs still use the dev database, as does `just dev`.
 
 `#[sqlx::test]` migrates a fresh database per test against postgres-test, so a
 migration checksum mismatch (see Database and SQLx above) affects the dev
 database and pre-commit hook, not `just test` — don't run migrations against
-5433 to "fix" a test failure. Durability being disabled on postgres-test also
+5435 to "fix" a test failure. Durability being disabled on postgres-test also
 means its own sqlx-managed registry (`_sqlx_test.databases`) can develop index
 corruption after an unclean shutdown, surfacing as Postgres error `XX002`
 (`heap tid from index tuple ... points past end of heap page`) from inside
 sqlx's test harness rather than from application code. Fix with
-`REINDEX TABLE _sqlx_test.databases;` against localhost:5433 — see
+`REINDEX TABLE _sqlx_test.databases;` against localhost:5435 — see
 [`docs/sqlx-troubleshooting.md`](docs/sqlx-troubleshooting.md) for details.
 
 You can use flake.nix psql client.

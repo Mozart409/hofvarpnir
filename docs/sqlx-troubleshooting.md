@@ -59,7 +59,7 @@ end of heap page line pointer array at offset 2 of block 1 in index
 (Postgres error code `XX002`, "internal error" / data corruption.)
 
 **Cause:** the `postgres-test` service (`containers/compose.dev.yml`,
-localhost:5433) runs with durability disabled — see AGENTS.md's Database
+localhost:5435) runs with durability disabled — see AGENTS.md's Database
 section — which trades crash-safety for speed on an instance that's rebuilt
 from a migration on demand. An unclean shutdown can leave an index corrupted.
 The affected table is sqlx's own test-database registry,
@@ -71,13 +71,13 @@ The affected table is sqlx's own test-database registry,
 REINDEX TABLE _sqlx_test.databases;
 ```
 
-Run against `localhost:5433`. Confirmed to resolve it in practice: a suite
+Run against `localhost:5435`. Confirmed to resolve it in practice: a suite
 that failed 2 tests with `XX002` passed 369/0 immediately after the reindex.
 
 **Do not chase this as a test bug.** It's infrastructure state, not a
 regression in the code under test. It also has nothing to do with the
 checksum issue above: that one lives in the dev database (5432) and blocks
-`sqlx migrate`; this one lives in the test instance (5433) and blocks
+`sqlx migrate`; this one lives in the test instance (5435) and blocks
 `#[sqlx::test]`'s own bookkeeping. Because `#[sqlx::test]` migrates a fresh
-database per test, running migrations against 5433 does not fix — or cause —
+database per test, running migrations against 5435 does not fix — or cause —
 either problem.
