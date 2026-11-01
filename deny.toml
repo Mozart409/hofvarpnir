@@ -70,7 +70,6 @@ feature-depth = 1
 # A list of advisory IDs to ignore. Note that ignored advisories will still
 # output a note when they are encountered.
 ignore = [
-    { id = "RUSTSEC-2023-0071", reason = "rsa Marvin Attack: used by openidconnect for JWT signature verification only (not key generation). No fixed version available yet. See: https://github.com/RustCrypto/RSA/issues/390" },
     { id = "RUSTSEC-2024-0436", reason = "paste unmaintained: transitive dep from lofty and utoipa-axum. No security impact, just maintenance status." },
     #"RUSTSEC-0000-0000",
     #{ id = "RUSTSEC-0000-0000", reason = "you can specify a reason the advisory is ignored" },

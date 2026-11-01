@@ -32,11 +32,12 @@ mod client;
 mod config;
 mod error;
 mod identity;
+mod verify;
 
-pub use client::OidcClient;
+pub use client::{Nonce, OidcClient};
 pub use config::OidcConfig;
 pub use error::OidcError;
 pub use identity::{OidcClaims, OidcIdentity, OidcIdentityRow};
 
 // Re-export types needed for OIDC flow handling
-pub use openidconnect::{Nonce, PkceCodeVerifier};
+pub use oauth2::PkceCodeVerifier;

@@ -27,7 +27,7 @@ opentelemetry-otlp.workspace = true
 tracing-opentelemetry.workspace = true
 tracing-loki.workspace = true
 # Never imported: present only so Cargo feature unification switches
-# tracing-loki's (and openidconnect's) reqwest 0.12 to the system trust store.
+# tracing-loki's reqwest 0.12 to the system trust store.
 # Its `rustls-tls` feature means bundled webpki roots only, which rejects a
 # step-ca certificate however the mounted CA bundle is configured.
 reqwest-0-12 = { package = "reqwest", version = "0.12", default-features = false, features = ["rustls-tls-native-roots"] }
@@ -39,11 +39,19 @@ reqwest.workspace = true
 sha2.workspace = true
 rand = "0.10"
 hex = "0.4"
-openidconnect = "4"
+# OIDC login: the OAuth 2.0 flow without its bundled reqwest 0.12 (our reqwest
+# drives it), and ID-token checks on the aws-lc backend. Never enable
+# jsonwebtoken's `rust_crypto`: it pulls in `rsa` (RUSTSEC-2023-0071).
+oauth2 = { version = "5", default-features = false }
+serde_json.workspace = true
+jsonwebtoken = { version = "11", default-features = false, features = ["aws_lc_rs"] }
 url = "2"
 percent-encoding.workspace = true
 
 [dev-dependencies]
+# Makes the RSA and P-256 keys the ID-token tests sign with.
+aws-lc-rs = "1"
+base64 = "0.22"
 # TLS collector stand-in for tests/otel_export.rs. Already in the tree via
 # reqwest; `ring` is named explicitly because both rustls providers are
 # compiled in, so no process-default provider exists to fall back on.

@@ -1,21 +1,110 @@
 //! OIDC client for provider interaction.
+//!
+//! The OAuth 2.0 side (authorization URL, PKCE, code exchange) is `oauth2`;
+//! discovery and the provider's signing keys are fetched here, and the ID
+//! token is validated by [`super::verify`].
 
-use std::ops::Deref;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
-use openidconnect::{
-    AuthorizationCode, ClientId, ClientSecret, CsrfToken, EndUserEmail, EndUserName,
-    EndUserPictureUrl, IssuerUrl, LocalizedClaim, Nonce, PkceCodeChallenge, PkceCodeVerifier,
-    RedirectUrl, Scope, TokenResponse,
-    core::{CoreAuthenticationFlow, CoreClient, CoreProviderMetadata},
-    reqwest as oidc_reqwest,
+use jsonwebtoken::Algorithm;
+use jsonwebtoken::jwk::JwkSet;
+use oauth2::basic::{
+    BasicErrorResponse, BasicRevocationErrorResponse, BasicTokenIntrospectionResponse,
+    BasicTokenType,
 };
+use oauth2::{
+    AuthType, AuthUrl, AuthorizationCode, ClientId, ClientSecret, CsrfToken, EndpointNotSet,
+    EndpointSet, ExtraTokenFields, PkceCodeChallenge, PkceCodeVerifier, RedirectUrl, Scope,
+    StandardRevocableToken, StandardTokenResponse, TokenUrl,
+};
+use serde::{Deserialize, Serialize};
+use tokio::sync::RwLock;
 use tracing::{debug, info, instrument};
 use url::Url;
 
 use super::config::OidcConfig;
 use super::error::OidcError;
 use super::identity::OidcClaims;
+use super::verify::{Expected, Rejection, accepted_algorithms, unix_now, verify_id_token};
+
+/// The JWKS is fetched again for an unknown key id at most this often, so
+/// tokens naming made-up keys cannot make us hammer the provider.
+const JWKS_REFETCH_INTERVAL: Duration = Duration::from_secs(60);
+
+/// A login nonce (replay protection): sent with the authorization request and
+/// required back in the ID token.
+#[derive(Clone)]
+pub struct Nonce(String);
+
+impl std::fmt::Debug for Nonce {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Nonce([redacted])")
+    }
+}
+
+impl Nonce {
+    /// Wrap a nonce stored with the login flow.
+    #[must_use]
+    pub const fn new(nonce: String) -> Self {
+        Self(nonce)
+    }
+
+    /// A fresh nonce: 128 random bits, base64url, like the CSRF state.
+    #[must_use]
+    pub fn new_random() -> Self {
+        Self(CsrfToken::new_random().into_secret())
+    }
+
+    #[must_use]
+    pub const fn secret(&self) -> &String {
+        &self.0
+    }
+}
+
+/// The extra field OIDC adds to the OAuth 2.0 token response.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct IdTokenFields {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    id_token: Option<String>,
+}
+
+impl ExtraTokenFields for IdTokenFields {}
+
+/// An OAuth 2.0 client with the authorization and token endpoints set, whose
+/// token response carries the ID token.
+type FlowClient = oauth2::Client<
+    BasicErrorResponse,
+    StandardTokenResponse<IdTokenFields, BasicTokenType>,
+    BasicTokenIntrospectionResponse,
+    StandardRevocableToken,
+    BasicRevocationErrorResponse,
+    EndpointSet,
+    EndpointNotSet,
+    EndpointNotSet,
+    EndpointNotSet,
+    EndpointSet,
+>;
+
+/// The parts of the provider's discovery document we use.
+#[derive(Deserialize)]
+struct ProviderMetadata {
+    issuer: String,
+    authorization_endpoint: String,
+    token_endpoint: String,
+    jwks_uri: String,
+    end_session_endpoint: Option<String>,
+    #[serde(default)]
+    id_token_signing_alg_values_supported: Vec<String>,
+    #[serde(default)]
+    token_endpoint_auth_methods_supported: Vec<String>,
+}
+
+/// The provider's signing keys, and when they were last fetched (or tried).
+struct Keys {
+    set: JwkSet,
+    fetched: Instant,
+}
 
 /// OIDC client for a single provider.
 ///
@@ -24,18 +113,23 @@ use super::identity::OidcClaims;
 #[derive(Clone)]
 pub struct OidcClient {
     config: OidcConfig,
-    provider_metadata: Arc<CoreProviderMetadata>,
-    client_id: ClientId,
-    client_secret: ClientSecret,
-    http_client: oidc_reqwest::Client,
+    client: FlowClient,
+    /// The issuer as the provider names itself (equal to the configured one).
+    issuer: String,
+    /// The ID-token algorithms the provider advertises and we accept.
+    algorithms: Vec<Algorithm>,
+    jwks_uri: String,
+    keys: Arc<RwLock<Keys>>,
+    http_client: reqwest::Client,
     end_session_endpoint: Option<Url>,
 }
 
 impl OidcClient {
     /// Discover provider metadata and create the client.
     ///
-    /// Fetches the `OpenID` Connect discovery document from the provider
-    /// and configures the client with the discovered endpoints.
+    /// Fetches the `OpenID` Connect discovery document from the provider,
+    /// checks that it names the configured issuer, and fetches the provider's
+    /// signing keys.
     ///
     /// # Errors
     ///
@@ -43,39 +137,98 @@ impl OidcClient {
     /// or returns invalid metadata.
     #[instrument(skip_all, fields(otel.kind = "client", issuer = %config.issuer_url))]
     pub async fn discover(config: OidcConfig) -> Result<Self, OidcError> {
-        let issuer_url = IssuerUrl::new(config.issuer_url.clone())
-            .map_err(|e| OidcError::DiscoveryFailed(format!("Invalid issuer URL: {e}")))?;
+        let failed = |what: String| OidcError::DiscoveryFailed(what);
+        let issuer_url = Url::parse(&config.issuer_url)
+            .map_err(|e| failed(format!("Invalid issuer URL: {e}")))?;
+        if !matches!(issuer_url.scheme(), "http" | "https") {
+            return Err(failed(format!(
+                "Invalid issuer URL: {} is not http(s)",
+                config.issuer_url
+            )));
+        }
 
         info!(issuer = %config.issuer_url, "Discovering OIDC provider metadata");
 
-        // Build HTTP client with appropriate settings
-        let http_client = oidc_reqwest::ClientBuilder::new()
-            .redirect(oidc_reqwest::redirect::Policy::none())
+        // No redirects: the discovery, keys and token endpoints never need
+        // one, and following them would let the provider point us elsewhere.
+        let http_client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
             .timeout(config.discovery_timeout)
             .build()
-            .map_err(|e| OidcError::DiscoveryFailed(format!("Failed to build HTTP client: {e}")))?;
+            .map_err(|e| failed(format!("Failed to build HTTP client: {e}")))?;
 
-        let provider_metadata = CoreProviderMetadata::discover_async(issuer_url, &http_client)
+        let discovery_url = format!(
+            "{}/.well-known/openid-configuration",
+            config.issuer_url.trim_end_matches('/')
+        );
+        let metadata: ProviderMetadata = get_json(&http_client, &discovery_url)
             .await
-            .map_err(|e| OidcError::DiscoveryFailed(format!("Discovery request failed: {e}")))?;
+            .map_err(|e| failed(format!("Discovery request failed: {e}")))?;
+        // The provider must name itself exactly as configured (OIDC Discovery
+        // 4.3); its ID tokens carry the same string in `iss`.
+        if metadata.issuer != config.issuer_url {
+            return Err(failed(format!(
+                "The provider's issuer is {:?}, not the configured {:?}",
+                metadata.issuer, config.issuer_url
+            )));
+        }
+        let algorithms = accepted_algorithms(&metadata.id_token_signing_alg_values_supported);
+        if algorithms.is_empty() {
+            return Err(failed(format!(
+                "The provider signs ID tokens with none of the accepted algorithms: {:?}",
+                metadata.id_token_signing_alg_values_supported
+            )));
+        }
+        let set = get_json(&http_client, &metadata.jwks_uri)
+            .await
+            .map_err(|e| failed(format!("Fetching the signing keys failed: {e}")))?;
+        let end_session_endpoint = metadata
+            .end_session_endpoint
+            .as_deref()
+            .map(Url::parse)
+            .transpose()
+            .map_err(|e| failed(format!("Invalid end_session_endpoint: {e}")))?;
 
-        // end_session_endpoint is optional - skip for now
-        let end_session_endpoint = None;
-
-        let client_id = ClientId::new(config.client_id.clone());
-        let client_secret = ClientSecret::new(config.client_secret.clone());
+        // client_secret_basic is the default (OIDC Discovery 3); use the
+        // request body only for a provider that does not offer it.
+        let methods = &metadata.token_endpoint_auth_methods_supported;
+        let auth_type = if !methods.is_empty()
+            && !methods.iter().any(|m| m == "client_secret_basic")
+            && methods.iter().any(|m| m == "client_secret_post")
+        {
+            AuthType::RequestBody
+        } else {
+            AuthType::BasicAuth
+        };
+        let client = oauth2::Client::new(ClientId::new(config.client_id.clone()))
+            .set_client_secret(ClientSecret::new(config.client_secret.clone()))
+            .set_auth_type(auth_type)
+            .set_auth_uri(
+                AuthUrl::new(metadata.authorization_endpoint)
+                    .map_err(|e| failed(format!("Invalid authorization_endpoint: {e}")))?,
+            )
+            .set_token_uri(
+                TokenUrl::new(metadata.token_endpoint)
+                    .map_err(|e| failed(format!("Invalid token_endpoint: {e}")))?,
+            );
 
         debug!(
             client_id = %config.client_id,
             end_session = ?end_session_endpoint,
+            algorithms = ?algorithms,
             "OIDC client configured"
         );
 
         Ok(Self {
             config,
-            provider_metadata: Arc::new(provider_metadata),
-            client_id,
-            client_secret,
+            client,
+            issuer: metadata.issuer,
+            algorithms,
+            jwks_uri: metadata.jwks_uri,
+            keys: Arc::new(RwLock::new(Keys {
+                set,
+                fetched: Instant::now(),
+            })),
             http_client,
             end_session_endpoint,
         })
@@ -102,23 +255,21 @@ impl OidcClient {
             RedirectUrl::new(callback_uri.to_string()).expect("callback_uri should be a valid URL");
 
         let (pkce_challenge, pkce_verifier) = PkceCodeChallenge::new_random_sha256();
+        let nonce = Nonce::new_random();
 
-        let client = CoreClient::from_provider_metadata(
-            (*self.provider_metadata).clone(),
-            self.client_id.clone(),
-            Some(self.client_secret.clone()),
-        )
-        .set_redirect_uri(callback);
-
-        let (url, csrf_token, nonce) = client
-            .authorize_url(
-                CoreAuthenticationFlow::AuthorizationCode,
-                CsrfToken::new_random,
-                Nonce::new_random,
-            )
-            .set_pkce_challenge(pkce_challenge)
-            .add_scopes(self.config.scopes.iter().map(|s| Scope::new(s.clone())))
-            .url();
+        let mut request = self
+            .client
+            .authorize_url(CsrfToken::new_random)
+            .set_redirect_uri(std::borrow::Cow::Owned(callback))
+            .add_scope(Scope::new("openid".to_string()))
+            .add_extra_param("nonce", nonce.secret().clone())
+            .set_pkce_challenge(pkce_challenge);
+        // `openid` is always requested above, so skip it here to avoid sending
+        // it twice.
+        for scope in self.config.scopes.iter().filter(|s| *s != "openid") {
+            request = request.add_scope(Scope::new(scope.clone()));
+        }
+        let (url, csrf_token) = request.url();
 
         debug!(url = %url, "Generated OIDC authorization URL");
 
@@ -141,67 +292,88 @@ impl OidcClient {
         let callback = RedirectUrl::new(callback_uri.to_string())
             .map_err(|e| OidcError::TokenExchangeFailed(format!("Invalid redirect URI: {e}")))?;
 
-        let client = CoreClient::from_provider_metadata(
-            (*self.provider_metadata).clone(),
-            self.client_id.clone(),
-            Some(self.client_secret.clone()),
-        )
-        .set_redirect_uri(callback);
-
-        let token_response = client
+        // The closure owns its client, so the future oauth2 builds from it
+        // borrows nothing and stays `Send` for axum.
+        let http = |request| send(self.http_client.clone(), request);
+        let token_response = self
+            .client
             .exchange_code(AuthorizationCode::new(code.to_string()))
-            .map_err(|e| {
-                OidcError::TokenExchangeFailed(format!("Failed to create token request: {e}"))
-            })?
+            .set_redirect_uri(std::borrow::Cow::Owned(callback))
             .set_pkce_verifier(pkce_verifier)
-            .request_async(&self.http_client)
+            .request_async(&http)
             .await
             .map_err(|e| OidcError::TokenExchangeFailed(format!("{e}")))?;
 
         let id_token = token_response
-            .id_token()
+            .extra_fields()
+            .id_token
+            .as_deref()
             .ok_or_else(|| OidcError::InvalidToken("No ID token in response".to_string()))?;
 
-        // Verify and extract claims
-        let claims = id_token
-            .claims(&client.id_token_verifier(), expected_nonce)
-            .map_err(|e| OidcError::InvalidToken(format!("Token verification failed: {e}")))?;
-
-        let issuer = claims.issuer().as_str().to_string();
-        let subject = claims.subject().as_str().to_string();
-
-        // Extract email
-        let email: String = claims
-            .email()
-            .map(|e: &EndUserEmail| e.deref().clone())
+        let identity = self.verify(id_token, expected_nonce.secret()).await?;
+        let email = identity
+            .email
             .ok_or_else(|| OidcError::MissingClaim("email".to_string()))?;
 
-        // Extract name - get the unlocalized value
-        let name: Option<String> = claims
-            .name()
-            .and_then(|n: &LocalizedClaim<EndUserName>| n.get(None))
-            .map(|n: &EndUserName| n.deref().clone());
-
-        // Extract picture - get the unlocalized value
-        let picture: Option<String> = claims
-            .picture()
-            .and_then(|p: &LocalizedClaim<EndUserPictureUrl>| p.get(None))
-            .map(|p: &EndUserPictureUrl| p.as_str().to_string());
-
         debug!(
-            issuer = %issuer,
-            subject = %subject,
+            issuer = %identity.issuer,
+            subject = %identity.subject,
             email = %email,
             "Extracted OIDC claims"
         );
 
         Ok(OidcClaims {
-            issuer,
-            subject,
+            issuer: identity.issuer,
+            subject: identity.subject,
             email,
-            name,
-            picture,
+            name: identity.name,
+            picture: identity.picture,
         })
+    }
+
+    /// [`verify_id_token`] against the cached keys. A token signed with a key
+    /// we do not know yet may follow a key rotation, so the keys are fetched
+    /// again (at most every [`JWKS_REFETCH_INTERVAL`]) and the token checked
+    /// once more.
+    async fn verify(
+        &self,
+        token: &str,
+        nonce: &str,
+    ) -> Result<super::verify::VerifiedIdentity, OidcError> {
+        let expected = Expected {
+            issuer: &self.issuer,
+            client_id: &self.config.client_id,
+            nonce,
+            algorithms: &self.algorithms,
+        };
+        let invalid =
+            |e: Rejection| OidcError::InvalidToken(format!("Token verification failed: {e}"));
+        let now = unix_now();
+        let first = verify_id_token(token, &self.keys.read().await.set, &expected, now);
+        if !matches!(first, Err(Rejection::UnknownKey)) {
+            return first.map_err(invalid);
+        }
+        self.refresh_keys().await?;
+        verify_id_token(token, &self.keys.read().await.set, &expected, now).map_err(invalid)
+    }
+
+    /// Fetch the JWKS again, unless it was tried within the last
+    /// [`JWKS_REFETCH_INTERVAL`]. The write lock is held across the fetch, so
+    /// concurrent logins wait for one fetch rather than each starting one, and
+    /// a failed fetch counts as a try, so a provider whose keys endpoint is
+    /// down is not asked again on every login.
+    async fn refresh_keys(&self) -> Result<(), OidcError> {
+        let mut keys = self.keys.write().await;
+        if keys.fetched.elapsed() < JWKS_REFETCH_INTERVAL {
+            return Ok(());
+        }
+        keys.fetched = Instant::now();
+        let set = get_json(&self.http_client, &self.jwks_uri)
+            .await
+            .map_err(|e| OidcError::InvalidToken(format!("Refetching signing keys failed: {e}")))?;
+        keys.set = set;
+        drop(keys);
+        Ok(())
     }
 
     /// Get the end session URL for RP-initiated logout.
@@ -243,4 +415,35 @@ impl OidcClient {
     pub const fn auto_provision(&self) -> bool {
         self.config.auto_provision
     }
+}
+
+/// Send one of oauth2's requests through `http`.
+async fn send(
+    http: reqwest::Client,
+    request: oauth2::HttpRequest,
+) -> Result<oauth2::HttpResponse, reqwest::Error> {
+    let response = http.execute(request.try_into()?).await?;
+    let status = response.status();
+    let headers = response.headers().clone();
+    let mut answer = http::Response::new(response.bytes().await?.to_vec());
+    *answer.status_mut() = status;
+    *answer.headers_mut() = headers;
+    Ok(answer)
+}
+
+/// GET `url` and parse its JSON answer; anything but a 2xx is an error.
+async fn get_json<T: serde::de::DeserializeOwned>(
+    http: &reqwest::Client,
+    url: &str,
+) -> Result<T, String> {
+    let response = http
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| format!("{url}: {e}"))?;
+    if !response.status().is_success() {
+        return Err(format!("{url} answered {}", response.status()));
+    }
+    let body = response.bytes().await.map_err(|e| format!("{url}: {e}"))?;
+    serde_json::from_slice(&body).map_err(|e| format!("{url}: {e}"))
 }

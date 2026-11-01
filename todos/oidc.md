@@ -328,7 +328,7 @@ OIDC module is always compiled in. Runtime behavior controlled by env vars:
 - Never store raw ID tokens long-term
 - Cache only necessary claims (`sub`, `email`, `name`, `picture`) in `oidc_identities`
 - Validate `iss`, `aud`, `exp`, `iat`, `nonce` claims
-- `openidconnect` crate handles signature verification automatically
+- The signature is checked against the provider's JWKS (`oidc/verify.rs`, `jsonwebtoken` on aws-lc), asymmetric algorithms only
 
 ### PKCE
 
@@ -444,11 +444,14 @@ Mock OIDC provider with `wiremock`:
 
 ## Dependencies
 
-| Crate           | Purpose             | License |
-| --------------- | ------------------- | ------- |
-| `openidconnect` | OIDC client library | MIT     |
+| Crate          | Purpose                                         | License        |
+| -------------- | ----------------------------------------------- | -------------- |
+| `oauth2`       | Authorization URL, PKCE, code exchange          | MIT/Apache-2.0 |
+| `jsonwebtoken` | ID-token signature and claims (`aws_lc_rs`)     | MIT            |
 
-Note: `openidconnect` is MIT licensed, which is in the allowed list in `deny.toml`.
+Discovery and the JWKS are fetched by hand (`oidc/client.rs`). `openidconnect`
+was dropped because it always pulls in `rsa` (RUSTSEC-2023-0071); see
+[remove-rsa.md](remove-rsa.md).
 
 ---
 

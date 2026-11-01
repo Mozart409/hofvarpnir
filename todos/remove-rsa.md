@@ -40,39 +40,47 @@ Why B: `oauth2` (already in the tree, no `rsa`) covers the flow parts; the only 
 
 ### Phase 0 - Spike
 
-- [ ] Re-check `cargo info openidconnect` and the upstream issue tracker for an `rsa`-free release; if one exists, switch to Option A and stop here.
-- [ ] Confirm `jsonwebtoken` (aws_lc_rs, `default-features = false`) builds with the pinned nightly (`nightly-2026-09-29`) and in the Nix build, and that `cargo tree -i rsa` is empty with it added.
-- [ ] Confirm `oauth2` features needed (`reqwest`, `rustls-tls`) and that `deny.toml` licenses/bans allow the new crates.
+- [x] Re-check `cargo info openidconnect` and the upstream issue tracker for an `rsa`-free release; if one exists, switch to Option A and stop here. (2026-11-01: 4.1.0 is the latest and still depends on `rsa` unconditionally, no feature turns it off.)
+- [x] Confirm `jsonwebtoken` (aws_lc_rs, `default-features = false`) builds with the pinned nightly (`nightly-2026-09-29`) and in the Nix build, and that `cargo tree -i rsa` is empty with it added.
+- [x] Confirm `oauth2` features needed (`reqwest`, `rustls-tls`) and that `deny.toml` licenses/bans allow the new crates.
 
 ### Phase 1 - Discovery and JWKS
 
-- [ ] Add a typed discovery document (`issuer`, `authorization_endpoint`, `token_endpoint`, `jwks_uri`, `end_session_endpoint`, `id_token_signing_alg_values_supported`) fetched from `<issuer>/.well-known/openid-configuration` with the existing timeout and no redirects.
-- [ ] Verify the returned `issuer` equals the configured issuer URL exactly.
-- [ ] Fetch the JWKS from `jwks_uri`; cache it and refetch once on unknown `kid` (rate-limited) to survive key rotation.
+- [x] Add a typed discovery document (`issuer`, `authorization_endpoint`, `token_endpoint`, `jwks_uri`, `end_session_endpoint`, `id_token_signing_alg_values_supported`) fetched from `<issuer>/.well-known/openid-configuration` with the existing timeout and no redirects.
+- [x] Verify the returned `issuer` equals the configured issuer URL exactly.
+- [x] Fetch the JWKS from `jwks_uri`; cache it and refetch once on unknown `kid` (rate-limited) to survive key rotation.
 
 ### Phase 2 - Flow with `oauth2`
 
-- [ ] Rebuild `authorization_url` on `oauth2::basic::BasicClient`: S256 PKCE, CSRF state, nonce, scopes (ensure `openid` is always present).
-- [ ] Rebuild the code exchange with the PKCE verifier; read the raw `id_token` from the token response (extra token field).
-- [ ] Re-export own `Nonce` / `PkceCodeVerifier` newtypes (or `oauth2` types) so `oidc/mod.rs` consumers keep compiling.
+- [x] Rebuild `authorization_url` on `oauth2::basic::BasicClient`: S256 PKCE, CSRF state, nonce, scopes (ensure `openid` is always present).
+- [x] Rebuild the code exchange with the PKCE verifier; read the raw `id_token` from the token response (extra token field).
+- [x] Re-export own `Nonce` / `PkceCodeVerifier` newtypes (or `oauth2` types) so `oidc/mod.rs` consumers keep compiling.
 
 ### Phase 3 - ID token verification (security critical)
 
-- [ ] Verify with `jsonwebtoken::Validation`: pinned algorithm allowlist (RS256, ES256, EdDSA as the provider advertises; reject `none` and HMAC), `iss`, `aud` == client id, `exp`, `nbf`, small leeway.
-- [ ] Select the key by `kid` (and `alg`/`kty`) from the JWKS; never trust the header algorithm beyond the allowlist.
-- [ ] Check `nonce` equals the stored nonce; check `azp` when `aud` has several values.
-- [ ] Extract `sub`, `email`, `name` / `preferred_username`, `picture` (localized-claim fallback) into the existing `OidcClaims`; keep the "email required" behaviour from [oidc.md](oidc.md).
+- [x] Verify with `jsonwebtoken::Validation`: pinned algorithm allowlist (RS256, ES256, EdDSA as the provider advertises; reject `none` and HMAC), `iss`, `aud` == client id, `exp`, `nbf`, small leeway.
+- [x] Select the key by `kid` (and `alg`/`kty`) from the JWKS; never trust the header algorithm beyond the allowlist.
+- [x] Check `nonce` equals the stored nonce; check `azp` when `aud` has several values.
+- [x] Extract `sub`, `email`, `name` / `preferred_username`, `picture` (localized-claim fallback) into the existing `OidcClaims`; keep the "email required" behaviour from [oidc.md](oidc.md). (Done without the `preferred_username` fallback: `name` only, as before.)
 
 ### Phase 4 - Tests
 
-- [ ] Port `crates/hof-core/tests/oidc_client_tests.rs` (wiremock discovery + JWKS) to the new code.
-- [ ] Add negative tests: bad signature, wrong `iss`, wrong `aud`, expired, wrong nonce, `alg=none`, HS256 with the public key as secret, unknown `kid`, issuer mismatch in discovery.
+- [x] Port `crates/hof-core/tests/oidc_client_tests.rs` (wiremock discovery + JWKS) to the new code. (`oidc_client_tests.rs` passes unchanged; the new `oidc_login_tests.rs` adds whole-login E2E tests, including `client_secret_basic` vs `client_secret_post`.)
+- [x] Add negative tests: bad signature, wrong `iss`, wrong `aud`, expired, wrong nonce, `alg=none`, HS256 with the public key as secret, unknown `kid`, issuer mismatch in discovery.
 - [ ] Manual login against the real provider used for testing (see Manual Testing in [oidc.md](oidc.md)); also check a provider that signs with ES256/EdDSA if available.
 
 ### Phase 5 - Remove the old dependency and verify
 
-- [ ] Remove `openidconnect` from `crates/hof-core/Cargo.toml` and update the reqwest/trust-store comment there; refresh `Cargo.lock`.
-- [ ] `cargo tree -i rsa` prints nothing (and `crypto-bigint 0.5.5` is gone from the lock unless another crate needs it).
-- [ ] `cargo audit` is clean with no ignore entries for RUSTSEC-2023-0071 / RUSTSEC-2026-0387; `cargo deny check` passes.
-- [ ] `just fmt`, `just clippy` (or the project's lint recipe) and the full test suite are green on the pinned nightly; `nix develop .#ci` run passes.
-- [ ] Update the Dependencies table and notes in [oidc.md](oidc.md) (library no longer `openidconnect`).
+- [x] Remove `openidconnect` from `crates/hof-core/Cargo.toml` and update the reqwest/trust-store comment there; refresh `Cargo.lock`.
+- [x] `cargo tree -i rsa` prints nothing (and `crypto-bigint 0.5.5` is gone from the lock unless another crate needs it).
+- [x] `cargo audit` is clean with no ignore entries for RUSTSEC-2023-0071 / RUSTSEC-2026-0387; `cargo deny check` passes.
+- [ ] `just fmt`, `just clippy` (or the project's lint recipe) and the full test suite are green on the pinned nightly; `nix develop .#ci` run passes. (2026-11-01: fmt, workspace clippy and all non-DB tests are green on the pinned nightly, and `nix build .#hofvarpnir` works; the DB suite (`just with-db ci-gate`) and `nix develop .#ci` still need to be run where podman works.)
+- [x] Update the Dependencies table and notes in [oidc.md](oidc.md) (library no longer `openidconnect`).
+
+### Follow-ups from the review (2026-11-01, not blocking)
+
+- [ ] `hof-web` logout does not call `OidcClient::end_session_url` yet (`pages/login.rs` placeholder), so the now-discovered `end_session_endpoint` has no effect.
+- [ ] The JWKS write lock is held across a refetch for up to `discovery_timeout`; give the refetch a short timeout of its own (same pattern in countdown and lanternd).
+- [ ] No periodic JWKS refresh: a key the provider removes stays trusted until an unknown `kid` causes a refetch.
+- [ ] No test for the refetch-after-interval path (key rotation); needs an injectable interval.
+- [ ] Fail discovery clearly when the provider offers neither `client_secret_basic` nor `client_secret_post`.

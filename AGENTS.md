@@ -641,7 +641,7 @@ token matches. Rules it pins down:
   tokio runtime.
 - **Two reqwest majors, two trust stories.** reqwest 0.13 (`rustls`)
   verifies via `rustls-platform-verifier`, i.e. the system store. reqwest
-  0.12 (`tracing-loki`, `openidconnect`) with `rustls-tls` trusts only
+  0.12 (`tracing-loki`) with `rustls-tls` trusts only
   bundled webpki roots and rejects step-ca. hof-core's never-imported
   `reqwest-0-12` dependency turns on `rustls-tls-native-roots` through
   feature unification. Removing it breaks Loki over HTTPS (measured).
