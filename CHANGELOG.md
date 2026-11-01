@@ -2,6 +2,17 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.20.0 - 2026-11-01
+#### Features
+- (**web**) let the layout grow up to 2k on large screens - (3d65162) - Amadeus Mader
+- (**deps**) upgrade flake - (822dafb) - Amadeus Mader
+- (**deps**) upgrade flake - (4422822) - Amadeus Mader
+- (**deps**) upgrade flake - (bbc9309) - Amadeus Mader
+#### Bug Fixes
+- (**downloads**) allow cancelling awaiting-quality videos - (9067dae) - Amadeus Mader
+- (**web**) stop the downloads table overflowing its card - (00bf205) - Amadeus Mader
+
+- - -
 ## v0.19.0 - 2026-10-25
 #### Features
 - (**hofvarpnir**) hold new videos until their profile quality is available - (6120a39) - Amadeus Mader
