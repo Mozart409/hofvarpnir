@@ -2,6 +2,17 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.20.1 - 2026-11-02
+#### Features
+- (**hofvarpnir**) run the tests against a test postgres on 5435 that lives only for the run - (3f3d01e) - Amadeus Mader
+#### Bug Fixes
+- (**rust**) serialise concurrent with-db runs of a project so one cannot remove the other's postgres - (07921b8) - Amadeus Mader
+#### Refactoring
+- (**hofvarpnir**) verify oidc id tokens with jsonwebtoken instead of openidconnect - (d164483) - Amadeus Mader
+#### Documentation
+- (**rust**) plan the rsa removal for countdown, lanternd, hofvarpnir and fafnir - (204cde9) - Amadeus Mader
+
+- - -
 ## v0.20.0 - 2026-11-01
 #### Features
 - (**web**) let the layout grow up to 2k on large screens - (3d65162) - Amadeus Mader
