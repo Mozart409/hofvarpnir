@@ -43,9 +43,6 @@ case "$(uname -s)" in
       target="${arch}-unknown-linux-gnu"
     fi
     ;;
-  Darwin)
-    target="${arch}-apple-darwin"
-    ;;
   *) fatal "unsupported OS: $(uname -s)" ;;
 esac
 
@@ -104,7 +101,3 @@ case ":${PATH}:" in
   *":${INSTALL_DIR}:"*) ;;
   *) warn "${INSTALL_DIR} is not on your PATH" ;;
 esac
-
-if [ "$(uname -s)" = "Darwin" ]; then
-  info "note: the binary is not notarized; if Gatekeeper blocks it, run: xattr -d com.apple.quarantine ${INSTALL_DIR}/${BINARY}"
-fi

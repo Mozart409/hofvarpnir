@@ -58,7 +58,7 @@ The TUI connects to a running Hofvarpnir server; on first launch, the setup
 screen lets you enter the API URL and API key. You can create an API key in the
 web UI under **Settings**.
 
-#### Install script (Linux and macOS)
+#### Install script (Linux)
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Mozart409/hofvarpnir/main/scripts/install-tui.sh | bash
@@ -83,14 +83,11 @@ install -m 755 hofvarpnir-tui ~/.local/bin/
 
 Available targets: `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`,
 `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl` (static, for
-Alpine and old-glibc systems), `aarch64-apple-darwin` (Apple Silicon), and
-`x86_64-apple-darwin` (Intel).
+Alpine and old-glibc systems).
 
 The server tarball keeps the plain `hofvarpnir-<target>-v<version>.tar.gz`
 name and contains only the server binary — most server deployments should use
-the container image instead. The macOS binaries are not notarized; if you
-downloaded one via a browser and Gatekeeper blocks it, run
-`xattr -d com.apple.quarantine ~/.local/bin/hofvarpnir-tui`.
+the container image instead.
 
 Make sure `~/.local/bin` is on your `PATH`, then start it with:
 
@@ -107,7 +104,7 @@ nix profile install github:Mozart409/hofvarpnir#hofvarpnir-tui
 ```
 
 Then run `hofvarpnir-tui`. The flake builds the standalone TUI package for
-x86_64 Linux, aarch64 Linux, and x86_64 macOS.
+x86_64 Linux and aarch64 Linux.
 
 ### Configure the TUI
 

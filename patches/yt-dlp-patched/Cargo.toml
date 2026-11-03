@@ -29,7 +29,7 @@ debug = true
 
 [package.metadata.docs.rs]
 features = ["cache-memory", "cache-redb", "hooks", "webhooks", "statistics", "profiling", "live-recording", "live-streaming"]
-targets = ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc", "aarch64-apple-darwin"]
+targets = ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]
 
 [package.metadata.release]
 tag-name = "v{{version}}"

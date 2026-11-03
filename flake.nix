@@ -3,10 +3,6 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-    # nixos-unstable dropped x86_64-darwin support; use the last release
-    # branch that still supports it (security fixes through end of 2026)
-    # for that one system only, so Linux stays on nixos-unstable.
-    nixpkgs-darwin.url = "github:NixOS/nixpkgs/nixpkgs-26.05-darwin";
     flake-utils.url = "github:numtide/flake-utils";
     fenix = {
       url = "github:nix-community/fenix";
@@ -18,17 +14,12 @@
   outputs = {
     self,
     nixpkgs,
-    nixpkgs-darwin,
     flake-utils,
     fenix,
     crane,
   }:
-    flake-utils.lib.eachSystem ["x86_64-linux" "aarch64-linux" "x86_64-darwin"] (system: let
-      nixpkgsSource =
-        if system == "x86_64-darwin"
-        then nixpkgs-darwin
-        else nixpkgs;
-      pkgs = import nixpkgsSource {
+    flake-utils.lib.eachSystem ["x86_64-linux" "aarch64-linux"] (system: let
+      pkgs = import nixpkgs {
         inherit system;
         config.allowUnfree = true;
         overlays = [
@@ -224,11 +215,6 @@
         podman-compose
         trivy
         # keep-sorted end
-      ];
-
-      darwinDevPackages = with pkgs; [
-        actionlint
-        podman
       ];
     in {
       # Rust package
@@ -454,8 +440,7 @@
       devShells.default = pkgs.mkShell {
         buildInputs =
           commonDevPackages
-          ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux linuxDevPackages
-          ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isDarwin darwinDevPackages;
+          ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux linuxDevPackages;
         shellHook = ''
           export COMPOSE_BAKE=true
           # sccache caches rustc invocations for dependencies. Workspace

@@ -61,7 +61,7 @@ jobs:
           retention-days: 1
   build-tui-extra:
     # TUI-only targets that don't go through Nix: musl (static, for Alpine and
-    # old-glibc machines) and macOS. hof-tui is a pure HTTP client (no hof-core,
+    # old-glibc machines). hof-tui is a pure HTTP client (no hof-core,
     # no sqlx), so a plain cargo build with the pinned rust-toolchain.toml is
     # enough. rustup on the runner auto-installs the pinned nightly.
     timeout-minutes: 60
@@ -74,11 +74,6 @@ jobs:
           - runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-musl
             musl: true
-          - runner: macos-15
-            target: aarch64-apple-darwin
-          # macos-15-intel is the last x86_64 macOS image (until Aug 2027).
-          - runner: macos-15-intel
-            target: x86_64-apple-darwin
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: read

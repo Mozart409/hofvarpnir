@@ -15,7 +15,7 @@ categories = ["multimedia", "multimedia::audio", "multimedia::video", "parser-im
 keywords = ["media", "seek", "mp4", "webm", "container"]
 
 [package.metadata.docs.rs]
-targets = ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc", "aarch64-apple-darwin"]
+targets = ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]
 
 [package.metadata.release]
 tag-name = "ms-v{{version}}"
