@@ -38,6 +38,18 @@
               };
             });
           })
+          # nixpkgs' sqlx-cli 0.9.0 and cargo-outdated 0.19.0 link the system
+          # libsqlite3 without sqlite in buildInputs (`cannot find -lsqlite3`);
+          # drop once nixpkgs fixes them.
+          (final: prev: let
+            withSqlite = pkg:
+              pkg.overrideAttrs (old: {
+                buildInputs = old.buildInputs ++ [final.sqlite];
+              });
+          in {
+            sqlx-cli = withSqlite prev.sqlx-cli;
+            cargo-outdated = withSqlite prev.cargo-outdated;
+          })
         ];
       };
 
