@@ -450,9 +450,7 @@
       # to use other shells, run:
       # nix develop . --command fish
       devShells.default = pkgs.mkShell {
-        buildInputs =
-          commonDevPackages
-          ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux linuxDevPackages;
+        buildInputs = commonDevPackages ++ linuxDevPackages;
         shellHook = ''
           export COMPOSE_BAKE=true
           # sccache caches rustc invocations for dependencies. Workspace
