@@ -3,7 +3,10 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-    flake-utils.url = "github:numtide/flake-utils";
+    flake-parts = {
+      url = "github:hercules-ci/flake-parts";
+      inputs.nixpkgs-lib.follows = "nixpkgs";
+    };
     fenix = {
       url = "github:nix-community/fenix";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -11,493 +14,500 @@
     crane.url = "github:ipetkov/crane";
   };
 
-  outputs = {
+  outputs = inputs @ {
     self,
+    flake-parts,
     nixpkgs,
-    flake-utils,
     fenix,
     crane,
+    ...
   }:
-    flake-utils.lib.eachSystem ["x86_64-linux" "aarch64-linux"] (system: let
-      pkgs = import nixpkgs {
-        inherit system;
-        config.allowUnfree = true;
-        overlays = [
-          fenix.overlays.default
-          # nixos-unstable lags upstream yt-dlp releases (which ship almost
-          # daily to patch broken site extractors); pin to the latest
-          # released version until nixpkgs catches up.
-          (final: prev: {
-            yt-dlp = prev.yt-dlp.overrideAttrs (_: {
-              version = "2026.08.19";
-              src = final.fetchFromGitHub {
-                owner = "yt-dlp";
-                repo = "yt-dlp";
-                tag = "2026.08.19";
-                hash = "sha256-BM5ZeGTmHq+1xH6G/zsuCtjLgYgfRA11ya0zIHK5p4g=";
-              };
-            });
-          })
-          # nixpkgs' sqlx-cli 0.9.0 and cargo-outdated 0.19.0 link the system
-          # libsqlite3 without sqlite in buildInputs (`cannot find -lsqlite3`);
-          # drop once nixpkgs fixes them.
-          (final: prev: let
-            withSqlite = pkg:
-              pkg.overrideAttrs (old: {
-                buildInputs = old.buildInputs ++ [final.sqlite];
+    flake-parts.lib.mkFlake {inherit inputs;} {
+      systems = ["x86_64-linux" "aarch64-linux"];
+
+      perSystem = {system, ...}: let
+        # The explicit import (not perSystem's `pkgs`) keeps allowUnfree and
+        # the overlays below.
+        pkgs = import nixpkgs {
+          inherit system;
+          config.allowUnfree = true;
+          overlays = [
+            fenix.overlays.default
+            # nixos-unstable lags upstream yt-dlp releases (which ship almost
+            # daily to patch broken site extractors); pin to the latest
+            # released version until nixpkgs catches up.
+            (final: prev: {
+              yt-dlp = prev.yt-dlp.overrideAttrs (_: {
+                version = "2026.08.19";
+                src = final.fetchFromGitHub {
+                  owner = "yt-dlp";
+                  repo = "yt-dlp";
+                  tag = "2026.08.19";
+                  hash = "sha256-BM5ZeGTmHq+1xH6G/zsuCtjLgYgfRA11ya0zIHK5p4g=";
+                };
               });
-          in {
-            sqlx-cli = withSqlite prev.sqlx-cli;
-            cargo-outdated = withSqlite prev.cargo-outdated;
-          })
-        ];
-      };
-
-      ociImageVersion = builtins.getEnv "OCI_IMAGE_VERSION";
-      ociImageRevision = builtins.getEnv "OCI_IMAGE_REVISION";
-      ociImageCreated = builtins.getEnv "OCI_IMAGE_CREATED";
-
-      # The pinned toolchain: ./rust-toolchain.toml is a byte-identical copy of
-      # the yggdrasil root's; its channel is resolved with the same manifest
-      # sha256 as the monorepo's rust/toolchain.nix (the root's
-      # `rust-toolchain-sync` asserts the store paths agree).
-      manifest = fenix.packages.${system}.fromToolchainName {
-        name = (builtins.fromTOML (builtins.readFile ./rust-toolchain.toml)).toolchain.channel;
-        sha256 = "sha256-MFHoWVcPZKjFrLnQnodCXbUsfZcofGfo9tV9fTTvklg=";
-      };
-      rust = manifest.withComponents ["cargo" "clippy" "rust-src" "rustc" "rustfmt"];
-      rustAnalyzer = manifest.rust-analyzer;
-
-      # Crane for building Rust packages
-      craneLib = (crane.mkLib pkgs).overrideToolchain rust;
-
-      # Common source filtering for Rust builds.
-      # Include SQLx migration files so `sqlx::migrate!("./migrations")`
-      # embeds the full migration set in container builds.
-      # Include hof-web assets (app.css, etc.) for static file serving.
-      # Include .sqlx/ directory so SQLX_OFFLINE=true works (query metadata).
-      src = pkgs.lib.cleanSourceWith {
-        src = ./.;
-        filter = path: type:
-          (craneLib.filterCargoSources path type)
-          || pkgs.lib.hasInfix "/crates/hof-core/migrations/" (toString path)
-          || pkgs.lib.hasInfix "/crates/hof-web/assets/" (toString path)
-          || pkgs.lib.hasInfix "/.sqlx/" (toString path);
-      };
-
-      # Common build arguments
-      commonArgs = {
-        inherit src;
-        pname = "hofvarpnir";
-        strictDeps = true;
-
-        # Build dependencies (native)
-        nativeBuildInputs = with pkgs; [
-          pkg-config
-        ];
-
-        # Runtime dependencies
-        buildInputs = with pkgs; [
-          openssl
-        ];
-
-        # Environment variables for SQLx offline mode
-        SQLX_OFFLINE = "true";
-      };
-
-      # Build dependencies separately for caching
-      cargoArtifacts = craneLib.buildDepsOnly commonArgs;
-
-      # Build the hof-web binary
-      hofvarpnir = craneLib.buildPackage (commonArgs
-        // {
-          inherit cargoArtifacts;
-
-          # Only build the hof-web binary
-          cargoExtraArgs = "-p hof-web";
-
-          # Don't run tests during build (run separately)
-          doCheck = false;
-        });
-
-      # Standalone terminal UI client. Gets its own dependency build scoped
-      # to hof-tui, so consumers don't compile the server's dependency tree
-      # (sqlx, axum, ...) just to get the TUI.
-      tuiArgs =
-        commonArgs
-        // {
-          pname = "hofvarpnir-tui";
-          cargoExtraArgs = "-p hof-tui";
-        };
-      hofvarpnir-tui = craneLib.buildPackage (tuiArgs
-        // {
-          cargoArtifacts = craneLib.buildDepsOnly tuiArgs;
-          doCheck = false;
-        });
-
-      containerUser = "hofvarpnir";
-      containerUid = "1000";
-      containerGid = "1000";
-      licenseBundle = pkgs.writeTextDir "licenses/THIRD_PARTY_LICENSES.md" (builtins.readFile ./THIRD_PARTY_LICENSES.md);
-
-      # Pre-built binary path for CI (requires --impure)
-      # Uses builtins.path to import the binary into the Nix store at eval time
-      hofvarpnirBinaryPath = builtins.getEnv "HOFVARPNIR_BINARY";
-      hofvarpnirBinaryStore =
-        if hofvarpnirBinaryPath != ""
-        then
-          builtins.path {
-            path = hofvarpnirBinaryPath;
-            name = "hofvarpnir";
-          }
-        else throw "HOFVARPNIR_BINARY env var must be set when building containerFromBinary";
-      hofvarpnirFromBinary = pkgs.runCommand "hofvarpnir-from-binary" {} ''
-        mkdir -p $out/bin
-        cp ${hofvarpnirBinaryStore} $out/bin/hofvarpnir
-        chmod +x $out/bin/hofvarpnir
-      '';
-
-      imageVersion =
-        if ociImageVersion != ""
-        then ociImageVersion
-        else "dev-${self.shortRev or "unknown"}";
-      imageRevision =
-        if ociImageRevision != ""
-        then ociImageRevision
-        else self.rev or self.dirtyRev or "unknown";
-      imageCreated = let
-        defaultTs = self.lastModifiedDate or "19700101000000";
-        defaultCreated = "${builtins.substring 0 4 defaultTs}-${builtins.substring 4 2 defaultTs}-${builtins.substring 6 2 defaultTs}T${builtins.substring 8 2 defaultTs}:${builtins.substring 10 2 defaultTs}:${builtins.substring 12 2 defaultTs}Z";
-      in
-        if ociImageCreated != ""
-        then ociImageCreated
-        else defaultCreated;
-
-      staticOciLabels = builtins.fromJSON (builtins.readFile ./oci-labels.json);
-      commonLabels =
-        staticOciLabels
-        // {
-          "org.opencontainers.image.version" = imageVersion;
-          "org.opencontainers.image.revision" = imageRevision;
-          "org.opencontainers.image.created" = imageCreated;
+            })
+            # nixpkgs' sqlx-cli 0.9.0 and cargo-outdated 0.19.0 link the system
+            # libsqlite3 without sqlite in buildInputs (`cannot find -lsqlite3`);
+            # drop once nixpkgs fixes them.
+            (final: prev: let
+              withSqlite = pkg:
+                pkg.overrideAttrs (old: {
+                  buildInputs = old.buildInputs ++ [final.sqlite];
+                });
+            in {
+              sqlx-cli = withSqlite prev.sqlx-cli;
+              cargo-outdated = withSqlite prev.cargo-outdated;
+            })
+          ];
         };
 
-      commonDevPackages = with pkgs; [
-        # keep-sorted start
+        ociImageVersion = builtins.getEnv "OCI_IMAGE_VERSION";
+        ociImageRevision = builtins.getEnv "OCI_IMAGE_REVISION";
+        ociImageCreated = builtins.getEnv "OCI_IMAGE_CREATED";
 
-        actionlint
-        bacon
-        bun
-        cargo-audit
-        cargo-deny
-        cargo-edit
-        cargo-outdated
-        cargo-shear
-        cargo-watch
-        cargo-workspaces
-        # clang and cmake are build dependencies for aws-lc-sys,
-        # which is the cryptography backend pulled in by rustls >= 0.23.40
-        clang
-        cmake
-        cocogitto
-        deadbranch
-        ffmpeg
-        git
-        just
-        keep-sorted
-        lazydocker
-        lefthook
-        nodejs_24
-        opentofu
-        playwright-driver.browsers
-        podman-compose
-        podman-tui
-        postgresql_17
-        rust
-        rustAnalyzer
-        sccache
-        sqlx-cli
-        sqruff
-        tailwindcss_4
-        tokei
-        yt-dlp
-        # keep-sorted end
-      ];
+        # The pinned toolchain: ./rust-toolchain.toml is a byte-identical copy of
+        # the yggdrasil root's; its channel is resolved with the same manifest
+        # sha256 as the monorepo's rust/toolchain.nix (the root's
+        # `rust-toolchain-sync` asserts the store paths agree).
+        manifest = fenix.packages.${system}.fromToolchainName {
+          name = (builtins.fromTOML (builtins.readFile ./rust-toolchain.toml)).toolchain.channel;
+          sha256 = "sha256-MFHoWVcPZKjFrLnQnodCXbUsfZcofGfo9tV9fTTvklg=";
+        };
+        rust = manifest.withComponents ["cargo" "clippy" "rust-src" "rustc" "rustfmt"];
+        rustAnalyzer = manifest.rust-analyzer;
 
-      linuxDevPackages = with pkgs; [
-        # keep-sorted start
-        cachix
-        podman
-        podman-compose
-        trivy
-        # keep-sorted end
-      ];
-    in {
-      # Rust package
-      packages =
-        {
-          default = hofvarpnir;
-          hofvarpnir = hofvarpnir;
-          hofvarpnir-tui = hofvarpnir-tui;
-          # Exported so the yggdrasil root's rust-toolchain-sync can assert it.
-          toolchain = rust;
-        }
-        // pkgs.lib.optionalAttrs (system == "x86_64-linux" || system == "aarch64-linux") ({
-            # OCI container image (Linux only) - builds Rust via Crane
-            # Build: nix build .#container
-            # Load:  podman load < result
-            # Push:  skopeo copy docker-archive:result docker://ghcr.io/user/hofvarpnir:tag
-            container = pkgs.dockerTools.buildLayeredImage {
-              name = "hofvarpnir";
-              tag = "latest";
+        # Crane for building Rust packages
+        craneLib = (crane.mkLib pkgs).overrideToolchain rust;
 
-              contents = [
-                # The application binary
-                hofvarpnir
+        # Common source filtering for Rust builds.
+        # Include SQLx migration files so `sqlx::migrate!("./migrations")`
+        # embeds the full migration set in container builds.
+        # Include hof-web assets (app.css, etc.) for static file serving.
+        # Include .sqlx/ directory so SQLX_OFFLINE=true works (query metadata).
+        src = pkgs.lib.cleanSourceWith {
+          src = ./.;
+          filter = path: type:
+            (craneLib.filterCargoSources path type)
+            || pkgs.lib.hasInfix "/crates/hof-core/migrations/" (toString path)
+            || pkgs.lib.hasInfix "/crates/hof-web/assets/" (toString path)
+            || pkgs.lib.hasInfix "/.sqlx/" (toString path);
+        };
 
-                # License bundle for mixed-license image contents
-                licenseBundle
+        # Common build arguments
+        commonArgs = {
+          inherit src;
+          pname = "hofvarpnir";
+          strictDeps = true;
 
-                # Required runtime dependencies
-                pkgs.yt-dlp
-                pkgs.ffmpeg-headless
+          # Build dependencies (native)
+          nativeBuildInputs = with pkgs; [
+            pkg-config
+          ];
 
-                # TLS/SSL certificates for HTTPS connections
-                pkgs.cacert
+          # Runtime dependencies
+          buildInputs = with pkgs; [
+            openssl
+          ];
 
-                # Minimal shell utilities for debugging (optional, remove for smaller image)
-                pkgs.busybox
-              ];
+          # Environment variables for SQLx offline mode
+          SQLX_OFFLINE = "true";
+        };
 
-              # Enable fakeroot for chown support
-              enableFakechroot = true;
-              fakeRootCommands = ''
-                # Create user and group
-                mkdir -p ./etc
-                echo "${containerUser}:x:${containerUid}:${containerGid}::/home/${containerUser}:/bin/sh" > ./etc/passwd
-                echo "${containerUser}:x:${containerGid}:" > ./etc/group
+        # Build dependencies separately for caching
+        cargoArtifacts = craneLib.buildDepsOnly commonArgs;
 
-                # Create home directory
-                mkdir -p ./home/${containerUser}
-                chown ${containerUid}:${containerGid} ./home/${containerUser}
+        # Build the hof-web binary
+        hofvarpnir = craneLib.buildPackage (commonArgs
+          // {
+            inherit cargoArtifacts;
 
-                # Create downloads directory (will be mounted as volume)
-                mkdir -p ./data/downloads
-                chown ${containerUid}:${containerGid} ./data/downloads
+            # Only build the hof-web binary
+            cargoExtraArgs = "-p hof-web";
 
-                # Create incomplete downloads directory
-                mkdir -p ./data/incomplete
-                chown ${containerUid}:${containerGid} ./data/incomplete
-
-                # Create tmp directory
-                mkdir -p ./tmp
-                chmod 1777 ./tmp
-              '';
-
-              config = {
-                # Run as the application binary
-                Cmd = ["/bin/hofvarpnir"];
-
-                # Run as non-root user
-                User = "${containerUid}:${containerGid}";
-
-                # Expose the web server port
-                ExposedPorts = {
-                  "3000/tcp" = {};
-                };
-
-                # Environment variables
-                Env = [
-                  "SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
-                  "HOME=/home/${containerUser}"
-                  "PORT=3000"
-                  "RUST_LOG=info"
-                  "YTDLP_PATH=${pkgs.yt-dlp}/bin/yt-dlp"
-                  "DEFAULT_OUTPUT_DIR=/data/downloads"
-                ];
-
-                # Volume mount points for persistence
-                Volumes = {
-                  # Main downloads directory - mount this for Jellyfin/Syncthing access
-                  "/data/downloads" = {};
-                  # Incomplete downloads - can be ephemeral or persistent
-                  "/data/incomplete" = {};
-                };
-
-                # Working directory
-                WorkingDir = "/home/${containerUser}";
-
-                # Labels for metadata
-                Labels = commonLabels;
-
-                # Health check - uses wget from busybox
-                Healthcheck = {
-                  Test = ["CMD" "wget" "-q" "--spider" "http://localhost:3000/api/health/ready"];
-                  Interval = 30 * 1000000000; # 30 seconds in nanoseconds
-                  Timeout = 10 * 1000000000; # 10 seconds
-                  Retries = 3;
-                  StartPeriod = 60 * 1000000000; # 60 seconds
-                };
-              };
-            };
-          }
-          # Impure, CI-only image built from a pre-compiled binary. Only exposed
-          # when HOFVARPNIR_BINARY is set so pure evaluation (flakehub-push,
-          # `nix flake check`) never forces the `throw` in hofvarpnirBinaryStore.
-          // pkgs.lib.optionalAttrs (hofvarpnirBinaryPath != "") {
-            # OCI container from pre-built binary (for CI - no Rust compilation)
-            # Build: HOFVARPNIR_BINARY=/path/to/binary nix build --impure .#containerFromBinary
-            containerFromBinary = pkgs.dockerTools.buildLayeredImage {
-              name = "hofvarpnir";
-              tag = "latest";
-
-              contents = [
-                # Pre-built application binary (from CI artifacts)
-                hofvarpnirFromBinary
-
-                # License bundle for mixed-license image contents
-                licenseBundle
-
-                # Required runtime dependencies
-                pkgs.yt-dlp
-                pkgs.ffmpeg-headless
-
-                # TLS/SSL certificates for HTTPS connections
-                pkgs.cacert
-
-                # Minimal shell utilities for debugging (optional, remove for smaller image)
-                pkgs.busybox
-              ];
-
-              # Enable fakeroot for chown support
-              enableFakechroot = true;
-              fakeRootCommands = ''
-                # Create user and group
-                mkdir -p ./etc
-                echo "${containerUser}:x:${containerUid}:${containerGid}::/home/${containerUser}:/bin/sh" > ./etc/passwd
-                echo "${containerUser}:x:${containerGid}:" > ./etc/group
-
-                # Create home directory
-                mkdir -p ./home/${containerUser}
-                chown ${containerUid}:${containerGid} ./home/${containerUser}
-
-                # Create downloads directory (will be mounted as volume)
-                mkdir -p ./data/downloads
-                chown ${containerUid}:${containerGid} ./data/downloads
-
-                # Create incomplete downloads directory
-                mkdir -p ./data/incomplete
-                chown ${containerUid}:${containerGid} ./data/incomplete
-
-                # Create tmp directory
-                mkdir -p ./tmp
-                chmod 1777 ./tmp
-              '';
-
-              config = {
-                # Run as the application binary
-                Cmd = ["/bin/hofvarpnir"];
-
-                # Run as non-root user
-                User = "${containerUid}:${containerGid}";
-
-                # Expose the web server port
-                ExposedPorts = {
-                  "3000/tcp" = {};
-                };
-
-                # Environment variables
-                Env = [
-                  "SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
-                  "HOME=/home/${containerUser}"
-                  "PORT=3000"
-                  "RUST_LOG=info"
-                  "YTDLP_PATH=${pkgs.yt-dlp}/bin/yt-dlp"
-                  "DEFAULT_OUTPUT_DIR=/data/downloads"
-                ];
-
-                # Volume mount points for persistence
-                Volumes = {
-                  # Main downloads directory - mount this for Jellyfin/Syncthing access
-                  "/data/downloads" = {};
-                  # Incomplete downloads - can be ephemeral or persistent
-                  "/data/incomplete" = {};
-                };
-
-                # Working directory
-                WorkingDir = "/home/${containerUser}";
-
-                # Labels for metadata
-                Labels = commonLabels;
-
-                # Health check - uses wget from busybox
-                Healthcheck = {
-                  Test = ["CMD" "wget" "-q" "--spider" "http://localhost:3000/api/health/ready"];
-                  Interval = 30 * 1000000000; # 30 seconds in nanoseconds
-                  Timeout = 10 * 1000000000; # 10 seconds
-                  Retries = 3;
-                  StartPeriod = 60 * 1000000000; # 60 seconds
-                };
-              };
-            };
+            # Don't run tests during build (run separately)
+            doCheck = false;
           });
 
-      # Minimal shell for CI builds (Rust + essentials only)
-      devShells.ci = pkgs.mkShell {
-        buildInputs = with pkgs; [
-          rust
-          cargo-edit
-          pkg-config
-          openssl
-        ];
-        SQLX_OFFLINE = "true";
-      };
+        # Standalone terminal UI client. Gets its own dependency build scoped
+        # to hof-tui, so consumers don't compile the server's dependency tree
+        # (sqlx, axum, ...) just to get the TUI.
+        tuiArgs =
+          commonArgs
+          // {
+            pname = "hofvarpnir-tui";
+            cargoExtraArgs = "-p hof-tui";
+          };
+        hofvarpnir-tui = craneLib.buildPackage (tuiArgs
+          // {
+            cargoArtifacts = craneLib.buildDepsOnly tuiArgs;
+            doCheck = false;
+          });
 
-      # to use other shells, run:
-      # nix develop . --command fish
-      devShells.default = pkgs.mkShell {
-        buildInputs = commonDevPackages ++ linuxDevPackages;
-        shellHook = ''
-          export COMPOSE_BAKE=true
-          # sccache caches rustc invocations for dependencies. Workspace
-          # crates keep cargo's incremental compilation instead (sccache
-          # declines to cache incremental units, which is the right trade
-          # here). Unset RUSTC_WRAPPER to opt out for a single shell.
-          #
-          # CORRECTION (measured 2026-09-03): an earlier version of this
-          # comment claimed sccache absorbed the churn that repeatedly
-          # rebuilt the expensive aws-lc-sys -> aws-lc-rs -> rustls chain.
-          # It does not, and largely cannot. Two reasons:
-          #
-          #   1. RUSTC_WRAPPER wraps rustc only. aws-lc-sys's cost is its
-          #      build script compiling the vendored AWS-LC *C* sources via
-          #      `cc`, which this wrapper never sees.
-          #   2. Measured over a normal edit/lint/test cycle, sccache served
-          #      2 hits against 1503 compile requests (~0.1%). The chain was
-          #      rebuilding on every single `just lint` while sccache was
-          #      active.
-          #
-          # What actually stopped that churn was making the invalidation go
-          # away rather than caching it: `SQLX_OFFLINE=true` on the clippy
-          # recipes (justfile) so lint and test no longer differ in the
-          # sqlx env vars that build scripts declare `rerun-if-env-changed`
-          # on, plus rust-analyzer.toml pinning RA to the same feature set
-          # and its own targetDir. Lint-after-test went from ~100s and six
-          # rebuilt crates to ~3s and zero.
-          #
-          # sccache is kept because it still pays where the local loop does
-          # not: genuinely cold builds (after `cargo clean`, a profile
-          # change, or a branch switch) and CI. Do not expect it to help a
-          # warm incremental loop -- cargo's own fingerprinting already
-          # covers that ground.
-          export RUSTC_WRAPPER=sccache
-          export PLAYWRIGHT_BROWSERS_PATH=${pkgs.playwright-driver.browsers}
-          export PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS=true
-          lefthook install
-          yt-dlp --version
-          du -sh ./target
-          echo ""
+        containerUser = "hofvarpnir";
+        containerUid = "1000";
+        containerGid = "1000";
+        licenseBundle = pkgs.writeTextDir "licenses/THIRD_PARTY_LICENSES.md" (builtins.readFile ./THIRD_PARTY_LICENSES.md);
+
+        # Pre-built binary path for CI (requires --impure)
+        # Uses builtins.path to import the binary into the Nix store at eval time
+        hofvarpnirBinaryPath = builtins.getEnv "HOFVARPNIR_BINARY";
+        hofvarpnirBinaryStore =
+          if hofvarpnirBinaryPath != ""
+          then
+            builtins.path {
+              path = hofvarpnirBinaryPath;
+              name = "hofvarpnir";
+            }
+          else throw "HOFVARPNIR_BINARY env var must be set when building containerFromBinary";
+        hofvarpnirFromBinary = pkgs.runCommand "hofvarpnir-from-binary" {} ''
+          mkdir -p $out/bin
+          cp ${hofvarpnirBinaryStore} $out/bin/hofvarpnir
+          chmod +x $out/bin/hofvarpnir
         '';
+
+        imageVersion =
+          if ociImageVersion != ""
+          then ociImageVersion
+          else "dev-${self.shortRev or "unknown"}";
+        imageRevision =
+          if ociImageRevision != ""
+          then ociImageRevision
+          else self.rev or self.dirtyRev or "unknown";
+        imageCreated = let
+          defaultTs = self.lastModifiedDate or "19700101000000";
+          defaultCreated = "${builtins.substring 0 4 defaultTs}-${builtins.substring 4 2 defaultTs}-${builtins.substring 6 2 defaultTs}T${builtins.substring 8 2 defaultTs}:${builtins.substring 10 2 defaultTs}:${builtins.substring 12 2 defaultTs}Z";
+        in
+          if ociImageCreated != ""
+          then ociImageCreated
+          else defaultCreated;
+
+        staticOciLabels = builtins.fromJSON (builtins.readFile ./oci-labels.json);
+        commonLabels =
+          staticOciLabels
+          // {
+            "org.opencontainers.image.version" = imageVersion;
+            "org.opencontainers.image.revision" = imageRevision;
+            "org.opencontainers.image.created" = imageCreated;
+          };
+
+        commonDevPackages = with pkgs; [
+          # keep-sorted start
+
+          actionlint
+          bacon
+          bun
+          cargo-audit
+          cargo-deny
+          cargo-edit
+          cargo-outdated
+          cargo-shear
+          cargo-watch
+          cargo-workspaces
+          # clang and cmake are build dependencies for aws-lc-sys,
+          # which is the cryptography backend pulled in by rustls >= 0.23.40
+          clang
+          cmake
+          cocogitto
+          deadbranch
+          ffmpeg
+          git
+          just
+          keep-sorted
+          lazydocker
+          lefthook
+          nodejs_24
+          opentofu
+          playwright-driver.browsers
+          podman-compose
+          podman-tui
+          postgresql_17
+          rust
+          rustAnalyzer
+          sccache
+          sqlx-cli
+          sqruff
+          tailwindcss_4
+          tokei
+          yt-dlp
+          # keep-sorted end
+        ];
+
+        linuxDevPackages = with pkgs; [
+          # keep-sorted start
+          cachix
+          podman
+          podman-compose
+          trivy
+          # keep-sorted end
+        ];
+      in {
+        # Rust package
+        packages =
+          {
+            default = hofvarpnir;
+            hofvarpnir = hofvarpnir;
+            hofvarpnir-tui = hofvarpnir-tui;
+            # Exported so the yggdrasil root's rust-toolchain-sync can assert it.
+            toolchain = rust;
+          }
+          // pkgs.lib.optionalAttrs (system == "x86_64-linux" || system == "aarch64-linux") ({
+              # OCI container image (Linux only) - builds Rust via Crane
+              # Build: nix build .#container
+              # Load:  podman load < result
+              # Push:  skopeo copy docker-archive:result docker://ghcr.io/user/hofvarpnir:tag
+              container = pkgs.dockerTools.buildLayeredImage {
+                name = "hofvarpnir";
+                tag = "latest";
+
+                contents = [
+                  # The application binary
+                  hofvarpnir
+
+                  # License bundle for mixed-license image contents
+                  licenseBundle
+
+                  # Required runtime dependencies
+                  pkgs.yt-dlp
+                  pkgs.ffmpeg-headless
+
+                  # TLS/SSL certificates for HTTPS connections
+                  pkgs.cacert
+
+                  # Minimal shell utilities for debugging (optional, remove for smaller image)
+                  pkgs.busybox
+                ];
+
+                # Enable fakeroot for chown support
+                enableFakechroot = true;
+                fakeRootCommands = ''
+                  # Create user and group
+                  mkdir -p ./etc
+                  echo "${containerUser}:x:${containerUid}:${containerGid}::/home/${containerUser}:/bin/sh" > ./etc/passwd
+                  echo "${containerUser}:x:${containerGid}:" > ./etc/group
+
+                  # Create home directory
+                  mkdir -p ./home/${containerUser}
+                  chown ${containerUid}:${containerGid} ./home/${containerUser}
+
+                  # Create downloads directory (will be mounted as volume)
+                  mkdir -p ./data/downloads
+                  chown ${containerUid}:${containerGid} ./data/downloads
+
+                  # Create incomplete downloads directory
+                  mkdir -p ./data/incomplete
+                  chown ${containerUid}:${containerGid} ./data/incomplete
+
+                  # Create tmp directory
+                  mkdir -p ./tmp
+                  chmod 1777 ./tmp
+                '';
+
+                config = {
+                  # Run as the application binary
+                  Cmd = ["/bin/hofvarpnir"];
+
+                  # Run as non-root user
+                  User = "${containerUid}:${containerGid}";
+
+                  # Expose the web server port
+                  ExposedPorts = {
+                    "3000/tcp" = {};
+                  };
+
+                  # Environment variables
+                  Env = [
+                    "SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
+                    "HOME=/home/${containerUser}"
+                    "PORT=3000"
+                    "RUST_LOG=info"
+                    "YTDLP_PATH=${pkgs.yt-dlp}/bin/yt-dlp"
+                    "DEFAULT_OUTPUT_DIR=/data/downloads"
+                  ];
+
+                  # Volume mount points for persistence
+                  Volumes = {
+                    # Main downloads directory - mount this for Jellyfin/Syncthing access
+                    "/data/downloads" = {};
+                    # Incomplete downloads - can be ephemeral or persistent
+                    "/data/incomplete" = {};
+                  };
+
+                  # Working directory
+                  WorkingDir = "/home/${containerUser}";
+
+                  # Labels for metadata
+                  Labels = commonLabels;
+
+                  # Health check - uses wget from busybox
+                  Healthcheck = {
+                    Test = ["CMD" "wget" "-q" "--spider" "http://localhost:3000/api/health/ready"];
+                    Interval = 30 * 1000000000; # 30 seconds in nanoseconds
+                    Timeout = 10 * 1000000000; # 10 seconds
+                    Retries = 3;
+                    StartPeriod = 60 * 1000000000; # 60 seconds
+                  };
+                };
+              };
+            }
+            # Impure, CI-only image built from a pre-compiled binary. Only exposed
+            # when HOFVARPNIR_BINARY is set so pure evaluation (flakehub-push,
+            # `nix flake check`) never forces the `throw` in hofvarpnirBinaryStore.
+            // pkgs.lib.optionalAttrs (hofvarpnirBinaryPath != "") {
+              # OCI container from pre-built binary (for CI - no Rust compilation)
+              # Build: HOFVARPNIR_BINARY=/path/to/binary nix build --impure .#containerFromBinary
+              containerFromBinary = pkgs.dockerTools.buildLayeredImage {
+                name = "hofvarpnir";
+                tag = "latest";
+
+                contents = [
+                  # Pre-built application binary (from CI artifacts)
+                  hofvarpnirFromBinary
+
+                  # License bundle for mixed-license image contents
+                  licenseBundle
+
+                  # Required runtime dependencies
+                  pkgs.yt-dlp
+                  pkgs.ffmpeg-headless
+
+                  # TLS/SSL certificates for HTTPS connections
+                  pkgs.cacert
+
+                  # Minimal shell utilities for debugging (optional, remove for smaller image)
+                  pkgs.busybox
+                ];
+
+                # Enable fakeroot for chown support
+                enableFakechroot = true;
+                fakeRootCommands = ''
+                  # Create user and group
+                  mkdir -p ./etc
+                  echo "${containerUser}:x:${containerUid}:${containerGid}::/home/${containerUser}:/bin/sh" > ./etc/passwd
+                  echo "${containerUser}:x:${containerGid}:" > ./etc/group
+
+                  # Create home directory
+                  mkdir -p ./home/${containerUser}
+                  chown ${containerUid}:${containerGid} ./home/${containerUser}
+
+                  # Create downloads directory (will be mounted as volume)
+                  mkdir -p ./data/downloads
+                  chown ${containerUid}:${containerGid} ./data/downloads
+
+                  # Create incomplete downloads directory
+                  mkdir -p ./data/incomplete
+                  chown ${containerUid}:${containerGid} ./data/incomplete
+
+                  # Create tmp directory
+                  mkdir -p ./tmp
+                  chmod 1777 ./tmp
+                '';
+
+                config = {
+                  # Run as the application binary
+                  Cmd = ["/bin/hofvarpnir"];
+
+                  # Run as non-root user
+                  User = "${containerUid}:${containerGid}";
+
+                  # Expose the web server port
+                  ExposedPorts = {
+                    "3000/tcp" = {};
+                  };
+
+                  # Environment variables
+                  Env = [
+                    "SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
+                    "HOME=/home/${containerUser}"
+                    "PORT=3000"
+                    "RUST_LOG=info"
+                    "YTDLP_PATH=${pkgs.yt-dlp}/bin/yt-dlp"
+                    "DEFAULT_OUTPUT_DIR=/data/downloads"
+                  ];
+
+                  # Volume mount points for persistence
+                  Volumes = {
+                    # Main downloads directory - mount this for Jellyfin/Syncthing access
+                    "/data/downloads" = {};
+                    # Incomplete downloads - can be ephemeral or persistent
+                    "/data/incomplete" = {};
+                  };
+
+                  # Working directory
+                  WorkingDir = "/home/${containerUser}";
+
+                  # Labels for metadata
+                  Labels = commonLabels;
+
+                  # Health check - uses wget from busybox
+                  Healthcheck = {
+                    Test = ["CMD" "wget" "-q" "--spider" "http://localhost:3000/api/health/ready"];
+                    Interval = 30 * 1000000000; # 30 seconds in nanoseconds
+                    Timeout = 10 * 1000000000; # 10 seconds
+                    Retries = 3;
+                    StartPeriod = 60 * 1000000000; # 60 seconds
+                  };
+                };
+              };
+            });
+
+        # Minimal shell for CI builds (Rust + essentials only)
+        devShells.ci = pkgs.mkShell {
+          buildInputs = with pkgs; [
+            rust
+            cargo-edit
+            pkg-config
+            openssl
+          ];
+          SQLX_OFFLINE = "true";
+        };
+
+        # to use other shells, run:
+        # nix develop . --command fish
+        devShells.default = pkgs.mkShell {
+          buildInputs = commonDevPackages ++ linuxDevPackages;
+          shellHook = ''
+            export COMPOSE_BAKE=true
+            # sccache caches rustc invocations for dependencies. Workspace
+            # crates keep cargo's incremental compilation instead (sccache
+            # declines to cache incremental units, which is the right trade
+            # here). Unset RUSTC_WRAPPER to opt out for a single shell.
+            #
+            # CORRECTION (measured 2026-09-03): an earlier version of this
+            # comment claimed sccache absorbed the churn that repeatedly
+            # rebuilt the expensive aws-lc-sys -> aws-lc-rs -> rustls chain.
+            # It does not, and largely cannot. Two reasons:
+            #
+            #   1. RUSTC_WRAPPER wraps rustc only. aws-lc-sys's cost is its
+            #      build script compiling the vendored AWS-LC *C* sources via
+            #      `cc`, which this wrapper never sees.
+            #   2. Measured over a normal edit/lint/test cycle, sccache served
+            #      2 hits against 1503 compile requests (~0.1%). The chain was
+            #      rebuilding on every single `just lint` while sccache was
+            #      active.
+            #
+            # What actually stopped that churn was making the invalidation go
+            # away rather than caching it: `SQLX_OFFLINE=true` on the clippy
+            # recipes (justfile) so lint and test no longer differ in the
+            # sqlx env vars that build scripts declare `rerun-if-env-changed`
+            # on, plus rust-analyzer.toml pinning RA to the same feature set
+            # and its own targetDir. Lint-after-test went from ~100s and six
+            # rebuilt crates to ~3s and zero.
+            #
+            # sccache is kept because it still pays where the local loop does
+            # not: genuinely cold builds (after `cargo clean`, a profile
+            # change, or a branch switch) and CI. Do not expect it to help a
+            # warm incremental loop -- cargo's own fingerprinting already
+            # covers that ground.
+            export RUSTC_WRAPPER=sccache
+            export PLAYWRIGHT_BROWSERS_PATH=${pkgs.playwright-driver.browsers}
+            export PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS=true
+            lefthook install
+            yt-dlp --version
+            du -sh ./target
+            echo ""
+          '';
+        };
       };
-    });
+    };
 }
