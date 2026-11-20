@@ -63,7 +63,8 @@ jobs:
     # TUI-only targets that don't go through Nix: musl (static, for Alpine and
     # old-glibc machines). hof-tui is a pure HTTP client (no hof-core,
     # no sqlx), so a plain cargo build with the pinned rust-toolchain.toml is
-    # enough. rustup on the runner auto-installs the pinned nightly.
+    # enough. rustup on the runner auto-installs the pinned toolchain (the same
+    # version the Nix build uses).
     timeout-minutes: 60
     strategy:
       matrix:

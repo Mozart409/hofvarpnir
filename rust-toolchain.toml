@@ -1,4 +1,9 @@
+# The pinned Rust toolchain. rustup (plain-rustup users, CI runners, container
+# builds) reads it directly; the Nix flake reads its channel and resolves it
+# with fenix, pinning the channel manifest by sha256. In the yggdrasil
+# monorepo every rust/* copy is byte-identical to the root file; bump them all
+# together there with `just toolchain-bump <X.Y.Z>`.
 [toolchain]
-channel = "nightly-2026-09-29"
-components = ["clippy", "rust-analyzer", "rust-src", "rustfmt"]
+channel = "1.100.0"
+components = ["clippy", "rustfmt"]
 profile = "minimal"

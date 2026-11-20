@@ -57,12 +57,16 @@
       ociImageRevision = builtins.getEnv "OCI_IMAGE_REVISION";
       ociImageCreated = builtins.getEnv "OCI_IMAGE_CREATED";
 
-      nightlyManifest = fenix.packages.${system}.fromToolchainName {
-        name = "nightly-2026-09-29";
-        sha256 = "sha256-SscAmi14f6gEF45aegZ7H4KPhWI6Fg73zEF9N4gU7z4=";
+      # The pinned toolchain: ./rust-toolchain.toml is a byte-identical copy of
+      # the yggdrasil root's; its channel is resolved with the same manifest
+      # sha256 as the monorepo's rust/toolchain.nix (the root's
+      # `rust-toolchain-sync` asserts the store paths agree).
+      manifest = fenix.packages.${system}.fromToolchainName {
+        name = (builtins.fromTOML (builtins.readFile ./rust-toolchain.toml)).toolchain.channel;
+        sha256 = "sha256-MFHoWVcPZKjFrLnQnodCXbUsfZcofGfo9tV9fTTvklg=";
       };
-      rust = nightlyManifest.withComponents ["cargo" "clippy" "rust-src" "rustc" "rustfmt"];
-      rustAnalyzer = nightlyManifest.rust-analyzer;
+      rust = manifest.withComponents ["cargo" "clippy" "rust-src" "rustc" "rustfmt"];
+      rustAnalyzer = manifest.rust-analyzer;
 
       # Crane for building Rust packages
       craneLib = (crane.mkLib pkgs).overrideToolchain rust;
@@ -235,6 +239,8 @@
           default = hofvarpnir;
           hofvarpnir = hofvarpnir;
           hofvarpnir-tui = hofvarpnir-tui;
+          # Exported so the yggdrasil root's rust-toolchain-sync can assert it.
+          toolchain = rust;
         }
         // pkgs.lib.optionalAttrs (system == "x86_64-linux" || system == "aarch64-linux") ({
             # OCI container image (Linux only) - builds Rust via Crane

@@ -816,6 +816,6 @@ chore(version): v0.2.5
 ## Language Standards
 
 - **Edition**: 2024
-- **MSRV**: 1.94.0
+- **MSRV**: 1.97.1
 - **Unsafe**: Forbidden (workspace lint)
 - **Clippy**: All + Pedantic enabled
