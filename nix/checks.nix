@@ -96,10 +96,17 @@ in {
       }));
 
     # `just test-patches`: the offline targets only (upstream's `integration`
-    # and `e2e` suites hit the network), then the doctests.
-    patches-test = craneLib.cargoTest (patchesArgs
+    # and `e2e` suites hit the network), then the doctests. Not cargoTest: it
+    # always runs `cargo test <cargoTestExtraArgs>` once and replaces a
+    # checkPhaseCargoCommand, and these are two runs with their own targets.
+    patches-test = craneLib.mkCargoDerivation (patchesArgs
       // {
         cargoArtifacts = patchesArtifacts;
+        pnameSuffix = "-test";
+        # reqwest::Client::new() loads the system roots (error_http_constructor).
+        SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
+        buildPhaseCargoCommand = "";
+        doCheck = true;
         checkPhaseCargoCommand = ''
           cargoWithProfile test --lib --test unit
           cargoWithProfile test --doc
