@@ -77,45 +77,12 @@
         rust = manifest.withComponents ["cargo" "clippy" "rust-src" "rustc" "rustfmt"];
         rustAnalyzer = manifest.rust-analyzer;
 
-        # Crane for building Rust packages
-        craneLib = (crane.mkLib pkgs).overrideToolchain rust;
-
-        # Common source filtering for Rust builds.
-        # Include SQLx migration files so `sqlx::migrate!("./migrations")`
-        # embeds the full migration set in container builds.
-        # Include hof-web assets (app.css, etc.) for static file serving.
-        # Include .sqlx/ directory so SQLX_OFFLINE=true works (query metadata).
-        src = pkgs.lib.cleanSourceWith {
-          src = ./.;
-          filter = path: type:
-            (craneLib.filterCargoSources path type)
-            || pkgs.lib.hasInfix "/crates/hof-core/migrations/" (toString path)
-            || pkgs.lib.hasInfix "/crates/hof-web/assets/" (toString path)
-            || pkgs.lib.hasInfix "/.sqlx/" (toString path);
+        # The shared crane inputs (nix/crane.nix) also feed nix/checks.nix.
+        hofCrane = import ./nix/crane.nix {
+          inherit pkgs crane;
+          toolchain = rust;
         };
-
-        # Common build arguments
-        commonArgs = {
-          inherit src;
-          pname = "hofvarpnir";
-          strictDeps = true;
-
-          # Build dependencies (native)
-          nativeBuildInputs = with pkgs; [
-            pkg-config
-          ];
-
-          # Runtime dependencies
-          buildInputs = with pkgs; [
-            openssl
-          ];
-
-          # Environment variables for SQLx offline mode
-          SQLX_OFFLINE = "true";
-        };
-
-        # Build dependencies separately for caching
-        cargoArtifacts = craneLib.buildDepsOnly commonArgs;
+        inherit (hofCrane) craneLib src commonArgs cargoArtifacts;
 
         # Build the hof-web binary
         hofvarpnir = craneLib.buildPackage (commonArgs
