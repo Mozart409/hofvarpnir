@@ -70,6 +70,9 @@ feature-depth = 1
 # A list of advisory IDs to ignore. Note that ignored advisories will still
 # output a note when they are encountered.
 ignore = [
+    # chrono is used directly and via sqlx/oauth2/yt-dlp; every version is
+    # affected. Revisit when the advisory is withdrawn or those move to jiff/time.
+    { id = "RUSTSEC-2026-0543", reason = "chrono unmaintained, no safe upgrade; also pulled in by sqlx/oauth2/yt-dlp" },
     { id = "RUSTSEC-2024-0436", reason = "paste unmaintained: transitive dep from lofty and utoipa-axum. No security impact, just maintenance status." },
     #"RUSTSEC-0000-0000",
     #{ id = "RUSTSEC-0000-0000", reason = "you can specify a reason the advisory is ignored" },
